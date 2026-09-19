@@ -541,6 +541,17 @@ async def run_tests():
 
     await run_dlq_ops_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 31. ATTACH-SCAN-1 — Memory-safe attachment scanning foundation
+    # -----------------------------------------------------------------------
+    print("\n[Suite 31] ATTACH-SCAN-1 — Attachment Scanning Foundation")
+    tests_dir = str(ROOT / "tests")
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from test_attachment_scanner import run_attachment_scanner_tests
+
+    await run_attachment_scanner_tests(runner)
+
     return runner.report()
 
 

@@ -1084,6 +1084,30 @@ class ProcessedEmail(Base):
     scan_result_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("scan_results.id", ondelete="SET NULL"), nullable=True
     )
+    # ATTACH-SCAN: per-attachment scan metadata + results (metadata ONLY —
+    # attachment files themselves are NEVER stored; they exist only as
+    # ephemeral 0600 temp files during scanning and are deleted afterwards):
+    # [
+    #   {
+    #     "attachment_id": "<gmail attachment id>",
+    #     "filename": "invoice.pdf",
+    #     "mime_type": "application/pdf",          # declared by the sender
+    #     "size_bytes": 123456,
+    #     "scan_status": "completed|skipped|failed",
+    #     "scan_results": {
+    #       "status": "completed",
+    #       "risk_score": 30,
+    #       "verdict": "safe|suspicious|malicious",
+    #       "indicators": [{"type": "mime_mismatch", "severity": "medium", ...}],
+    #       "sha256": "<64-hex content hash>",
+    #       "detected_mime": "application/pdf",    # from magic bytes
+    #       "declared_mime": "application/pdf",
+    #       "mime_mismatch": false,
+    #       "scan_duration_ms": 412
+    #     }
+    #   }, ...
+    # ]
+    attachments_meta: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(PortableJSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now)
 

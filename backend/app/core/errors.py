@@ -72,6 +72,45 @@ class NonRetryableError(AppError):
         self.reason = reason
 
 
+# ---------------------------------------------------------------------------
+# Attachment scanning errors (ATTACH-SCAN)
+# ---------------------------------------------------------------------------
+
+class AttachmentTooLargeError(AppError):
+    """Attachment exceeds MAX_ATTACHMENT_SIZE_BYTES."""
+
+    def __init__(self, message: str = "Attachment exceeds the maximum allowed size"):
+        super().__init__(message, code="attachment_too_large", status_code=413)
+
+
+class UnsupportedFileTypeError(AppError):
+    """Attachment type is not in SUPPORTED_MIME_TYPES."""
+
+    def __init__(self, message: str = "Attachment file type is not supported"):
+        super().__init__(message, code="unsupported_file_type", status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+
+
+class ScanTimeoutError(AppError):
+    """Attachment scan exceeded its allowed time budget."""
+
+    def __init__(self, message: str = "Attachment scan timed out"):
+        super().__init__(message, code="scan_timeout", status_code=status.HTTP_504_GATEWAY_TIMEOUT)
+
+
+class MemoryLimitExceededError(AppError):
+    """Worker memory crossed MEMORY_CRITICAL_THRESHOLD_MB during scanning."""
+
+    def __init__(self, message: str = "Attachment scan aborted: memory limit exceeded"):
+        super().__init__(message, code="memory_limit_exceeded", status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class ArchiveDepthExceededError(AppError):
+    """Nested archive exceeded MAX_ARCHIVE_DEPTH (Phase 2 archive inspection)."""
+
+    def __init__(self, message: str = "Archive nesting depth exceeds the allowed limit"):
+        super().__init__(message, code="archive_depth_exceeded", status_code=status.HTTP_400_BAD_REQUEST)
+
+
 
 class ComingSoonError(StarletteHTTPException):
     """Frozen-feature marker rendered with the plain FastAPI detail envelope.

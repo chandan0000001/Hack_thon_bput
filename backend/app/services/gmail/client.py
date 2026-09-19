@@ -183,6 +183,57 @@ class GmailClient:
             req_kwargs["timeout"] = timeout
         return await self._request("GET", url, access_token, refresh_token=refresh_token, **req_kwargs)
 
+    async def stream_attachment(
+        self,
+        message_id: str,
+        attachment_id: str,
+        chunk_size: int = 65536,
+        access_token: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+    ):
+        """Stream an attachment's bytes in chunks without buffering it fully in memory.
+
+        GET https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/attachments/{attachment_id}
+        Yields raw byte chunks of at most chunk_size. Unlike the JSON methods,
+        the response body is consumed as a stream so large attachments never
+        materialize as a single in-memory object.
+        """
+        if not access_token:
+            raise GmailAuthError("stream_attachment requires an access token", status_code=401)
+
+        url = f"{GMAIL_API_BASE}/users/me/messages/{message_id}/attachments/{attachment_id}"
+
+        if self._client is not None:
+            client, owns_client = self._client, False
+        else:
+            client, owns_client = httpx.AsyncClient(timeout=self._timeout), True
+
+        try:
+            token = access_token
+            async with client.stream("GET", url, headers={"Authorization": f"Bearer {token}"}) as response:
+                if response.status_code == 401 and refresh_token:
+                    logger.info("Gmail attachment stream returned 401; attempting token refresh")
+                    refreshed = await oauth_service.refresh_token(refresh_token)
+                    token = refreshed.get("access_token") or token
+                    if owns_client:
+                        await response.aclose()
+                    async with client.stream(
+                        "GET", url, headers={"Authorization": f"Bearer {token}"}
+                    ) as retry_response:
+                        retry_response.raise_for_status()
+                        async for chunk in retry_response.aiter_bytes(chunk_size=chunk_size):
+                            yield chunk
+                    return
+
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                    yield chunk
+        except httpx.TimeoutException as exc:
+            raise GmailServerError(f"Gmail attachment stream timeout: {exc}", status_code=504) from exc
+        finally:
+            if owns_client:
+                await client.aclose()
+
     async def watch(
         self,
         access_token: str,
