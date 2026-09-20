@@ -1039,6 +1039,15 @@ async def run_tests():
 
     await run_org_rls_isolation_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 39. ORG-WIRE — org-stamped pipeline events, org-branch RLS, fan-out,
+    #     gateway log linkage
+    # -----------------------------------------------------------------------
+    print("\n[Suite 39] ORG-WIRE — Org-Stamped Pipeline + Org-Branch RLS + Fan-Out")
+    from test_org_wire import run_org_wire_tests
+
+    await run_org_wire_tests(runner)
+
     return runner.report()
 
 

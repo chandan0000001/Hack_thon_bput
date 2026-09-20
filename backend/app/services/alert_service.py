@@ -60,9 +60,21 @@ async def create_alert(
     explanation = str(llm_output.get("explanation", ""))
     mitre = llm_output.get("mitre_techniques") or []
 
+    # ORG-WIRE: fall back to the owner's active/personal org when the tenant
+    # carries none (worker/service paths) so the org-branch RLS policies
+    # (migration 0018) can expose the alert to org members.
+    organization_id = tenant.organization_id
+    if organization_id is None:
+        try:
+            from app.services.org_context import resolve_org_id
+
+            organization_id = await resolve_org_id(db, tenant.owner_user_id or tenant.user_id)
+        except Exception:  # noqa: BLE001 - stamping is best-effort
+            organization_id = None
+
     alert = Alert(
         id=alert_id,
-        organization_id=tenant.organization_id,
+        organization_id=organization_id,
         owner_user_id=tenant.owner_user_id,
         event_id=event_id,
         title=title,

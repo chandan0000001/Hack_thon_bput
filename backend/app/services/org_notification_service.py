@@ -223,3 +223,71 @@ IMPERSONATION_INDICATOR_TYPES = {
     "reply_to_mismatch",
     "brand_impersonation",
 }
+
+
+# ---------------------------------------------------------------------------
+# ORG-WIRE: pipeline fan-out (critical / phishing verdicts)
+# ---------------------------------------------------------------------------
+
+async def fan_out_email_verdict(
+    db: AsyncSession,
+    *,
+    owner_user_id: str,
+    email_id: str,
+    verdict: str | None,
+    severity: str | None,
+    classification: str | None = None,
+) -> bool:
+    """Notify the owner's ORGANIZATION about a critical/phishing pipeline
+    verdict (ORG-WIRE D3). Rules:
+
+    - Personal org (or no org): SKIP. The Phase-7 per-user path already
+      notifies the owner's ``notification_email``; fanning out to the same
+      person's org groups would double the email. Personal-mode rows still
+      carry the personal-org stamp — the suppression is purely about not
+      re-notifying a single human twice.
+    - Non-personal org: send through the existing ``send_event`` registry
+      (event_type ``critical_log``, min_role routing applies) and persist an
+      ``org_notification_logs`` row.
+
+    Returns True when a fan-out was attempted; never raises — notifications
+    must not break the pipeline.
+    """
+    is_critical = (
+        severity == "critical"
+        or verdict == "malicious"
+        or classification == "phishing"
+    )
+    if not is_critical:
+        return False
+
+    from app.services.org_context import resolve_org_context
+
+    org_id, is_personal = await resolve_org_context(db, owner_user_id)
+    if not org_id or is_personal:
+        return False
+
+    summary = (
+        f"Email verdict {verdict or classification or 'unknown'} "
+        f"(severity {severity or 'unknown'}) on a message in a monitored mailbox."
+    )
+    subject, body = critical_log_email(summary, severity or verdict or "critical", "email_verdict")
+    try:
+        await send_event(
+            db,
+            organization_id=org_id,
+            event_type="critical_log",
+            subject=subject,
+            body_html=body,
+            event_metadata={
+                "source": "pipeline",
+                "email_id": email_id,
+                "verdict": verdict,
+                "severity": severity,
+                "classification": classification,
+            },
+        )
+        return True
+    except Exception:  # noqa: BLE001 - notifications must not break the pipeline
+        logger.exception("org fan-out failed for email %s (org %s)", email_id, org_id)
+        return False

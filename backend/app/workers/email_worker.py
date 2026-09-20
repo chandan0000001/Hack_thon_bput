@@ -240,6 +240,23 @@ async def email_analysis_job(ctx: dict[str, Any], processed_email_id: str) -> di
                         pe_row.signals = updated_signals
                         await db.commit()
 
+                # ORG-WIRE D3: fan critical/phishing verdicts out to the
+                # owner's NON-personal org (personal orgs are suppressed —
+                # Phase-7 already notifies the owner). Non-fatal.
+                try:
+                    from app.services.org_notification_service import fan_out_email_verdict
+
+                    await fan_out_email_verdict(
+                        db,
+                        owner_user_id=pe_row.owner_user_id,
+                        email_id=str(pe_row.id),
+                        verdict=pe_row.verdict,
+                        severity=pe_row.severity,
+                        classification=result.get("classification"),
+                    )
+                except Exception as fan_exc:  # noqa: BLE001 - never break the pipeline
+                    logger.warning("org fan-out hook error (non-fatal): %s", fan_exc)
+
                 if job_id:
                     try:
                         await update_job_status(db, job_id, "completed", result=result)

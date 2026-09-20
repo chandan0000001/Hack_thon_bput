@@ -571,8 +571,18 @@ async def _gateway_scan_url(db: AsyncSession, org: Organization, data: dict[str,
 
 
 async def _gateway_ingest_log(db: AsyncSession, org: Organization, data: dict[str, Any]) -> dict[str, Any]:
-    """Splunk-style log ingestion: persist the raw log event. Detector-driven
-    auto-analysis of the log stream ships with ORG-2 (Live Log Analysis)."""
+    """Splunk-style log ingestion: persist the raw log event AND the analyzed
+    org log stream row (ORG-WIRE D4).
+
+    Dual-write rationale: the generic ``Event`` row keeps the org dashboard
+    aggregations working (summary/feature dashboards count ``events``), while
+    the ``OrgLogEvent`` row (with the org_log_analyzer output) feeds
+    ``/org/{id}/logs/stream`` and the log-analysis feature views, which
+    previously only saw logs sent through ``POST /org/{id}/logs/ingest``.
+    """
+    from app.db.models import OrgLogEvent
+    from app.services.org_log_analyzer import analyze_log
+
     event = Event(
         id=str(uuid.uuid4()),
         organization_id=org.id,
@@ -584,8 +594,24 @@ async def _gateway_ingest_log(db: AsyncSession, org: Organization, data: dict[st
         created_by=f"api_key:{org.id}",
     )
     db.add(event)
+
+    analysis = analyze_log(data)
+    log_event = OrgLogEvent(
+        organization_id=org.id,
+        log_type=analysis["log_type"],
+        raw_data=data if isinstance(data, (dict, list)) else {"value": str(data)},
+        analysis_result=analysis,
+        severity=analysis["severity"],
+        created_by=f"api_key:{org.id}",
+    )
+    db.add(log_event)
     await db.commit()
-    return {"event_id": event.id, "status": event.status, "stored": True}
+    return {
+        "event_id": event.id,
+        "log_id": log_event.id,
+        "status": event.status,
+        "stored": True,
+    }
 
 
 @gateway_router.post("/{org_id}/gateway")

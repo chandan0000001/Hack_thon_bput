@@ -39,10 +39,21 @@ async def log_action(
         logger.warning("Skipping audit log for action %r: no owner/user identity available", action)
         return
 
+    # ORG-WIRE: stamp the org (explicit tenant org, else the owner's active /
+    # personal org) for the org-branch RLS policies (migration 0018).
+    organization_id = tenant.organization_id if tenant else None
+    if organization_id is None:
+        try:
+            from app.services.org_context import resolve_org_id
+
+            organization_id = await resolve_org_id(db, resolved_owner)
+        except Exception:  # noqa: BLE001 - stamping is best-effort
+            organization_id = None
+
     try:
         entry = AuditLog(
             id=str(uuid.uuid4()),
-            organization_id=tenant.organization_id if tenant else None,
+            organization_id=organization_id,
             owner_user_id=resolved_owner,
             actor_type=actor_type,
             user_id=user_id or resolved_owner,

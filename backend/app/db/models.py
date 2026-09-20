@@ -736,6 +736,12 @@ class SecurityEvent(Base):
     owner_user_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True,
     )
+    # ORG-WIRE: org stamp (owner's active org / personal org fallback) so
+    # org-plane members can see pipeline events under the org-branch RLS
+    # policies (migration 0018). Personal mailbox artifacts stay owner-only.
+    organization_id: Mapped[Optional[str]] = mapped_column(
+        String(36), nullable=True, index=True,
+    )
     # scan_verdict | quarantine | release | keep | delete | sender_block |
     # sender_release | sender_expiry | connector_connect |
     # connector_disconnect | connector_test | enforcement_decision |

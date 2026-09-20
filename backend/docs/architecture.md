@@ -167,6 +167,16 @@ org-scoped).
 - *Child/join tables* (`recommended_actions`, `incident_alerts`,
   `incident_events`, `organization_members`): ownership derived from the
   parent row via `EXISTS` predicates.
+- *Security plane, org-branch policies* (migration 0018, ORG-WIRE):
+  `events`, `alerts`, `action_executions`, `security_events` (column added by
+  the same migration), `audit_logs` gain permissive OR-branch
+  select/insert/update policies — `owner_user_id = app.user_id OR
+  (organization_id IS NOT NULL AND org_member_role(...) IS NOT NULL)` — so
+  org members see pipeline verdicts stamped by
+  `app/services/org_context.py` (active org, personal-org fallback, TTL
+  cached). Mailbox artifacts (`processed_emails`, `gmail_accounts`,
+  `scan_results`, `attachments_meta`) stay owner-ONLY: org colleagues see
+  verdicts, never raw mailboxes.
 - *Org tables* (`organization_api_keys`, `organization_settings`,
   `org_log_events`, `org_mail_servers*`, `org_notification_*`): every
   permissive `*_app_all`/`*_app_select` policy `TO cyberguard_api` was

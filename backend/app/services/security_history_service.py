@@ -49,8 +49,21 @@ async def record_event(
     if not owner:
         raise ValueError("record_event requires a tenant or owner_user_id")
 
+    # ORG-WIRE: stamp the org (explicit tenant org, else the owner's active /
+    # personal org) so org-branch RLS (migration 0018) makes the event visible
+    # to org members. Best-effort — a failed stamp must not fail the event.
+    organization_id = tenant.organization_id if tenant is not None else None
+    if organization_id is None:
+        try:
+            from app.services.org_context import resolve_org_id
+
+            organization_id = await resolve_org_id(db, owner)
+        except Exception:  # noqa: BLE001 - stamping is best-effort
+            organization_id = None
+
     event = SecurityEvent(
         owner_user_id=owner,
+        organization_id=organization_id,
         event_type=event_type,
         actor_type=actor_type,
         connector_id=connector_id or (connector.id if connector is not None else None),
@@ -74,6 +87,7 @@ async def record_event(
     db.add(
         AuditLog(
             id=str(uuid.uuid4()),
+            organization_id=organization_id,
             owner_user_id=owner,
             user_id=owner,
             user_name=f"actor:{actor_type}",

@@ -109,9 +109,20 @@ class ActionExecutor:
             execution_result = None
 
         # Create ActionExecution record
+        # ORG-WIRE: fall back to the owner's active/personal org so the
+        # org-branch RLS policies (migration 0018) keep the execution row
+        # visible to org members even when the alert itself is un-stamped.
+        org_stamp = organization_id or alert.organization_id
+        if org_stamp is None:
+            try:
+                from app.services.org_context import resolve_org_id
+
+                org_stamp = await resolve_org_id(db, alert.owner_user_id)
+            except Exception:  # noqa: BLE001 - stamping is best-effort
+                org_stamp = None
         execution = ActionExecution(
             id=str(uuid.uuid4()),
-            organization_id=organization_id or alert.organization_id,
+            organization_id=org_stamp,
             owner_user_id=alert.owner_user_id,  # inherit tenant owner (RLS)
             alert_id=alert.id,
             event_id=event_id or alert.event_id,

@@ -65,8 +65,19 @@ async def notify_email_processed(
             logger.warning("Failed emitting broadcast to Supabase Realtime: %s", exc)
 
     # 4. Record event in security_events table for audit & persistence
+    # ORG-WIRE: stamp the owner's active org (personal-org fallback) so the
+    # org-branch RLS policies (migration 0018) make pipeline events visible
+    # to org members. Never fails the notification path.
+    organization_id: Optional[str] = None
+    try:
+        from app.services.org_context import resolve_org_id
+
+        organization_id = await resolve_org_id(db, processed_email.owner_user_id)
+    except Exception:  # noqa: BLE001 - stamping is best-effort
+        logger.debug("org stamp lookup failed for %s", processed_email.owner_user_id)
     sec_event = SecurityEvent(
         owner_user_id=processed_email.owner_user_id,
+        organization_id=organization_id,
         event_type=event_type,
         provider="gmail",
         provider_message_id=processed_email.gmail_message_id,

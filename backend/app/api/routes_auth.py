@@ -294,4 +294,9 @@ async def switch_organization(
     user_db.active_organization_id = payload.organization_id
     await db.commit()
 
+    # ORG-WIRE: pipeline stamping caches this resolution per owner.
+    from app.services.org_context import invalidate as invalidate_org_cache
+
+    invalidate_org_cache(user.id)
+
     return {"message": "Active organization updated", "active_organization_id": payload.organization_id}
