@@ -560,6 +560,14 @@ async def run_tests():
 
     await run_malware_detection_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 33. ATTACH-SCAN-3 — Content analysis layer (PDF, Office, URLs, text)
+    # -----------------------------------------------------------------------
+    print("\n[Suite 33] ATTACH-SCAN-3 — Content Analysis Layer")
+    from test_content_analysis import run_content_analysis_tests
+
+    await run_content_analysis_tests(runner)
+
     return runner.report()
 
 

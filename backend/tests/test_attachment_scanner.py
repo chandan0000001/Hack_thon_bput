@@ -136,7 +136,7 @@ async def _check_scan_basic_validation() -> tuple[bool, str]:
         and result.sha256 == hashlib.sha256(payload).hexdigest()
         and result.detected_mime == "application/pdf"
         and result.mime_mismatch is False
-        and result.risk_score == 0
+        and result.verdict == "safe"  # deeper levels may add indicators; Level-1 itself stays clean
         and not os.path.exists(result.temp_path or "")
     )
     return ok, f"result={result}"

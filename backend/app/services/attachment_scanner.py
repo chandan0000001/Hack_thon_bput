@@ -19,15 +19,38 @@ from typing import Any, Optional
 from app.core.errors import AttachmentTooLargeError
 from app.services.archive_inspector import ArchiveInspector
 from app.services.attachment_streamer import AttachmentStreamer
+from app.services.attachment_text_analyzer import AttachmentTextAnalyzer
+from app.services.attachment_url_extractor import AttachmentUrlExtractor
 from app.services.clamav_scanner import ClamAVScanner
 from app.services.executable_detector import ExecutableDetector
 from app.services.file_validator import FileValidator
+from app.services.office_analyzer import OfficeAnalyzer
+from app.services.pdf_analyzer import PdfAnalyzer
 from app.services.yara_scanner import YaraScanner
 
 logger = logging.getLogger("cyberguard.attachment.scanner")
 
 MALICIOUS_RISK_THRESHOLD = 80
 SUSPICIOUS_RISK_THRESHOLD = 40
+
+_VERDICT_SEVERITY = {"safe": 0, "suspicious": 1, "malicious": 2}
+
+# URL/text channels each cap their contribution so one chatty channel
+# cannot dominate the verdict (see docs/attachment_content_analysis.md).
+URL_RISK_CAP = 30
+URL_FLAG_WEIGHT = {"high": 10, "medium": 5}
+
+OFFICE_MIME_TYPES = {
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-office",
+}
+
+TEXT_MIME_TYPES = {"text/plain", "text/html"}
 
 
 @dataclass
@@ -60,6 +83,10 @@ class AttachmentScanner:
         self.yara = YaraScanner()
         self.executable = ExecutableDetector()
         self.archive = ArchiveInspector()
+        self.pdf = PdfAnalyzer()
+        self.office = OfficeAnalyzer()
+        self.url_extractor = AttachmentUrlExtractor()
+        self.text = AttachmentTextAnalyzer()
 
     async def scan_attachment(
         self,
@@ -98,9 +125,14 @@ class AttachmentScanner:
                     filename=filename,
                     result=result,
                 )
+                result = await self._level3_content_analysis(
+                    temp_path=temp_path,
+                    detected_mime=result.detected_mime or "",
+                    filename=filename,
+                    result=result,
+                )
 
-            # Level 3 (static analysis) and Level 4 (sandbox detonation) hooks
-            # land in Phases 3-4.
+            # Level 4 (sandbox detonation) lands in Phase 4.
 
             result.scan_duration_ms = int((time.monotonic() - start) * 1000)
             result.status = "completed"
@@ -280,6 +312,83 @@ class AttachmentScanner:
         if risk_score >= SUSPICIOUS_RISK_THRESHOLD:
             return "suspicious"
         return "safe"
+
+    async def _level3_content_analysis(
+        self,
+        temp_path: str,
+        detected_mime: str,
+        filename: str,
+        result: ScanResult,
+    ) -> ScanResult:
+        """Content analysis: PDF/Office structure, URL hand-off, text phishing.
+
+        Like Level 2, every sub-engine is individually try/except guarded —
+        a failure records an info indicator and the scan continues.
+        """
+        # --- Document structure analysis (PDF / Office) -------------------
+        urls_found: list[str] = []
+        structure_engine = "pdf" if detected_mime == "application/pdf" else "office"
+        structure_analysis: Optional[dict] = None
+        try:
+            if detected_mime == "application/pdf":
+                structure_analysis = self.pdf.analyze(temp_path, mime_type=detected_mime)
+            elif detected_mime in OFFICE_MIME_TYPES:
+                structure_analysis = self.office.analyze(
+                    temp_path, mime_type=detected_mime, original_filename=filename
+                )
+            if structure_analysis:
+                result.indicators.extend(structure_analysis["indicators"])
+                result.risk_score += structure_analysis["risk_score"]
+                urls_found.extend(structure_analysis.get("urls_found", []))
+        except Exception as exc:
+            self._record_engine_failure(result, structure_engine, exc)
+
+        # --- Raw text for text/html attachments (structure engines above
+        # already harvested their URLs) ------------------------------------
+        text_analysis: Optional[dict] = None
+        try:
+            if detected_mime in TEXT_MIME_TYPES:
+                text = self.text.extract_text(temp_path, detected_mime)
+                text_analysis = self.text.analyze(text)
+                result.indicators.extend(text_analysis["indicators"])
+                result.risk_score += text_analysis["risk_score"]
+                urls_found.extend(self.url_extractor.extract_from_text(text))
+        except Exception as exc:
+            self._record_engine_failure(result, "text", exc)
+
+        # --- URL hand-off to the existing url engine -----------------------
+        try:
+            if urls_found:
+                handoff = self.url_extractor.hand_off(urls_found)
+                url_risk = 0
+                for entry in handoff:
+                    if not entry.get("flagged"):
+                        continue
+                    weight = URL_FLAG_WEIGHT["high"] if entry["existing_risk"] >= 25 else URL_FLAG_WEIGHT["medium"]
+                    if url_risk + weight > URL_RISK_CAP:
+                        weight = max(0, URL_RISK_CAP - url_risk)
+                    url_risk += weight
+                    result.indicators.append(
+                        {
+                            "type": "attachment_url_flagged",
+                            "severity": "high" if entry["existing_risk"] >= 25 else "medium",
+                            "url": entry["url"],
+                            "existing_risk": entry["existing_risk"],
+                            "description": f"URL flagged by the shared url engine "
+                            f"(risk {entry['existing_risk']}): {entry['url']}",
+                        }
+                    )
+                    if url_risk >= URL_RISK_CAP:
+                        break
+                result.risk_score += url_risk
+        except Exception as exc:
+            self._record_engine_failure(result, "url", exc)
+
+        # --- Verdict: never downgrade a forced Level-2 verdict -------------
+        computed = self._verdict_for_risk(result.risk_score)
+        if _VERDICT_SEVERITY[computed] > _VERDICT_SEVERITY[result.verdict]:
+            result.verdict = computed
+        return result
 
     @staticmethod
     def _record_engine_failure(result: ScanResult, engine: str, exc: Exception) -> None:

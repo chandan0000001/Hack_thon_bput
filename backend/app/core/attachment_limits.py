@@ -29,6 +29,13 @@ MAX_EXTRACTED_TOTAL_SIZE = 50_000_000
 # archive is treated as a suspected zip bomb and not extracted.
 MAX_ARCHIVE_COMPRESSION_RATIO = 200
 
+# Content analysis (Phase 3): PDF page-processing cap and per-attachment URL cap.
+MAX_PAGES_IN_PDF = 100
+MAX_URLS_PER_ATTACHMENT = 50
+
+# Content analysis (Phase 3): text-extraction cap (chars) before analysis.
+MAX_TEXT_EXTRACT_CHARS = 200_000
+
 # Streaming chunk size for downloads and hashing (64 KB).
 STREAM_CHUNK_SIZE = 65_536
 
