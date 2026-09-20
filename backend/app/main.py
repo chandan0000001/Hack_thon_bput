@@ -45,10 +45,12 @@ from app.api import (
 from app.ai.key_rotator import get_key_rotator
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
+from app.core.logging_config import configure_structured_logging
+from app.core.request_context import ClientContextMiddleware
 from app.db.session import init_db
 
 logger = logging.getLogger("cyberguard")
-logging.basicConfig(level=logging.INFO)
+configure_structured_logging()
 
 settings = get_settings()
 
@@ -108,6 +110,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(ClientContextMiddleware)
 
 # Health, readiness, and metrics probes (root & API prefix)
 app.include_router(routes_health.router)

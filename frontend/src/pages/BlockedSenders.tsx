@@ -3,6 +3,7 @@ import { AlertTriangle, Ban, Clock, Loader2, RefreshCw, ShieldCheck, ShieldOff, 
 import PageHeader from '../components/common/PageHeader';
 import * as api from '../services/api';
 import type { BlockedSender, TrustedSender } from '../types';
+import { formatLocal } from '../utils/datetime';
 
 const STATUS_STYLES: Record<string, string> = {
   blocked: 'bg-red-500/10 text-red-400 ring-1 ring-red-500/30',
@@ -11,9 +12,7 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 function formatWhen(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? '—' : d.toLocaleString();
+  return formatLocal(iso);
 }
 
 export default function BlockedSenders() {

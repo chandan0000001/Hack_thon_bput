@@ -10,6 +10,7 @@ import DataTable, { type Column } from '../components/common/DataTable';
 import EmptyState from '../components/common/EmptyState';
 import { PanelSkeleton } from '../components/common/LoadingSkeleton';
 import { MODULE_LABELS } from '../constants';
+import { formatLocal } from '../utils/datetime';
 
 const STATUS_OPTIONS: (ActionExecutionStatus | '')[] = [
   '', 'pending', 'success', 'rejected', 'released', 'unblocked', 'skipped', 'failed',
@@ -72,7 +73,7 @@ export default function ActionLog() {
     { key: 'severity', header: 'Severity', render: (e) => <SeverityBadge severity={e.severity} />, sortValue: (e) => e.severity },
     { key: 'mode', header: 'Mode', render: (e) => <span className="text-xs text-zinc-500">{e.execution_mode}</span>, sortValue: (e) => e.execution_mode },
     { key: 'trigger', header: 'Triggered By', render: (e) => <span className="font-mono text-[11px] text-zinc-500">{e.triggered_by}{e.triggered_by_id ? ` · ${e.triggered_by_id}` : ''}</span> },
-    { key: 'created', header: 'Timestamp', render: (e) => <span className="text-xs text-zinc-500">{new Date(e.created_at).toLocaleString()}</span>, sortValue: (e) => e.created_at },
+    { key: 'created', header: 'Timestamp', render: (e) => <span className="text-xs text-zinc-500">{formatLocal(e.created_at)}</span>, sortValue: (e) => e.created_at },
   ];
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
@@ -161,7 +162,7 @@ export default function ActionLog() {
                     <p className="text-zinc-300">
                       <span className="text-zinc-500">{selected.status === 'rejected' ? 'Reviewed by' : 'Approved by'}:</span>{' '}
                       <span className="font-mono">{selected.approved_by}</span>
-                      {selected.approved_at ? ` · ${new Date(selected.approved_at).toLocaleString()}` : ''}
+                      {selected.approved_at ? ` · ${formatLocal(selected.approved_at)}` : ''}
                     </p>
                   )}
                 </div>

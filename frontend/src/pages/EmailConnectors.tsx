@@ -18,6 +18,7 @@ import {
 import PageHeader from '../components/common/PageHeader';
 import VerboseResultPanel from '../components/common/VerboseResultPanel';
 import * as api from '../services/api';
+import { formatLocal } from '../utils/datetime';
 import type {
   ConnectorSettings,
   EmailConnectorAccount,
@@ -55,9 +56,7 @@ const PROVIDER_STATUS_STYLES: Record<string, string> = {
 };
 
 function formatWhen(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? '—' : d.toLocaleString();
+  return formatLocal(iso);
 }
 
 export default function EmailConnectors() {

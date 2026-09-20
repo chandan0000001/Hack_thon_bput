@@ -17,6 +17,7 @@ import VerboseResultPanel, { SEVERITY_STYLES } from '../components/common/Verbos
 import * as api from '../services/api';
 import { useAuthStore } from '../store/authStore';
 import type { QuarantineReview, QuarantinedItem } from '../types';
+import { formatLocal } from '../utils/datetime';
 import {
   useRealtimeEmails,
   shouldAutoScrollToTop,
@@ -31,9 +32,7 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 function formatWhen(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? '—' : d.toLocaleString();
+  return formatLocal(iso);
 }
 
 export default function QuarantineQueue() {
@@ -443,7 +442,7 @@ export default function QuarantineQueue() {
                   <span className="font-mono text-xs text-zinc-400">
                     {review.message.sender_email} · status{' '}
                     <span className="text-zinc-200">{review.item.status}</span>
-                    {review.item.expires_at ? ` · expires ${new Date(review.item.expires_at).toLocaleString()}` : ' · manual expiry'}
+                    {review.item.expires_at ? ` · expires ${formatLocal(review.item.expires_at)}` : ' · manual expiry'}
                   </span>
                   {review.available_actions.connector_ready ? (
                     <span className="flex items-center gap-1 rounded bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] text-emerald-400 ring-1 ring-emerald-500/30">
@@ -498,7 +497,7 @@ export default function QuarantineQueue() {
                             <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">{event.operation_detail}</p>
                           )}
                           <p className="mt-0.5 font-mono text-[10px] text-zinc-600">
-                            {event.created_at ? new Date(event.created_at).toLocaleString() : '—'}
+                            {event.created_at ? formatLocal(event.created_at) : '—'}
                           </p>
                         </div>
                       </div>
