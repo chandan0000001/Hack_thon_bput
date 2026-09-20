@@ -35,6 +35,8 @@ from app.db.session import get_db
 from app.schemas.alerts import AlertResponse
 from app.services.account_takeover_detector import analyze_auth_log_heuristics
 from app.services.alert_service import create_alert
+from app.core.config import get_settings
+from app.services import auth_verifier
 from app.services.deepfake_detector import analyze_media
 from app.services.impersonation_detector import analyze_impersonation_heuristics
 from app.services.ml_inference import score_with_ml
@@ -56,6 +58,11 @@ class EmailAnalysisRequest(BaseModel):
     sender: str = Field(min_length=1)
     subject: str
     body: str
+    # AUTH-VERIFY: optional raw SMTP header block. Manual/paste scans carry no
+    # SMTP headers, so SPF/DKIM/DMARC can only be verified when the caller
+    # supplies them; absence yields an info indicator + response warning,
+    # never an auth pass.
+    raw_headers: Optional[str] = None
     target_user: Optional[str] = None
 
 
@@ -119,8 +126,12 @@ async def _run_analysis_pipeline(
     indicators: list[dict],
     system_prompt: str,
     user_prompt_builder: Any,
+    min_score: int = 0,
 ) -> Any:
-    """Shared async detection pipeline: persist event, score, explain, alert."""
+    """Shared async detection pipeline: persist event, score, explain, alert.
+
+    min_score (AUTH-VERIFY): floor for the hybrid score so independent
+    verification can raise, never lower, the final risk."""
     event_id = await _create_analysis_event(
         db,
         tenant=tenant,
@@ -132,6 +143,7 @@ async def _run_analysis_pipeline(
 
     # Hybrid engine: heuristic + ML blend
     _heuristic_score, hybrid_score, _ml_probability = score_with_ml(indicators)
+    hybrid_score = max(int(hybrid_score), int(min_score))
     severity = get_severity(hybrid_score)
 
     if callable(user_prompt_builder):
@@ -177,7 +189,35 @@ async def analyze_email(
         subject=payload.subject,
         body=payload.body,
     )
-    return await _run_analysis_pipeline(
+
+    # AUTH-VERIFY (manual path): verify SPF/DKIM/DMARC only when raw_headers
+    # were supplied; absence is flagged, never treated as pass.
+    auth_warnings: list[str] = []
+    min_score = 0
+    if get_settings().AUTH_VERIFY_ENABLED:
+        try:
+            auth_section = await asyncio.to_thread(
+                auth_verifier.manual_auth_section,
+                payload.sender,
+                payload.body,
+                payload.raw_headers,
+            )
+            indicators.extend(auth_section["indicators"])
+            auth_warnings = auth_section["warnings"]
+            verification = auth_section["verification"]
+            raw_data["auth_verification"] = {
+                "source": verification.get("source"),
+                "risk_score": int(verification.get("risk_score") or 0),
+                "spf": (verification.get("spf") or {}).get("status"),
+                "dkim": (verification.get("dkim") or {}).get("status"),
+                "dmarc": (verification.get("dmarc") or {}).get("status"),
+            }
+            if verification.get("source") == "independent":
+                min_score = int(verification.get("risk_score") or 0)
+        except Exception as exc:
+            logger.warning("Manual-path auth verification failed: %s", exc)
+
+    alert = await _run_analysis_pipeline(
         db,
         tenant,
         event_type="phishing_email",
@@ -187,7 +227,18 @@ async def analyze_email(
         indicators=indicators,
         system_prompt=PHISHING_SYSTEM_PROMPT,
         user_prompt_builder=format_phishing_user_prompt,
+        min_score=min_score,
     )
+
+    if auth_warnings:
+        suffix = " " + " ".join(auth_warnings)
+        alert.explanation = ((alert.explanation or "") + suffix).strip()
+        alert.summary = ((alert.summary or "") + " " + auth_warnings[0]).strip()[:250]
+        await db.commit()
+    response = AlertResponse.model_validate(alert)
+    if auth_warnings:
+        response.warnings = auth_warnings
+    return response
 
 
 @router.post("/url", response_model=AlertResponse)

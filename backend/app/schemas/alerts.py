@@ -53,6 +53,9 @@ class AlertResponse(BaseModel):
     explanation: Optional[str] = None
     mitre: list = []
     recommended_actions: list[RecommendedActionResponse] = []
+    # AUTH-VERIFY: manual-path warnings (e.g. auth cannot be verified without
+    # message headers). Additive, default-empty so existing clients are safe.
+    warnings: list[str] = []
     target_user: Optional[str] = None
     target_service: Optional[str] = None
     source_ip: Optional[str] = None

@@ -22,6 +22,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# AUTH-VERIFY: keep the harness fully offline/deterministic — independent DNS
+# verification degrades to "unavailable" + mx_parsed fallback. Suite 36
+# overrides with injected fake resolvers where it exercises verification.
+os.environ.setdefault("DNS_OFFLINE", "true")
+
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
@@ -575,6 +580,271 @@ async def run_tests():
     from test_attachment_integration import run_attachment_integration_tests
 
     await run_attachment_integration_tests(runner)
+
+    # -----------------------------------------------------------------------
+    # 36. AUTH-VERIFY — independent SPF/DKIM/DMARC verification
+    # -----------------------------------------------------------------------
+    print("\n[Suite 36] AUTH-VERIFY — Independent Authentication Verification")
+    from pytest import MonkeyPatch
+
+    from app.services import auth_verifier as _auth_mod
+    from app.services.auth_verifier import manual_auth_section, verify_all, verify_or_parse, verify_spf
+    from app.services.dns_resolver import DNSResolver, DNSUnavailable
+
+    def _fake_resolver(records=None, offline=False, **kwargs):
+        table = {(q.lower(), r): v for (q, r), v in (records or {}).items()}
+        counter = {"calls": 0}
+
+        def transport(qname, rdtype):
+            counter["calls"] += 1
+            return list(table.get((qname.lower().rstrip("."), rdtype.upper()), []))
+
+        resolver = DNSResolver(offline=offline, transport=transport, **kwargs)
+        resolver.call_counter = counter
+        return resolver
+
+    SPF_REC = {("example.com", "TXT"): ['"v=spf1 ip4:203.0.113.0/24 -all"']}
+    DMARC_REJECT = {("_dmarc.example.com", "TXT"): ['"v=DMARC1; p=reject"']}
+
+    async def run_auth_verification_tests() -> None:
+        _pem, _pub_b64 = None, None
+        try:
+            import base64 as _b64
+            import dkim as _dkim
+            from cryptography.hazmat.primitives import serialization as _ser
+            from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+
+            _key = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            _pem = _key.private_bytes(
+                _ser.Encoding.PEM, _ser.PrivateFormat.TraditionalOpenSSL, _ser.NoEncryption()
+            )
+            _pub_b64 = _b64.b64encode(
+                _key.public_key().public_bytes(
+                    _ser.Encoding.DER, _ser.PublicFormat.SubjectPublicKeyInfo
+                )
+            ).decode()
+        except Exception as exc:
+            runner.skip("dkim key generation", f"deps unavailable: {exc}")
+
+        # 1 spf pass
+        r = _fake_resolver(SPF_REC)
+        res = verify_spf("bounce@example.com", "203.0.113.10", "example.com", r)
+        runner.assert_true(res["status"] == "pass", "spf: ip4 match verifies pass (mocked DNS)", str(res))
+        # 2 spf fail -> +30
+        r = _fake_resolver(SPF_REC)
+        out = verify_all({"sender": "ceo@example.com", "headers": {}, "sender_ip": "198.51.100.9"}, r)
+        runner.assert_true(
+            out["spf"]["status"] == "fail" and out["risk_score"] == 30 and bool(out["spf"]["reason"]),
+            "spf: non-matching IP fails with reason and +30 risk", str(out["spf"]),
+        )
+        # 3 spf softfail -> +15
+        r = _fake_resolver({("example.com", "TXT"): ['"v=spf1 ip4:203.0.113.0/24 ~all"']})
+        out = verify_all({"sender": "ceo@example.com", "headers": {}, "sender_ip": "198.51.100.9"}, r)
+        runner.assert_true(out["spf"]["status"] == "softfail" and out["risk_score"] == 15,
+                           "spf: softfail scores +15", str(out["spf"]))
+        # 4 no sender IP -> unavailable, risk 0, info indicator
+        r = _fake_resolver(SPF_REC)
+        out = verify_all({"sender": "ceo@example.com", "headers": {}, "body_text": "hi"}, r)
+        runner.assert_true(
+            out["spf"]["status"] == "unavailable" and out["risk_score"] == 0
+            and any(i["type"] == "auth_spf_unavailable" and i["severity"] == "info" for i in out["indicators"]),
+            "spf: missing sender IP => unavailable, risk 0, info indicator", str(out["spf"]),
+        )
+
+        # 5-6 dkim pass / tamper-fail
+        if _pem is not None:
+            import dkim as _dkim
+
+            message = (
+                b"From: alice@example.com\r\nTo: bob@example.org\r\n"
+                b"Subject: test\r\nDate: Sun, 20 Sep 2026 12:00:00 +0000\r\n\r\nHello world.\r\n"
+            )
+            sig = _dkim.DKIM(message).sign(
+                b"sel", b"example.com", _pem,
+                include_headers=[b"From", b"To", b"Subject", b"Date"],
+            )
+            signed = sig + message
+            tampered = signed.replace(b"Hello world.", b"Hello worm.")
+            dk = {("sel._domainkey.example.com", "TXT"): [f'"v=DKIM1; k=rsa; p={_pub_b64}"']}
+            r = _fake_resolver({**SPF_REC, **DMARC_REJECT, **dk})
+            out = verify_all({"sender": "alice@example.com", "raw_message": signed, "sender_ip": "203.0.113.10"}, r)
+            runner.assert_true(
+                out["dkim"]["status"] == "pass" and out["dmarc"]["status"] == "pass" and out["risk_score"] == 0,
+                "dkim: signed message verifies pass and aligns DMARC (risk 0)",
+                f"dkim={out['dkim']} dmarc={out['dmarc']}",
+            )
+            r = _fake_resolver({**SPF_REC, **DMARC_REJECT, **dk})
+            out = verify_all({"sender": "alice@example.com", "raw_message": tampered, "sender_ip": "203.0.113.10"}, r)
+            runner.assert_true(
+                out["dkim"]["status"] == "fail" and out["risk_score"] == 25,
+                "dkim: tampered body fails verification (+25, SPF/DMARC stay aligned)",
+                str(out["dkim"]),
+            )
+        else:
+            runner.skip("dkim sign/verify pass + tamper-fail", "dkimpy/cryptography unavailable")
+
+        # 7 dmarc reject fail + alignment fail -> +55
+        r = _fake_resolver(DMARC_REJECT)
+        out = verify_all({"sender": "ceo@example.com", "headers": {}, "sender_ip": "198.51.100.9"}, r)
+        runner.assert_true(
+            out["dmarc"]["status"] == "fail" and out["dmarc"]["policy"] == "reject" and out["risk_score"] == 55,
+            "dmarc: p=reject fail + alignment fail => +35+20", str(out["dmarc"]),
+        )
+        # 8 dmarc p=none fail -> +10
+        r = _fake_resolver({("_dmarc.example.com", "TXT"): ['"v=DMARC1; p=none"']})
+        out = verify_all({"sender": "ceo@example.com", "headers": {}, "sender_ip": "198.51.100.9"}, r)
+        runner.assert_true(out["dmarc"]["status"] == "fail" and out["risk_score"] == 10,
+                           "dmarc: p=none fail scores +10", str(out["dmarc"]))
+
+        # 9 all-pass: risk 0 + pass!=safe note (needs dkim; SPF alone aligns too)
+        if _pem is not None:
+            r = _fake_resolver({**SPF_REC, **DMARC_REJECT})
+            out = verify_all({"sender": "alice@example.com", "headers": {}, "sender_ip": "203.0.113.10"}, r)
+            runner.assert_true(
+                out["risk_score"] == 0 and "does not prove benign" in out.get("explanation", ""),
+                "all-pass: risk 0 with 'pass != safe' caveat in explanation", out.get("explanation", ""),
+            )
+        else:
+            runner.skip("all-pass pass!=safe caveat", "spf-only pass still aligns DMARC; skipped without dkim")
+
+        # 10 offline mode: zero DNS calls, all unavailable, three info indicators
+        r = _fake_resolver({**SPF_REC, **DMARC_REJECT}, offline=True)
+        out = verify_all({"sender": "ceo@example.com", "headers": {}, "body_text": "hi"}, r)
+        runner.assert_true(
+            out["source"] == "unavailable" and out["risk_score"] == 0 and r.call_counter["calls"] == 0
+            and [i["type"] for i in out["indicators"] if i["severity"] == "info"].count("") == 0
+            and sorted(i["type"] for i in out["indicators"] if i["severity"] == "info")
+            == ["auth_dkim_unavailable", "auth_dmarc_unavailable", "auth_spf_unavailable"],
+            "offline: all three unavailable, risk 0, three info indicators, zero DNS calls",
+            str(out["indicators"]),
+        )
+        # 11 cache: second identical lookup hits cache
+        r = _fake_resolver({("example.com", "TXT"): ['"v=spf1 -all"']})
+        r.resolve("example.com", "TXT")
+        r.resolve("example.com", "TXT")
+        runner.assert_true(r.call_counter["calls"] == 1, "dns: second identical lookup served from cache",
+                           f"calls={r.call_counter['calls']}")
+        # 12 circuit breaker: 5 failures -> open without DNS
+        def _broken(qname, rdtype):
+            raise ConnectionError("resolver down")
+
+        r = DNSResolver(offline=False, transport=_broken, cb_failure_threshold=5, cb_window_s=60, cb_open_s=120)
+        raised = 0
+        for _ in range(5):
+            try:
+                r.resolve("example.com", "TXT")
+            except DNSUnavailable:
+                raised += 1
+        calls_after_5 = r.transport_calls
+        breaker_msg = ""
+        try:
+            r.resolve("example.com", "TXT")
+        except DNSUnavailable as exc:
+            breaker_msg = str(exc)
+        runner.assert_true(
+            raised == 5 and r.transport_calls == calls_after_5 and "circuit breaker" in breaker_msg,
+            "dns: circuit breaker opens after 5 failures, next call fails without DNS",
+            breaker_msg,
+        )
+        # 13 manual path: without raw_headers -> warning; with raw_headers -> verification runs
+        monkeypatch = MonkeyPatch()
+        try:
+            # The runner cleared its shared auth overrides after Suite 4, so
+            # seed a dedicated user/org (RLS-safe, like Suite 2) and install
+            # fresh overrides for these two requests.
+            from app.core.security import CurrentUser, TenantContext, get_current_user, get_tenant_context
+            from app.db.admin import _get_admin_session_maker
+            from app.db.models import Organization, OrganizationMember
+            from app.db.session import current_user_id as _current_user_id
+
+            _uid = f"authverify-{os.urandom(4).hex()}"
+            _admin_maker = _get_admin_session_maker()
+            async with _admin_maker() as _db:
+                _db.add(User(id=_uid, email=f"{_uid}@cyberguard.test", full_name="Auth Verify Tester"))
+                _db.add(Organization(
+                    id=f"org-{_uid}", name="AuthVerify Org", slug=f"personal-{_uid}",
+                    is_personal=True, owner_id=_uid,
+                ))
+                _db.add(OrganizationMember(
+                    id=f"mem-{os.urandom(12).hex()}", organization_id=f"org-{_uid}",
+                    user_id=_uid, role="admin",
+                ))
+                await _db.commit()
+
+            _auth_user = CurrentUser(id=_uid, email=f"{_uid}@cyberguard.test", full_name="Auth Verify Tester")
+            _org_id = f"org-{_uid}"
+
+            async def _mock_user():
+                _current_user_id.set(_uid)
+                return _auth_user
+
+            async def _mock_tenant():
+                # Stamp the RLS identity here: overriding get_tenant_context
+                # short-circuits the get_current_user chain, so this is the
+                # only hook guaranteed to run before any transaction begins.
+                current_user_id.set(_uid)
+                return TenantContext(
+                    organization_id=_org_id, organization_name="AuthVerify Org",
+                    role="admin", is_single_user=True, user_id=_uid, owner_user_id=_uid,
+                )
+
+            app.dependency_overrides[get_current_user] = _mock_user
+            app.dependency_overrides[get_tenant_context] = _mock_tenant
+
+            transport36 = ASGITransport(app=app)
+            async with AsyncClient(transport=transport36, base_url="http://test") as client36:
+                resp = await client36.post(
+                    "/api/v1/analysis/email",
+                    json={"sender": "ceo@totally-legit-biz.example", "subject": "Urgent", "body": "wire transfer"},
+                )
+                data = resp.json() if resp.status_code == 200 else {}
+                runner.assert_true(
+                    resp.status_code == 200
+                    and any(i.get("type") == "auth_headers_missing" for i in data.get("indicators", []))
+                    and bool(data.get("warnings"))
+                    and "no message headers" in (data.get("warnings") or [""])[0],
+                    "manual: scan without raw_headers yields auth_headers_missing + response warning flag",
+                    f"status={resp.status_code} warnings={data.get('warnings')}",
+                )
+                r = _fake_resolver({**SPF_REC, **DMARC_REJECT})
+                monkeypatch.setattr(_auth_mod, "get_default_resolver", lambda: r)
+                resp2 = await client36.post(
+                    "/api/v1/analysis/email",
+                    json={
+                        "sender": "ceo@example.com",
+                        "subject": "Invoice",
+                        "body": "please pay",
+                        "raw_headers": (
+                            "Return-Path: <bounce@example.com>\r\n"
+                            "Received: from mail.example.com (mail.example.com [198.51.100.9]) by mx.test\r\n"
+                        ),
+                    },
+                )
+            data2 = resp2.json() if resp2.status_code == 200 else {}
+            runner.assert_true(
+                resp2.status_code == 200
+                and any(i.get("type") == "auth_spf_fail" for i in data2.get("indicators", []))
+                and data2.get("warnings") == [],
+                "manual: with raw_headers the independent verification runs (auth_spf_fail surfaced)",
+                f"status={resp2.status_code} types={[i.get('type') for i in data2.get('indicators', [])]}",
+            )
+        finally:
+            monkeypatch.undo()
+            app.dependency_overrides.clear()
+            current_user_id.set(None)
+        # 14 realtime fallback: independent unavailable + parsed results => mx_parsed
+        out = verify_or_parse(
+            {"spf": "fail", "dkim": "pass", "dmarc": "fail"},
+            {"sender": "ceo@example.com", "headers": {}},
+            _fake_resolver({}, offline=True),
+        )
+        runner.assert_true(
+            out["source"] == "mx_parsed" and out["risk_score"] == 65,
+            "realtime: offline verification falls back to mx_parsed with parsed scores (30+35)",
+            str(out["source"]),
+        )
+
+    await run_auth_verification_tests()
 
     return runner.report()
 

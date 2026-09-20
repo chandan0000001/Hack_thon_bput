@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 import time
@@ -12,6 +13,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.metrics import (
     email_analysis_jobs_total,
     job_processing_duration_seconds,
@@ -19,6 +21,7 @@ from app.core.metrics import (
 )
 from app.db.models import GmailAccount, ProcessedEmail, ScanResult
 from app.services.attachment_scanner import AttachmentScanner
+from app.services.auth_verifier import verify_or_parse
 from app.services.impersonation_detector import analyze_impersonation_heuristics
 from app.services.ml_inference import (
     ml_indicator,
@@ -299,32 +302,63 @@ async def process_email_analysis(
     impers_score = calculate_score(impers_indicators) / 100.0
 
     # --- D. Authentication Signals (SPF/DKIM/DMARC) ---
-    auth_indicators: list[dict[str, Any]] = []
-    spf_lower = spf.lower()
-    dmarc_lower = dmarc.lower()
-    dkim_lower = dkim.lower()
+    # AUTH-VERIFY: run INDEPENDENT verification (DNS SPF, DKIM crypto, DMARC
+    # policy+alignment). When verification is unavailable (offline mode, DNS
+    # down, missing deps), verify_or_parse falls back to the MX-parsed
+    # Authentication-Results from fetch time (source="mx_parsed") — parse-only
+    # results are never presented as independently verified.
+    auth_verification: Optional[dict[str, Any]] = None
+    if get_settings().AUTH_VERIFY_ENABLED:
+        try:
+            auth_verification = await asyncio.to_thread(
+                verify_or_parse,
+                dict(signals),
+                {"sender": sender, "headers": headers, "body_text": body_text},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Auth verification crashed for processed_email %s: %s", processed_email_id, exc
+            )
 
-    if "fail" in spf_lower:
-        auth_indicators.append({
-            "type": "spf_fail",
-            "severity": "high",
-            "description": f"Sender Policy Framework (SPF) check failed ({spf})",
-            "weight": 15,
-        })
-    if "fail" in dmarc_lower:
-        auth_indicators.append({
-            "type": "dmarc_fail",
-            "severity": "high",
-            "description": f"DMARC authentication failed ({dmarc})",
-            "weight": 15,
-        })
-    if "fail" in dkim_lower:
-        auth_indicators.append({
-            "type": "dkim_fail",
-            "severity": "medium",
-            "description": f"DKIM digital signature failed ({dkim})",
-            "weight": 10,
-        })
+    auth_indicators: list[dict[str, Any]] = []
+    auth_source = "parse_only"
+    if auth_verification is not None:
+        auth_source = str(auth_verification.get("source") or "unavailable")
+        auth_indicators = list(auth_verification.get("indicators") or [])
+        if auth_verification.get("explanation"):
+            auth_indicators.append({
+                "type": "auth_verification_note",
+                "severity": "info",
+                "weight": 0,
+                "description": str(auth_verification["explanation"]),
+            })
+    else:
+        # Verification disabled or crashed: keep the legacy parse-only rules.
+        spf_lower = spf.lower()
+        dmarc_lower = dmarc.lower()
+        dkim_lower = dkim.lower()
+
+        if "fail" in spf_lower:
+            auth_indicators.append({
+                "type": "spf_fail",
+                "severity": "high",
+                "description": f"Sender Policy Framework (SPF) check failed ({spf})",
+                "weight": 15,
+            })
+        if "fail" in dmarc_lower:
+            auth_indicators.append({
+                "type": "dmarc_fail",
+                "severity": "high",
+                "description": f"DMARC authentication failed ({dmarc})",
+                "weight": 15,
+            })
+        if "fail" in dkim_lower:
+            auth_indicators.append({
+                "type": "dkim_fail",
+                "severity": "medium",
+                "description": f"DKIM digital signature failed ({dkim})",
+                "weight": 10,
+            })
 
     # 6. Risk Score Aggregation & Classification
     all_heuristics = (
@@ -334,6 +368,13 @@ async def process_email_analysis(
         + auth_indicators
     )
     combined_heur_score = calculate_score(all_heuristics) / 100.0
+
+    # AUTH-VERIFY: the independent verification score can RAISE the heuristic
+    # stage but never lower it (monotonic merge).
+    if auth_verification is not None and auth_source == "independent":
+        auth_risk = int(auth_verification.get("risk_score") or 0)
+        if auth_risk > 0:
+            combined_heur_score = max(combined_heur_score, min(1.0, auth_risk / 100.0))
 
     all_ml_probs: list[float] = []
     if ml_email_prob is not None:
@@ -408,6 +449,16 @@ async def process_email_analysis(
 
     top_indicators = indicators_summary[:10]
 
+    auth_verification_summary: Optional[dict[str, Any]] = None
+    if auth_verification is not None:
+        auth_verification_summary = {
+            "source": auth_source,
+            "risk_score": int(auth_verification.get("risk_score") or 0),
+            "spf": (auth_verification.get("spf") or {}).get("status"),
+            "dkim": (auth_verification.get("dkim") or {}).get("status"),
+            "dmarc": (auth_verification.get("dmarc") or {}).get("status"),
+        }
+
     signals_dict = dict(signals)
     signals_dict.update({
         "text_model": round(ml_email_score, 4),
@@ -416,6 +467,7 @@ async def process_email_analysis(
         "spf": spf,
         "dkim": dkim,
         "dmarc": dmarc,
+        "auth_verification": auth_verification_summary,
         "impersonation": round(impers_score, 4),
         "indicators_summary": indicators_summary,
     })
@@ -443,7 +495,13 @@ async def process_email_analysis(
         "phishing": {"score": text_score, "indicators": text_indicators},
         "url": {"score": url_score, "indicators": url_indicators, "urls_analyzed": len(urls)},
         "impersonation": {"score": impers_score, "indicators": impers_indicators},
-        "auth": {"spf": spf, "dkim": dkim, "dmarc": dmarc, "indicators": auth_indicators},
+        "auth": {
+            "spf": spf,
+            "dkim": dkim,
+            "dmarc": dmarc,
+            "indicators": auth_indicators,
+            "verification": auth_verification_summary,
+        },
         "attachments": {
             "scanned": len(attachments_meta),
             "results": [

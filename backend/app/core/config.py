@@ -114,6 +114,19 @@ class Settings(BaseSettings):
     RETRY_MAX_RETRIES: int = 5
     RETRY_JITTER_ENABLED: bool = True
 
+    # --- AUTH-VERIFY: independent SPF/DKIM/DMARC verification ---
+    AUTH_VERIFY_ENABLED: bool = True
+    DNS_TIMEOUT_S: int = 3
+    DNS_CACHE_MAX: int = 512
+    # Offline mode: independent verification fails fast with zero network I/O
+    # (used by the test harness and air-gapped deployments).
+    DNS_OFFLINE: bool = False
+    SPF_MAX_DNS_LOOKUPS: int = 10
+    # Per-domain circuit breaker for the DNS layer.
+    DNS_CB_FAILURE_THRESHOLD: int = 5
+    DNS_CB_WINDOW_S: int = 60
+    DNS_CB_OPEN_S: int = 120
+
 
     # --- Email connectors (Phase 1-2): Gmail only; own Google OAuth client ---
     GOOGLE_GMAIL_CLIENT_ID: str = ""

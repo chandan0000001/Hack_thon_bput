@@ -29,6 +29,10 @@ for _key in (
     "GEMINI_API_KEY", "GEMINI_API_KEYS", "GOOGLE_API_KEY",
 ):
     os.environ.setdefault(_key, "")
+# AUTH-VERIFY: keep DNS verification fully offline in the harness (zero
+# network I/O; independent checks degrade to "unavailable" + mx_parsed
+# fallback). Individual auth tests override with injected fake resolvers.
+os.environ.setdefault("DNS_OFFLINE", "true")
 
 EVAL_USER_TOKEN = "demo-eval@cyberguard.local"
 EVAL_USER_EMAIL = "eval@cyberguard.local"

@@ -52,6 +52,11 @@ attachments = [
     "oletools>=0.60.0",
     "beautifulsoup4>=4.12.0",
 ]
+auth = [
+    "dnspython>=2.6.0",
+    "dkimpy>=1.1.0",
+    "pyspf>=2.0.14",
+]
 
 [dependency-groups]
 dev = [
@@ -66,6 +71,10 @@ dev = [
     "pypdf>=4.0.0",
     "oletools>=0.60.0",
     "beautifulsoup4>=4.12.0",
+    # AUTH-VERIFY: mirrored from the `auth` extra so `uv run` keeps them
+    "dnspython>=2.6.0",
+    "dkimpy>=1.1.0",
+    "pyspf>=2.0.14",
 ]
 
 [tool.pytest.ini_options]
