@@ -1031,6 +1031,14 @@ async def run_tests():
 
     await run_se_pattern_tests()
 
+    # -----------------------------------------------------------------------
+    # 38. ORG-FIX-1 — DB-level RLS tenant isolation (no permissive bypass)
+    # -----------------------------------------------------------------------
+    print("\n[Suite 38] ORG-FIX-1 — DB-Level RLS Tenant Isolation")
+    from test_org_rls_isolation import run_org_rls_isolation_tests
+
+    await run_org_rls_isolation_tests(runner)
+
     return runner.report()
 
 

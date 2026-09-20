@@ -244,7 +244,10 @@ async def _ensure_schema_if_privileged(schema: str) -> None:
                     );
                 $$ LANGUAGE sql STABLE;
             """))
-            # Ensure cyberguard_api role exists with NOBYPASSRLS for local PostgreSQL
+            # Ensure cyberguard_api role exists with NOBYPASSRLS for local PostgreSQL.
+            # The password is force-synced right after (bind parameters cannot
+            # live inside a DO block) from settings.APP_ROLE_PASSWORD — one
+            # source of truth shared with the RLS verification harness.
             await conn.execute(text("""
                 DO $$
                 BEGIN
@@ -253,6 +256,19 @@ async def _ensure_schema_if_privileged(schema: str) -> None:
                     END IF;
                 END $$;
             """))
+            # Force-sync the password so an existing role can never drift from
+            # config. Utility statements take no bind parameters and a failure
+            # must not abort the surrounding bootstrap transaction, hence the
+            # inline (quote-escaped) literal inside a savepoint.
+            try:
+                async with conn.begin_nested():
+                    escaped = settings.APP_ROLE_PASSWORD.replace("'", "''")
+                    await conn.execute(text(
+                        "ALTER ROLE cyberguard_api WITH LOGIN NOBYPASSRLS "
+                        f"PASSWORD '{escaped}'"
+                    ))
+            except Exception as exc:  # noqa: BLE001 - managed roles may forbid ALTER
+                logger.info("could not sync cyberguard_api password (managed role?): %s", exc)
             # Grant privileges to cyberguard_api
             await conn.execute(text(f'GRANT USAGE, CREATE ON SCHEMA "{schema}" TO cyberguard_api;'))
             await conn.execute(text(f'GRANT ALL ON ALL TABLES IN SCHEMA "{schema}" TO cyberguard_api;'))

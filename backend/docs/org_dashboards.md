@@ -113,7 +113,11 @@ tracked for ORG-5 (docs/hardening).
 Via `cyberguard.org_member_role()` (ORG-1 function): SELECT for members,
 INSERT for admins (gateway ingest runs under the owner identity), UPDATE for
 analysts+, DELETE for admins. Suite 18 asserts cross-org API (403) and
-raw-RLS (0 rows) isolation.
+raw-RLS (0 rows) isolation. Since migration 0016 (ORG-FIX-1) this isolation
+is genuinely DB-enforced for the app role too — the baseline's permissive
+`org_log_events_app_all USING (true)` policy (which OR-combined above every
+gated policy) is dropped; gateway key validation goes through the narrow
+SECURITY DEFINER `cyberguard.validate_org_api_key(p_hash)` instead.
 
 ## Frontend routes
 

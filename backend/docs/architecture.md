@@ -159,11 +159,26 @@ org-scoped).
   keys on `id`), with `WITH CHECK` on writes.
 - *Shared read tables* (`response_catalog`, `organizations`): SELECT for the
   Supabase `authenticated` role via `current_setting('request.role', true) =
-  'authenticated'`, plus full access for `cyberguard_api` (startup seeding,
-  org resolution).
+  'authenticated'`. For `cyberguard_api`, `response_catalog` keeps the
+  baseline shared policy (public reference data, readable pre-identity for
+  seeding); `organizations` is membership-gated since migration 0016
+  (ORG-FIX-1): SELECT/UPDATE/DELETE require `org_member_role(id,
+  app.user_id)`, INSERT requires `owner_id = app.user_id`.
 - *Child/join tables* (`recommended_actions`, `incident_alerts`,
   `incident_events`, `organization_members`): ownership derived from the
   parent row via `EXISTS` predicates.
+- *Org tables* (`organization_api_keys`, `organization_settings`,
+  `org_log_events`, `org_mail_servers*`, `org_notification_*`): every
+  permissive `*_app_all`/`*_app_select` policy `TO cyberguard_api` was
+  dropped by migration 0016 (permissive policies OR-combine, so the old
+  `USING (true)` fallback silently defeated all gated policies). Row access
+  now flows exclusively through the membership-gated policies of
+  0008/0009/0010/0011 plus 0016's fallback set; the ONE pre-identity escape
+  is the SECURITY DEFINER `cyberguard.validate_org_api_key(p_hash)` exact
+  hash lookup used by gateway key validation. Known follow-up: `events`,
+  `alerts`, `action_executions` remain owner-scoped only, so org-plane
+  aggregation reads are correct for the org owner; widening them with
+  org-branch policies for non-owner admins is the next org-fix mission.
 
 **GUC wiring.** The backend connects as `cyberguard_api` (`NOBYPASSRLS`); it
 can only see rows the GUCs permit. `current_user_id` (`ContextVar`,

@@ -12,6 +12,8 @@ Standalone usage (exits non-zero on failure):
 Environment:
 - MIGRATION_DATABASE_URL: service/postgres role (migrations + bypass checks)
 - APP_DATABASE_URL (or DATABASE_URL): the cyberguard_api app role, NOBYPASSRLS
+  (its password comes from settings.APP_ROLE_PASSWORD — the same source the
+  startup bootstrap syncs the role to; no secrets live in this file)
 
 Checks, per the Phase -1 spec:
   1. user A inserts a row -> A selects it: exactly 1 row
@@ -55,7 +57,13 @@ def _resolve_urls():
     if "postgresql+asyncpg" not in app_url:
         return None, None
     if "postgres:postgres@" in app_url:
-        app_url = app_url.replace("postgres:postgres@", "cyberguard_api:cyberguard_api@")
+        # Swap the superuser DSN for the NOBYPASSRLS app role. The password is
+        # the configured one (settings.APP_ROLE_PASSWORD) — identical to what
+        # the startup bootstrap creates/syncs the role with.
+        app_url = app_url.replace(
+            "postgres:postgres@",
+            f"cyberguard_api:{settings.APP_ROLE_PASSWORD}@",
+        )
     return service_url, app_url
 
 

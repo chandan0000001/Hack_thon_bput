@@ -64,7 +64,11 @@ from recipient selection.
 All three tables: SELECT for admins+analysts only (**viewer blocked** at RLS
 and API); writes admin-only. Predicates use `cyberguard.org_member_role()`.
 Suite 20 asserts viewer 403s, analyst write 403s, and raw-RLS cross-org
-isolation (0 rows for an outsider under the app role).
+isolation (0 rows for an outsider under the app role). Migration 0016
+(ORG-FIX-1) dropped the permissive `*_app_all USING (true)` policies on all
+three tables, so this isolation holds at the DB layer for the app role, not
+only at the API layer (previously the permissive policies OR-combined above
+the gated ones).
 
 ## Frontend
 

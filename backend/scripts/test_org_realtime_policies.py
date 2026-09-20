@@ -46,6 +46,20 @@ async def run_realtime_policy_tests(runner) -> None:
     conn = await engine.connect()
     try:
         # --------------------------------------------------------------
+        # 0. Shared auth.uid() probe — byte-identical to migrations 0012 /
+        #    0017 (ORG-FIX-1). Determines which branch of the gated-policy
+        #    assertions applies on this backend.
+        # --------------------------------------------------------------
+        from app.db.admin import _get_admin_session_maker
+
+        async with _get_admin_session_maker()() as probe_db:
+            has_auth = (
+                await probe_db.execute(text(
+                    "select to_regprocedure('auth.uid()') is not null"
+                ))
+            ).scalar()
+
+        # --------------------------------------------------------------
         # 1. Permissive policies dropped
         # --------------------------------------------------------------
         permissive = (
@@ -57,7 +71,9 @@ async def run_realtime_policy_tests(runner) -> None:
         check(permissive == 0, "Permissive ORG-2 authenticated policies dropped (migration 0012)")
 
         # --------------------------------------------------------------
-        # 2. Gated policies exist, TO authenticated
+        # 2. Gated policies exist, TO authenticated (Supabase / auth-emulated
+        #    backends). On plain Postgres the migration is a clean no-op: the
+        #    gated policies must be ABSENT (readers stay denied by default).
         # --------------------------------------------------------------
         rows = (
             await conn.execute(text(
@@ -67,12 +83,19 @@ async def run_realtime_policy_tests(runner) -> None:
             ))
         ).all()
         names = {r[1] for r in rows}
-        check(
-            {"org_log_events_realtime_select", "alerts_realtime_select"} <= names,
-            "Gated realtime SELECT policies exist on org_log_events + alerts",
-            f"found={names}",
-        )
-        check(all("authenticated" in str(r[3]) for r in rows), "Gated policies target the authenticated role")
+        if has_auth:
+            check(
+                {"org_log_events_realtime_select", "alerts_realtime_select"} <= names,
+                "Gated realtime SELECT policies exist on org_log_events + alerts",
+                f"found={names}",
+            )
+            check(all("authenticated" in str(r[3]) for r in rows), "Gated policies target the authenticated role")
+        else:
+            check(
+                not names,
+                "Plain Postgres no-op branch: gated realtime policies absent (readers denied by default)",
+                f"found={names}",
+            )
 
         # --------------------------------------------------------------
         # 3. Predicates are membership-gated (reference org_member_role)
@@ -86,15 +109,22 @@ async def run_realtime_policy_tests(runner) -> None:
                 "and p.polname in ('org_log_events_realtime_select', 'alerts_realtime_select')"
             ))
         ).all()
-        check(
-            all("org_member_role" in str(q[2]) for q in quals),
-            "Realtime predicates are membership-gated via org_member_role()",
-            f"quals={[q[0] for q in quals]}",
-        )
-        check(
-            not any(str(q[2]).strip() == "true" for q in quals),
-            "No realtime policy uses USING (true)",
-        )
+        if has_auth:
+            check(
+                all("org_member_role" in str(q[2]) for q in quals),
+                "Realtime predicates are membership-gated via org_member_role()",
+                f"quals={[q[0] for q in quals]}",
+            )
+            check(
+                not any(str(q[2]).strip() == "true" for q in quals),
+                "No realtime policy uses USING (true)",
+            )
+        else:
+            check(
+                len(quals) == 0,
+                "Plain Postgres no-op branch: no realtime policy predicates to gate",
+                f"quals={[q[0] for q in quals]}",
+            )
 
         # --------------------------------------------------------------
         # 4. Cross-org denial under the authenticated role
@@ -190,15 +220,9 @@ async def run_realtime_policy_tests(runner) -> None:
         check(baseline >= 2, "User-plane owner-scoped policies (baseline) untouched")
 
         # --------------------------------------------------------------
-        # 6. Guard behavior: migration skips gated creation without auth.uid()
+        # 6. Guard behavior: gated policies exist iff auth.uid() is available
         # --------------------------------------------------------------
-        # The auth schema is not probe-able by the app role — check via the
-        # service role, exactly as migration 0012 does.
-        from app.db.admin import _get_admin_session_maker
-        async with _get_admin_session_maker()() as admin_db:
-            has_auth = (
-                await admin_db.execute(text("select to_regprocedure('auth.uid()') is not null"))
-            ).scalar()
+        # has_auth was probed with the exact migration-0012/0017 SQL above.
         check(
             (has_auth and len(quals) == 2) or (not has_auth and len(quals) == 0),
             "Guard: gated policies exist iff auth.uid() is available (clean no-op otherwise)",

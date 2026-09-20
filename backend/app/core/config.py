@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # Falls back to DATABASE_URL when empty.
     MIGRATION_DATABASE_URL: str = ""
 
+    # Password for the local NOBYPASSRLS app role (cyberguard_api). Single
+    # source of truth for the startup bootstrap (which creates/syncs the
+    # role) and the RLS verification harness — never hardcode it in test
+    # files. Dev default matches the bootstrap-created role.
+    APP_ROLE_PASSWORD: str = "cyberguard_api"
+
     # Strict Test Mode Configuration (Enabled by default)
     TEST_MODE: bool = True
     TEST_DATABASE_URL: str = ""
