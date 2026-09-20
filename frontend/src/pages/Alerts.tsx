@@ -10,6 +10,7 @@ import PageHeader from '../components/common/PageHeader';
 import DataTable, { type Column } from '../components/common/DataTable';
 import SeverityBadge from '../components/common/SeverityBadge';
 import StatusPill from '../components/common/StatusPill';
+import WarningsBanner from '../components/common/WarningsBanner';
 import { PanelSkeleton } from '../components/common/LoadingSkeleton';
 import { MODULE_LABELS, MODULE_OPTIONS, SEVERITY_OPTIONS, formatTime } from '../constants';
 
@@ -53,6 +54,12 @@ export default function Alerts() {
 
   const total = data?.length ?? 0;
   const paged = (data ?? []).slice(0, page * PAGE_SIZE);
+
+  // Distinct non-fatal caveats (e.g. auth not verifiable) across loaded alerts.
+  const aggregatedWarnings = useMemo(
+    () => [...new Set((data ?? []).flatMap((a) => a.warnings ?? []))],
+    [data],
+  );
 
   return (
     <div className="space-y-4">
@@ -115,6 +122,8 @@ export default function Alerts() {
           className="rounded-lg border border-zinc-700/60 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-red-500/60"
         />
       </div>
+
+      <WarningsBanner warnings={aggregatedWarnings} />
 
       {loading ? (
         <PanelSkeleton height="h-72" />

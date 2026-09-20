@@ -18,7 +18,6 @@ import OrgMailServerSettings from './pages/OrgMailServerSettings';
 import OrgNotifications from './pages/OrgNotifications';
 import OrgNotificationLog from './pages/OrgNotificationLog';
 import Docs from './pages/Docs';
-import AdminUsers from './pages/AdminUsers';
 import ComingSoon from './pages/ComingSoon';
 import EmailConnectors from './pages/EmailConnectors';
 import BlockedSenders from './pages/BlockedSenders';
@@ -114,18 +113,6 @@ export default function App() {
               <WorkspaceGuard path="/organization">
               <OrgFeature>
                 <OrganizationManagement />
-              </OrgFeature>
-              </WorkspaceGuard>
-            }
-          />
-          <Route
-            path="/admin/users"
-            element={
-              <WorkspaceGuard path="/admin/users">
-              <OrgFeature>
-                <RoleGuard minimumRole="admin">
-                  <AdminUsers />
-                </RoleGuard>
               </OrgFeature>
               </WorkspaceGuard>
             }

@@ -203,6 +203,21 @@ export default function DLQDashboard() {
     return `${days}d ago`;
   };
 
+  // Relative ETA until the next scheduled retry (null when not scheduled).
+  const formatRetryEta = (iso?: string | null) => {
+    if (!iso) return null;
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) return null;
+    const diffSec = (t - Date.now()) / 1000;
+    if (diffSec <= 0) return 'now';
+    if (diffSec < 90) return 'in ~1m';
+    const diffMin = Math.round(diffSec / 60);
+    if (diffMin < 60) return `in ${diffMin}m`;
+    const hours = Math.floor(diffMin / 60);
+    if (hours < 24) return `in ${hours}h`;
+    return `in ${Math.round(hours / 24)}d`;
+  };
+
   // Color helper for job types
   const getJobTypeBadge = (jobType: string) => {
     switch (jobType) {
@@ -410,6 +425,7 @@ export default function DLQDashboard() {
                 <th className="px-4 py-3">Owner User ID</th>
                 <th className="px-4 py-3">Error (Failure Cause)</th>
                 <th className="px-4 py-3 text-center">Retries</th>
+                <th className="px-4 py-3">Next Retry</th>
                 <th className="px-4 py-3">Age</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
@@ -417,13 +433,13 @@ export default function DLQDashboard() {
             <tbody className="divide-y divide-zinc-800/80">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="p-8 text-center text-zinc-500">
+                  <td colSpan={8} className="p-8 text-center text-zinc-500">
                     Loading dead-letter jobs...
                   </td>
                 </tr>
               ) : filteredJobs.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-10 text-center text-zinc-500">
+                  <td colSpan={8} className="p-10 text-center text-zinc-500">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Zap className="h-8 w-8 text-zinc-600" />
                       <p className="text-sm font-medium text-zinc-400">No dead letter jobs match the filters</p>
@@ -502,6 +518,22 @@ export default function DLQDashboard() {
                         >
                           {job.retry_count}
                         </span>
+                      </td>
+
+                      {/* Next Retry ETA */}
+                      <td className="px-4 py-3 whitespace-nowrap font-mono text-zinc-400">
+                        {(() => {
+                          const eta = formatRetryEta(job.next_retry_at);
+                          if (!eta) return <span className="text-zinc-600">—</span>;
+                          return (
+                            <span
+                              className={eta === 'now' ? 'font-semibold text-amber-300' : ''}
+                              title={job.next_retry_at ? new Date(job.next_retry_at).toLocaleString() : undefined}
+                            >
+                              {eta}
+                            </span>
+                          );
+                        })()}
                       </td>
 
                       {/* Age */}

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { ArrowLeft, Loader2, Mail, Paperclip, PlayCircle, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Loader2, Mail, Paperclip, PlayCircle, X } from 'lucide-react';
 import * as api from '../services/api';
 import type { AnalysisResult, RecommendedAction } from '../types';
 import PageHeader from '../components/common/PageHeader';
@@ -9,6 +9,8 @@ import IndicatorTable from '../components/common/IndicatorTable';
 import ExplanationPanel from '../components/common/ExplanationPanel';
 import MitreTags from '../components/common/MitreTags';
 import RecommendedActionsPanel from '../components/common/RecommendedActionsPanel';
+import WarningsBanner from '../components/common/WarningsBanner';
+import AuthVerificationPanel from '../components/common/AuthVerificationPanel';
 import { PanelSkeleton } from '../components/common/LoadingSkeleton';
 import { useUiStore } from '../store/uiStore';
 import { useAuthStore } from '../store/authStore';
@@ -71,6 +73,8 @@ export default function PhishingAnalysis() {
   const [body, setBody] = useState('');
   const [attachment, setAttachment] = useState<File | null>(null);
   const [analyzedAttachmentName, setAnalyzedAttachmentName] = useState<string | null>(null);
+  const [rawHeaders, setRawHeaders] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
@@ -89,7 +93,7 @@ export default function PhishingAnalysis() {
     try {
       const res = attachment
         ? await api.analyzeEmailWithAttachment(sender, subject, body, attachment)
-        : await api.analyzeEmail(sender, subject, body);
+        : await api.analyzeEmail(sender, subject, body, rawHeaders);
       setResult(res);
       addToast(`Analysis complete: risk ${res.riskScore}/100 (${res.severity})`, res.severity);
     } catch (err) {
@@ -157,6 +161,8 @@ export default function PhishingAnalysis() {
                     </div>
                   </div>
                 </div>
+                <WarningsBanner warnings={result.warnings} />
+                <AuthVerificationPanel verification={result.authVerification} />
                 <IndicatorTable indicators={result.indicators} attachmentName={analyzedAttachmentName} />
                 <div className="grid gap-4 lg:grid-cols-2">
                   <ExplanationPanel explanation={result.explanation} confidence={result.confidence} />
@@ -223,6 +229,36 @@ export default function PhishingAnalysis() {
                 placeholder="Paste the full email body here..."
                 className="w-full resize-y rounded-lg border border-zinc-700/60 bg-zinc-800/60 px-3 py-2 text-sm leading-relaxed text-zinc-100 placeholder-zinc-600 outline-none focus:border-red-500/60"
               />
+            </div>
+
+            {/* Advanced: raw RFC 5322 headers — enable real SPF/DKIM/DMARC verification */}
+            <div className="rounded-lg border border-zinc-700/60 bg-zinc-900/40">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-xs font-medium text-zinc-300 hover:text-zinc-100"
+              >
+                {showAdvanced ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                Advanced — supply raw message headers
+                <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-zinc-600">
+                  optional
+                </span>
+              </button>
+              {showAdvanced && (
+                <div className="px-3 pb-3">
+                  <textarea
+                    value={rawHeaders}
+                    onChange={(e) => setRawHeaders(e.target.value)}
+                    rows={8}
+                    placeholder="Paste full RFC 5322 headers here. Without them SPF/DKIM/DMARC cannot be verified."
+                    className="w-full resize-y rounded-lg border border-zinc-700/60 bg-zinc-800/60 px-3 py-2 font-mono text-xs leading-relaxed text-zinc-100 placeholder-zinc-600 outline-none focus:border-red-500/60"
+                  />
+                  <p className="mt-1.5 text-[11px] text-zinc-500">
+                    Authentication-Result, Received and DKIM-Signature blocks from the original
+                    message enable independent SPF/DKIM/DMARC verification.
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-2">

@@ -86,6 +86,10 @@ export interface AnalysisResult {
   mitreTechniques: MitreTechnique[];
   timestamp: string;
   status: EventStatus;
+  // AUTH-VERIFY: non-fatal analysis caveats (e.g. auth not verifiable without headers)
+  warnings?: string[];
+  // AUTH-VERIFY: per-protocol verification statuses (spf/dkim/dmarc)
+  authVerification?: AuthVerification;
   // Optional extras produced by specific detectors
   authenticityScore?: number;
   manipulationProbability?: number;
@@ -93,6 +97,14 @@ export interface AnalysisResult {
   // Media forensics extras (deepfake module)
   method?: string;
   simulated?: boolean;
+}
+
+export interface AuthVerification {
+  source?: string;
+  risk_score?: number;
+  spf?: string;
+  dkim?: string;
+  dmarc?: string;
 }
 
 export interface Alert {
@@ -107,6 +119,8 @@ export interface Alert {
   explanation: string;
   recommendedActions: RecommendedAction[];
   mitreTechniques: MitreTechnique[];
+  // AUTH-VERIFY: non-fatal analysis caveats carried by AlertResponse
+  warnings?: string[];
   targetUser?: string;
   targetService?: string;
   sourceIp?: string;
@@ -609,6 +623,7 @@ export interface DlqJob {
   payload: Record<string, any>;
   error: string | null;
   retry_count: number;
+  next_retry_at?: string | null;
   created_at: string;
   updated_at: string;
   retry_history?: DlqJobRetryHistoryItem[];

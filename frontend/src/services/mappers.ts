@@ -92,6 +92,7 @@ export function mapAlert(row: unknown): Alert {
     explanation: String(data.explanation ?? ''),
     recommendedActions: asArray(data.recommended_actions).map(mapRecommendedAction),
     mitreTechniques: asArray(data.mitre).map(mapMitreTechnique),
+    warnings: asArray(data.warnings).map(String),
     targetUser: data.target_user ?? undefined,
     targetService: data.target_service ?? undefined,
     sourceIp: data.source_ip ?? undefined,
@@ -229,6 +230,17 @@ export function mapAnalysisResult(row: unknown): AnalysisResult {
     mitreTechniques: asArray(data.mitre).map(mapMitreTechnique),
     timestamp: String(data.created_at ?? ''),
     status: data.status ?? 'completed',
+    warnings: asArray(data.warnings).map(String),
+    authVerification:
+      data.auth_verification && typeof data.auth_verification === 'object'
+        ? {
+            source: String((data.auth_verification as Record<string, unknown>).source ?? ''),
+            risk_score: Number((data.auth_verification as Record<string, unknown>).risk_score ?? 0),
+            spf: String((data.auth_verification as Record<string, unknown>).spf ?? 'unavailable'),
+            dkim: String((data.auth_verification as Record<string, unknown>).dkim ?? 'unavailable'),
+            dmarc: String((data.auth_verification as Record<string, unknown>).dmarc ?? 'unavailable'),
+          }
+        : undefined,
     authenticityScore:
       data.authenticity_score !== undefined && data.authenticity_score !== null
         ? Number(data.authenticity_score)

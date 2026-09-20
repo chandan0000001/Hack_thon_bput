@@ -116,10 +116,19 @@ export async function updateAlertStatus(id: string, status: Alert['status']): Pr
 // Analysis pipelines (Part 3-5 backend endpoints)
 // ---------------------------------------------------------------------------
 
-export async function analyzeEmail(sender: string, subject: string, body: string): Promise<AnalysisResult> {
+export async function analyzeEmail(
+  sender: string,
+  subject: string,
+  body: string,
+  rawHeaders?: string
+): Promise<AnalysisResult> {
+  // raw_headers is optional: the backend only runs SPF/DKIM/DMARC verification
+  // when full RFC 5322 headers are supplied.
+  const payloadBody: Record<string, unknown> = { sender, subject, body };
+  if (rawHeaders?.trim()) payloadBody.raw_headers = rawHeaders;
   const row = await apiFetch('/analysis/email', {
     method: 'POST',
-    body: JSON.stringify({ sender, subject, body }),
+    body: JSON.stringify(payloadBody),
   });
   return mapAnalysisResult(row);
 }
@@ -400,35 +409,6 @@ export async function removeOrganizationMember(orgId: string, targetUserId: stri
 export async function switchOrganization(orgId: string): Promise<void> {
   await useAuthStore.getState().switchOrganization(orgId);
 }
-
-// ---------------------------------------------------------------------------
-// Admin User Management
-// ---------------------------------------------------------------------------
-
-export interface AdminUser {
-  id: string;
-  email: string | null;
-  full_name: string | null;
-  role: 'viewer' | 'analyst' | 'admin';
-  created_at: string | null;
-}
-
-export async function listAdminUsers(): Promise<AdminUser[]> {
-  const rows = await apiFetch('/admin/users');
-  return (Array.isArray(rows) ? rows : []) as AdminUser[];
-}
-
-export async function updateUserRole(
-  userId: string,
-  role: 'viewer' | 'analyst' | 'admin'
-): Promise<AdminUser> {
-  const row = await apiFetch(`/admin/users/${userId}/role`, {
-    method: 'PATCH',
-    body: JSON.stringify({ role }),
-  });
-  return row as AdminUser;
-}
-
 
 // ---------------------------------------------------------------------------
 // Email Connectors (Phase 1-2: Gmail only)

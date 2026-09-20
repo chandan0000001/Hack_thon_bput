@@ -49,6 +49,33 @@ const TYPE_LABELS: Record<string, string> = {
   executable_detected: 'Executable content',
   archive_bomb: 'Archive bomb',
   oversized_file: 'Oversized file',
+  // Content/structure scanner (attach-scan phase 2)
+  executable_disguise: 'Disguised executable',
+  zip_bomb_suspected: 'Archive bomb suspected',
+  pdf_javascript: 'JavaScript in PDF',
+  office_macro_present: 'Office macro present',
+  macro_enabled_extension: 'Macro-enabled file extension',
+  office_encrypted: 'Encrypted Office document',
+  // Social-engineering narrative patterns (SE-HARDENING)
+  security_alert_framing: 'Security alert framing',
+  attachment_lure: 'Attachment lure',
+  bureaucratic_urgency: 'Bureaucratic urgency',
+  authority_impersonation: 'Authority impersonation',
+  vague_threat: 'Vague threat',
+  se_combination_rule: 'SE combination rule',
+  // Independent auth verification (AUTH-VERIFY)
+  auth_spf_pass: 'SPF verification passed',
+  auth_spf_fail: 'SPF verification failed',
+  auth_spf_softfail: 'SPF softfail',
+  auth_spf_unavailable: 'SPF unverifiable',
+  auth_dkim_pass: 'DKIM verification passed',
+  auth_dkim_fail: 'DKIM verification failed',
+  auth_dkim_unavailable: 'DKIM unverifiable',
+  auth_dmarc_pass: 'DMARC verification passed',
+  auth_dmarc_fail: 'DMARC verification failed',
+  auth_dmarc_unavailable: 'DMARC unverifiable',
+  auth_alignment_fail: 'DKIM/SPF domain misalignment',
+  auth_headers_missing: 'Raw headers not supplied',
 };
 
 function typeLabel(type: string): string {
@@ -57,7 +84,11 @@ function typeLabel(type: string): string {
 
 /** Best-effort "where was this found" from the indicator's source and text. */
 function foundIn(ind: Indicator, attachmentName: string | null): string {
-  if (ind.source === 'attachment') return attachmentName ? `Attachment — ${attachmentName}` : 'Email attachment';
+  if (ind.source === 'attachment' || ind.source === 'attachment_scanner')
+    return attachmentName ? `Attachment — ${attachmentName}` : 'Email attachment';
+  if (ind.source === 'se_patterns') return 'Email body (social engineering)';
+  if (ind.source === 'auth_verifier' || ind.type.startsWith('auth_'))
+    return 'Email headers (auth verification)';
   if (ind.type === 'ml_model') return 'AI model (XGBoost)';
   const d = ind.description.toLowerCase();
   if (d.startsWith('sender') || d.includes('sender domain')) return 'Sender address';

@@ -10,6 +10,7 @@ import RiskGauge from '../components/common/RiskGauge';
 import SeverityBadge from '../components/common/SeverityBadge';
 import IndicatorList from '../components/common/IndicatorList';
 import ExplanationPanel from '../components/common/ExplanationPanel';
+import WarningsBanner from '../components/common/WarningsBanner';
 import MitreTags from '../components/common/MitreTags';
 import RecommendedActionsPanel from '../components/common/RecommendedActionsPanel';
 import { PanelSkeleton } from '../components/common/LoadingSkeleton';
@@ -133,6 +134,7 @@ export default function AlertDetail() {
             </div>
             <h2 className="mt-1.5 text-lg font-bold text-zinc-100">{alert.title}</h2>
             <p className="mt-1 max-w-2xl text-sm text-zinc-400">{alert.summary}</p>
+            <WarningsBanner warnings={alert.warnings} className="mt-3 max-w-2xl" />
           </div>
           <RiskGauge score={alert.riskScore} size="lg" />
         </div>

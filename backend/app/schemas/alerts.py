@@ -56,6 +56,10 @@ class AlertResponse(BaseModel):
     # AUTH-VERIFY: manual-path warnings (e.g. auth cannot be verified without
     # message headers). Additive, default-empty so existing clients are safe.
     warnings: list[str] = []
+    # AUTH-VERIFY: compact per-protocol verification statuses from the manual
+    # path (spf/dkim/dmarc: pass|fail|softfail|unavailable). None when auth
+    # verification did not run.
+    auth_verification: Optional[dict] = None
     target_user: Optional[str] = None
     target_service: Optional[str] = None
     source_ip: Optional[str] = None

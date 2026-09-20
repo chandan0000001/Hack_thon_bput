@@ -77,7 +77,6 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/action-log', label: 'Action Log', icon: ScrollText, scope: 'org', section: 'org' },
   { to: '/policies', label: 'Policy Management', icon: Settings2, scope: 'org', section: 'org', adminOnly: true },
   { to: '/organization', label: 'Organization & Team', icon: Building2, scope: 'org', section: 'org' },
-  { to: '/admin/users', label: 'Admin Users', icon: Building2, scope: 'org', section: 'org', adminOnly: true },
   // --- system ---
   { to: '/dlq', label: 'Dead Letter Queue', icon: Zap, scope: 'both', section: 'system', adminOnly: true },
   { to: '/reports', label: 'Reports', icon: FileBarChart, scope: 'org', section: 'system' },

@@ -294,6 +294,9 @@ async def analyze_email(
         logger.warning("Manual-path confidence assessment failed: %s", exc)
 
     response = AlertResponse.model_validate(alert)
+    # AUTH-VERIFY: raw_data is not part of AlertResponse, so surface the
+    # compact per-protocol statuses explicitly for the frontend Auth panel.
+    response.auth_verification = raw_data.get("auth_verification")
     if auth_warnings:
         response.warnings = auth_warnings
     return response

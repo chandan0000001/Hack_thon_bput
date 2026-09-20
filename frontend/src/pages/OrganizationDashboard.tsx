@@ -5,7 +5,6 @@ import {
   Ban,
   BellRing,
   Inbox,
-  KeyRound,
   Mail,
   Network,
   RefreshCw,
@@ -70,13 +69,6 @@ const MODULES = [
     description: 'Role-grouped notification lists and per-event-type email routing.',
     icon: BellRing,
     enabled: true,
-  },
-  {
-    to: '../account-takeover',
-    label: 'Account Takeover',
-    description: 'Coming soon.',
-    icon: KeyRound,
-    enabled: false,
   },
 ];
 
