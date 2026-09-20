@@ -3,7 +3,7 @@
 import asyncio
 import uuid
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +43,7 @@ from app.services.ml_inference import score_with_ml
 from app.services.network_threat_detector import analyze_network_heuristics
 from app.services.phishing_detector import analyze_email_heuristics
 from app.services.scoring_service import get_severity
+from app.services.attachment_scanner import AttachmentScanner
 from app.services.url_detector import analyze_url_heuristics
 
 logger = logging.getLogger("cyberguard.security")
@@ -239,6 +240,85 @@ async def analyze_email(
     if auth_warnings:
         response.warnings = auth_warnings
     return response
+
+
+@router.post("/email-attachment", response_model=AlertResponse)
+async def analyze_email_with_attachment(
+    sender: str = Form(...),
+    subject: str = Form(default=""),
+    body: str = Form(...),
+    file: Optional[UploadFile] = File(default=None),
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(require_role(["admin", "analyst"])),
+) -> Any:
+    """Phishing pipeline for an email with an optional uploaded attachment.
+
+    Runs the standard email heuristics, scans the attachment through the
+    ATTACH-SCAN Level 1-3 pipeline, and merges the attachment's indicators
+    into the email verdict. Only scan metadata is ever persisted.
+    """
+    indicators = await asyncio.to_thread(
+        analyze_email_heuristics,
+        sender=sender,
+        subject=subject,
+        body=body,
+    )
+
+    attachment_summary: Optional[dict[str, Any]] = None
+    if file is not None and file.filename:
+        scanner = AttachmentScanner()
+        scan_result = await scanner.scan_uploaded_file(
+            file,
+            file.filename,
+            file.content_type or "application/octet-stream",
+        )
+        for ind in scan_result.indicators:
+            if isinstance(ind, dict) and ind.get("severity") != "info":
+                indicators.append({**ind, "source": "attachment"})
+        if scan_result.verdict == "malicious":
+            indicators.append(
+                {
+                    "type": "attachment_malicious_verdict",
+                    "severity": "critical",
+                    "description": scan_result.explanation
+                    or f"Attachment '{file.filename}' scanned as malicious",
+                    "source": "attachment",
+                }
+            )
+        attachment_summary = {
+            "filename": file.filename,
+            "size_bytes": file.size,
+            "scan_status": scan_result.status,
+            "verdict": scan_result.verdict,
+            "risk_score": scan_result.risk_score,
+            "severity": scan_result.severity,
+            "sha256": scan_result.sha256,
+            "detected_mime": scan_result.detected_mime,
+            "declared_mime": scan_result.declared_mime,
+            "mime_mismatch": scan_result.mime_mismatch,
+            "scan_duration_ms": scan_result.scan_duration_ms,
+            "explanation": scan_result.explanation,
+            "error": scan_result.error,
+        }
+
+    raw_data = {
+        "source": "api",
+        "sender": sender,
+        "subject": subject,
+        "body": body,
+        "attachment": attachment_summary,
+    }
+    return await _run_analysis_pipeline(
+        db,
+        tenant,
+        event_type="phishing_email",
+        module="phishing",
+        source="api",
+        raw_data=raw_data,
+        indicators=indicators,
+        system_prompt=PHISHING_SYSTEM_PROMPT,
+        user_prompt_builder=format_phishing_user_prompt,
+    )
 
 
 @router.post("/url", response_model=AlertResponse)

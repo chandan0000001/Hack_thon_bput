@@ -52,6 +52,8 @@ export interface Indicator {
   value: string;
   severity: Severity;
   description: string;
+  /** Where the signal came from — e.g. 'attachment' from the ATTACH-SCAN pipeline. */
+  source?: string;
 }
 
 export interface MitreTechnique {

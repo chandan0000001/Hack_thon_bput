@@ -53,6 +53,7 @@ function mapIndicator(row: Record<string, any>, index: number): Indicator {
     value: String(row.value ?? ''),
     severity: mapSeverity(row.severity),
     description: String(row.description ?? ''),
+    source: row.source != null ? String(row.source) : undefined,
   };
 }
 

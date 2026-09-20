@@ -11,11 +11,15 @@ deleted; only scan metadata and results are ever persisted (never the file).
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from app.core.attachment_limits import MAX_ATTACHMENT_SIZE_BYTES, STREAM_CHUNK_SIZE
 from app.core.errors import AttachmentTooLargeError
 from app.services.archive_inspector import ArchiveInspector
 from app.services.attachment_risk_scorer import AttachmentRiskScorer
@@ -164,6 +168,118 @@ class AttachmentScanner:
             )
         except Exception as exc:
             logger.warning("Attachment scan failed for %s/%s: %s", message_id, attachment_id, exc)
+            return ScanResult(status="failed", declared_mime=declared_mime, error=str(exc))
+        finally:
+            if temp_path:
+                self.streamer.cleanup_temp_file(temp_path)
+
+    async def scan_uploaded_file(
+        self,
+        upload: Any,
+        filename: str,
+        declared_mime: str,
+    ) -> ScanResult:
+        """Scan a locally uploaded file (interactive analysis endpoint).
+
+        `upload` is any object with an async `read(size)` — an upload's
+        SpooledTemporaryFile, so large files spill to disk instead of
+        materializing in memory. Streams to a 0600 temp file under the same
+        size limit as Gmail attachments, then runs the identical Level 1-3
+        pipeline and risk scoring.
+        """
+        start = time.monotonic()
+        temp_path: Optional[str] = None
+        try:
+            # Preserve the upload's extension on the temp file: type
+            # detection falls back to extension guessing for text formats
+            # (html/txt) that carry no magic signature.
+            import pathlib
+
+            suffix = pathlib.Path(filename or "").suffix or ".scan"
+            fd, temp_path = tempfile.mkstemp(prefix="cyberguard_", suffix=suffix)
+            os.chmod(temp_path, 0o600)
+            hasher = hashlib.sha256()
+            total_size = 0
+            with os.fdopen(fd, "wb") as temp_file:
+                while True:
+                    chunk = await upload.read(STREAM_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    temp_file.write(chunk)
+                    hasher.update(chunk)
+                    total_size += len(chunk)
+                    if total_size > MAX_ATTACHMENT_SIZE_BYTES:
+                        raise AttachmentTooLargeError(
+                            f"Attachment size {total_size} bytes exceeds limit "
+                            f"{MAX_ATTACHMENT_SIZE_BYTES} bytes"
+                        )
+
+            detected_mime = self.validator.detect_file_type(temp_path)
+            if not self.validator.is_supported_type(detected_mime):
+                return ScanResult(
+                    status="skipped",
+                    verdict="safe",
+                    indicators=[{"type": "unsupported_type", "severity": "info"}],
+                    sha256=hasher.hexdigest(),
+                    detected_mime=detected_mime,
+                    declared_mime=declared_mime,
+                    error=f"Unsupported type: {detected_mime}",
+                    explanation=f"Attachment '{filename}' ({detected_mime}) is not a scannable type; no risk contributed.",
+                )
+
+            result = ScanResult(status="completed")
+            result.temp_path = temp_path
+            mime_validation = self.validator.validate_mime_type(declared_mime, detected_mime)
+            if mime_validation["mismatch"]:
+                result.indicators.append(
+                    {
+                        "type": "mime_mismatch",
+                        "severity": "medium",
+                        "description": f"Declared {declared_mime}, detected {detected_mime}",
+                    }
+                )
+                result.risk_score += mime_validation["risk_score"]
+            result.sha256 = hasher.hexdigest()
+            result.detected_mime = detected_mime
+            result.declared_mime = declared_mime
+            result.mime_mismatch = mime_validation["mismatch"]
+
+            result = await self._level2_malware_detection(
+                temp_path=temp_path,
+                detected_mime=detected_mime,
+                declared_mime=declared_mime,
+                filename=filename,
+                result=result,
+            )
+            result = await self._level3_content_analysis(
+                temp_path=temp_path,
+                detected_mime=detected_mime,
+                filename=filename,
+                result=result,
+            )
+
+            scored = self.risk_scorer.score(result.indicators, total_risk=result.risk_score)
+            result.risk_score = scored["risk_score"]
+            if _VERDICT_SEVERITY.get(scored["verdict"], 0) >= _VERDICT_SEVERITY.get(result.verdict, 0):
+                result.verdict = scored["verdict"]
+            result.severity = scored["severity"]
+            result.explanation = scored["explanation"]
+            result.scan_duration_ms = int((time.monotonic() - start) * 1000)
+            result.status = "completed"
+            return result
+        except AttachmentTooLargeError as exc:
+            return ScanResult(
+                status="failed",
+                verdict="malicious",
+                risk_score=100,
+                severity="critical",
+                indicators=[{"type": "oversized_file", "severity": "critical"}],
+                declared_mime=declared_mime,
+                error=str(exc),
+                explanation="Attachment rejected: exceeds the 25 MB size limit (treated as malicious).",
+            )
+        except Exception as exc:
+            logger.warning("Uploaded attachment scan failed for %s: %s", filename, exc)
             return ScanResult(status="failed", declared_mime=declared_mime, error=str(exc))
         finally:
             if temp_path:

@@ -124,6 +124,22 @@ export async function analyzeEmail(sender: string, subject: string, body: string
   return mapAnalysisResult(row);
 }
 
+export async function analyzeEmailWithAttachment(
+  sender: string,
+  subject: string,
+  body: string,
+  attachment: File | null
+): Promise<AnalysisResult> {
+  // Multipart upload: no Content-Type header so the browser sets the boundary.
+  const formData = new FormData();
+  formData.append('sender', sender);
+  formData.append('subject', subject);
+  formData.append('body', body);
+  if (attachment) formData.append('file', attachment);
+  const row = await apiFetch('/analysis/email-attachment', { method: 'POST', body: formData });
+  return mapAnalysisResult(row);
+}
+
 export async function analyzeUrl(url: string): Promise<AnalysisResult> {
   const row = await apiFetch('/analysis/url', { method: 'POST', body: JSON.stringify({ url }) });
   return mapAnalysisResult(row);
