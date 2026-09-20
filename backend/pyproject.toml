@@ -40,12 +40,23 @@ backend = "backend:main"
 requires = ["uv_build>=0.12.10,<0.13.0"]
 build-backend = "uv_build"
 
+[project.optional-dependencies]
+attachments = [
+    "pyclamd>=0.4.0",
+    "yara-python>=4.3.0",
+    "pefile>=2023.2.7",
+]
+
 [dependency-groups]
 dev = [
     "arq>=0.25",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "redis>=5.0",
+    # kept in dev so `uv run` (test suite) retains them; uv prunes extras on re-sync
+    "pyclamd>=0.4.0",
+    "yara-python>=4.3.0",
+    "pefile>=2023.2.7",
 ]
 
 [tool.pytest.ini_options]

@@ -552,6 +552,14 @@ async def run_tests():
 
     await run_attachment_scanner_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 32. ATTACH-SCAN-2 — Malware detection layer (ClamAV, YARA, archives, PE)
+    # -----------------------------------------------------------------------
+    print("\n[Suite 32] ATTACH-SCAN-2 — Malware Detection Layer")
+    from test_malware_detection import run_malware_detection_tests
+
+    await run_malware_detection_tests(runner)
+
     return runner.report()
 
 

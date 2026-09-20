@@ -219,12 +219,22 @@ dependencies = [
     { name = "xgboost" },
 ]
 
+[package.optional-dependencies]
+attachments = [
+    { name = "pefile" },
+    { name = "pyclamd" },
+    { name = "yara-python" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "arq" },
+    { name = "pefile" },
+    { name = "pyclamd" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "redis" },
+    { name = "yara-python" },
 ]
 
 [package.metadata]
@@ -241,9 +251,11 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "opencv-python-headless", specifier = ">=5.0.0.93" },
     { name = "pandas", specifier = ">=3.0.5" },
+    { name = "pefile", marker = "extra == 'attachments'", specifier = ">=2023.2.7" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "prometheus-client", specifier = ">=0.26.0" },
     { name = "psutil", specifier = ">=7.2.2" },
+    { name = "pyclamd", marker = "extra == 'attachments'", specifier = ">=0.4.0" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "python-multipart", specifier = ">=0.0.32" },
@@ -255,14 +267,19 @@ requires-dist = [
     { name = "torchvision", specifier = ">=0.29.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.4" },
     { name = "xgboost", specifier = ">=3.4.1" },
+    { name = "yara-python", marker = "extra == 'attachments'", specifier = ">=4.3.0" },
 ]
+provides-extras = ["attachments"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "arq", specifier = ">=0.25" },
+    { name = "pefile", specifier = ">=2023.2.7" },
+    { name = "pyclamd", specifier = ">=0.4.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "redis", specifier = ">=5.0" },
+    { name = "yara-python", specifier = ">=4.3.0" },
 ]
 
 [[package]]
@@ -1357,6 +1374,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pefile"
+version = "2024.8.26"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/4f/2750f7f6f025a1507cd3b7218691671eecfd0bbebebe8b39aa0fe1d360b8/pefile-2024.8.26.tar.gz", hash = "sha256:3ff6c5d8b43e8c37bb6e6dd5085658d658a7a0bdcd20b6a07b1fcfc1c4e9d632", size = 76008, upload-time = "2024-08-26T20:58:38.155Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/16/12b82f791c7f50ddec566873d5bdd245baa1491bac11d15ffb98aecc8f8b/pefile-2024.8.26-py3-none-any.whl", hash = "sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f", size = 74766, upload-time = "2024-08-26T21:01:02.632Z" },
+]
+
+[[package]]
 name = "pillow"
 version = "12.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1525,6 +1551,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/78/10/3f1a5497a7ef732ab0f03ecca3e66d89d9c0f57fdc61b4794c456b781f01/pyarrow-25.0.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:119297a6dc197e45d9c6d4415f7814a67ffa36c180d26f68c154c58067ae782d", size = 53149035, upload-time = "2026-08-10T12:40:41.454Z" },
     { url = "https://files.pythonhosted.org/packages/93/c0/37d4a7e8e2f7a6076283673d5298018ca26478b934c6ee369e10505ab32c/pyarrow-25.0.1-cp314-cp314t-win_amd64.whl", hash = "sha256:4288f27577352d608ca08553b0865e4a9b3aa14820c5d95b53337218d609835b", size = 28753071, upload-time = "2026-08-10T12:40:46.623Z" },
 ]
+
+[[package]]
+name = "pyclamd"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/73/97a0518b59f1b6aefa2ac851566038d2c9128f8a5503bcf4cd0adf8b0072/pyClamd-0.4.0.tar.gz", hash = "sha256:ddd588577e5db123760b6ddaac46b5c4b1d9044a00b5d9422de59f83a55c20fe", size = 11177, upload-time = "2017-08-27T22:06:02.757Z" }
 
 [[package]]
 name = "pycparser"
@@ -2304,6 +2336,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f0/ab/4615789c333bee331ac417885c50105715eeb8244bfc68d2bc37dcfd63ca/xxhash-4.0.1-cp315-cp315t-win_amd64.whl", hash = "sha256:daade8936c4deaaf7b01561324ce438ba4f885d717e9adc62b4d67212ad7d7bd", size = 37488, upload-time = "2026-08-17T08:36:19.929Z" },
     { url = "https://files.pythonhosted.org/packages/fb/81/49f718beb0c55d0411bc4bd90b50a3fbe5863a0e97a2f4d11682ba13d298/xxhash-4.0.1-cp315-cp315t-win_arm64.whl", hash = "sha256:f00330ac7e24769e2032203f2b01794d670916b0c1799fd261340f1af9499875", size = 34590, upload-time = "2026-08-17T08:23:19.597Z" },
 ]
+
+[[package]]
+name = "yara-python"
+version = "4.5.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/51/38/347d1fcde4edabd338d5872ca5759ccfb95ff1cf5207dafded981fd08c4f/yara_python-4.5.4.tar.gz", hash = "sha256:4c682170f3d5cb3a73aa1bd0dc9ab1c0957437b937b7a83ff6d7ffd366415b9c", size = 551142, upload-time = "2025-05-27T14:15:49.035Z" }
 
 [[package]]
 name = "yarl"

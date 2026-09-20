@@ -25,6 +25,10 @@ MAX_EXTRACTED_FILES = 50
 # Archive inspection (Phase 2): max total uncompressed bytes extracted.
 MAX_EXTRACTED_TOTAL_SIZE = 50_000_000
 
+# Archive inspection (Phase 2): uncompressed/compressed ratio above which an
+# archive is treated as a suspected zip bomb and not extracted.
+MAX_ARCHIVE_COMPRESSION_RATIO = 200
+
 # Streaming chunk size for downloads and hashing (64 KB).
 STREAM_CHUNK_SIZE = 65_536
 
@@ -55,6 +59,10 @@ SUPPORTED_MIME_TYPES = {
     "image/gif",
     "text/html",
     "text/plain",
+    # Executables are deliberately scannable (Phase 2 malware detection):
+    # skipping them would let MZ payloads evade inspection entirely.
+    "application/x-msdownload",
+    "application/x-executable",
 }
 
 # ---------------------------------------------------------------------------

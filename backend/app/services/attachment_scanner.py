@@ -17,10 +17,17 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from app.core.errors import AttachmentTooLargeError
+from app.services.archive_inspector import ArchiveInspector
 from app.services.attachment_streamer import AttachmentStreamer
+from app.services.clamav_scanner import ClamAVScanner
+from app.services.executable_detector import ExecutableDetector
 from app.services.file_validator import FileValidator
+from app.services.yara_scanner import YaraScanner
 
 logger = logging.getLogger("cyberguard.attachment.scanner")
+
+MALICIOUS_RISK_THRESHOLD = 80
+SUSPICIOUS_RISK_THRESHOLD = 40
 
 
 @dataclass
@@ -46,6 +53,13 @@ class AttachmentScanner:
     def __init__(self):
         self.streamer = AttachmentStreamer()
         self.validator = FileValidator()
+        # Phase 2 malware-detection engines — all optional/graceful:
+        # ClamAV reports unavailable without a clamd daemon, YARA without a
+        # ruleset; the archive and executable engines are stdlib/pefile-based.
+        self.clamav = ClamAVScanner()
+        self.yara = YaraScanner()
+        self.executable = ExecutableDetector()
+        self.archive = ArchiveInspector()
 
     async def scan_attachment(
         self,
@@ -76,8 +90,17 @@ class AttachmentScanner:
             if result.status != "completed":
                 return result
 
-            # Level 2 (archive inspection), Level 3 (static analysis) and
-            # Level 4 (sandbox detonation) hooks land in Phases 2-4.
+            if temp_path:
+                result = await self._level2_malware_detection(
+                    temp_path=temp_path,
+                    detected_mime=result.detected_mime or "",
+                    declared_mime=declared_mime,
+                    filename=filename,
+                    result=result,
+                )
+
+            # Level 3 (static analysis) and Level 4 (sandbox detonation) hooks
+            # land in Phases 3-4.
 
             result.scan_duration_ms = int((time.monotonic() - start) * 1000)
             result.status = "completed"
@@ -158,3 +181,114 @@ class AttachmentScanner:
         )
         result.temp_path = temp_path
         return result
+
+    async def _level2_malware_detection(
+        self,
+        temp_path: str,
+        detected_mime: str,
+        declared_mime: str,
+        filename: str,
+        result: ScanResult,
+    ) -> ScanResult:
+        """Run the malware engines over the temp file and merge their signals.
+
+        Every engine is individually try/except guarded: one engine failing
+        (missing daemon, bad rule, parse crash) records an info indicator and
+        never aborts the scan.
+        """
+        clamav_infected = False
+        executable_disguised = False
+
+        # --- ClamAV -----------------------------------------------------
+        try:
+            clamav = self.clamav.scan_file(temp_path)
+            if clamav["status"] == "infected":
+                clamav_infected = True
+                result.indicators.append(
+                    {
+                        "type": "clamav_signature",
+                        "severity": "critical",
+                        "description": f"ClamAV signature hit: {clamav['signature']}",
+                    }
+                )
+                result.risk_score += clamav["risk_score"]
+            elif clamav["status"] in ("error", "unavailable"):
+                result.indicators.append(
+                    {
+                        "type": "engine_unavailable" if clamav["status"] == "unavailable" else "engine_error",
+                        "engine": "clamav",
+                        "severity": "info",
+                        "description": f"ClamAV {clamav['status']}; scan continued without AV verdict",
+                    }
+                )
+        except Exception as exc:
+            self._record_engine_failure(result, "clamav", exc)
+
+        # --- YARA -------------------------------------------------------
+        try:
+            yara = self.yara.scan_file(temp_path)
+            if yara["available"] and yara["matches"]:
+                for match in yara["matches"]:
+                    result.indicators.append(
+                        {
+                            "type": "yara_match",
+                            "severity": "medium",
+                            "rule": match["rule"],
+                            "description": f"YARA rule {match['rule']} matched: {match['description']}",
+                        }
+                    )
+                result.risk_score += yara["risk_score"]
+            elif not yara["available"]:
+                result.indicators.append(
+                    {"type": "engine_unavailable", "engine": "yara", "severity": "info"}
+                )
+        except Exception as exc:
+            self._record_engine_failure(result, "yara", exc)
+
+        # --- Executable detection ----------------------------------------
+        try:
+            executable = self.executable.detect(temp_path, declared_mime=declared_mime, original_filename=filename)
+            if executable["is_executable"]:
+                result.indicators.extend(executable["indicators"])
+                result.risk_score += executable["risk_score"]
+                executable_disguised = any(
+                    i.get("type") == "executable_disguise" for i in executable["indicators"]
+                )
+        except Exception as exc:
+            self._record_engine_failure(result, "executable", exc)
+
+        # --- Archive inspection -------------------------------------------
+        try:
+            archive = await self.archive.inspect(temp_path)
+            if archive["is_archive"]:
+                result.indicators.extend(archive["indicators"])
+                result.risk_score += archive["risk_score"]
+        except Exception as exc:
+            self._record_engine_failure(result, "archive", exc)
+
+        # --- Verdict ------------------------------------------------------
+        if clamav_infected or executable_disguised:
+            result.verdict = "malicious"
+        else:
+            result.verdict = self._verdict_for_risk(result.risk_score)
+        return result
+
+    @staticmethod
+    def _verdict_for_risk(risk_score: int) -> str:
+        if risk_score >= MALICIOUS_RISK_THRESHOLD:
+            return "malicious"
+        if risk_score >= SUSPICIOUS_RISK_THRESHOLD:
+            return "suspicious"
+        return "safe"
+
+    @staticmethod
+    def _record_engine_failure(result: ScanResult, engine: str, exc: Exception) -> None:
+        logger.warning("Malware engine '%s' failed during scan: %s", engine, exc)
+        result.indicators.append(
+            {
+                "type": "engine_error",
+                "engine": engine,
+                "severity": "info",
+                "description": f"Engine '{engine}' failed: {exc}",
+            }
+        )

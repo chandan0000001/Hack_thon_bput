@@ -254,6 +254,7 @@ async def run_attachment_scanner_tests(runner) -> None:
             runner.assert_true(ok, name, details)
         except Exception as exc:
             runner.assert_true(False, name, f"unexpected exception: {exc}")
+    monkeypatch.undo()  # the memory-fake must not leak into later suites
 
 
 async def _async_wrap(value: tuple[bool, str]) -> tuple[bool, str]:
