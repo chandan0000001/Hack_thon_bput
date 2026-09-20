@@ -846,6 +846,191 @@ async def run_tests():
 
     await run_auth_verification_tests()
 
+    # -----------------------------------------------------------------------
+    # 37. SE-HARDENING — social-engineering pattern detection
+    # -----------------------------------------------------------------------
+    print("\n[Suite 37] SE-HARDENING — Social-Engineering Pattern Detection")
+    from app.services.se_pattern_engine import (
+        ATTACHMENT_REFERENCE_WARNING as _ATTACH_WARN,
+        LOW_CONFIDENCE_NOTE as _LOW_CONF,
+        SEPatternEngine as _SE,
+        assess_confidence as _conf,
+        blend_se as _blend,
+    )
+    import json as _json
+
+    async def run_se_pattern_tests() -> None:
+        from app.db.admin import _get_admin_session_maker
+
+        engine = _SE()
+        # 1 framing
+        out = engine.analyze(
+            "We detected a recent sign-in from a new device. Complete security verification now."
+        )
+        runner.assert_true(
+            any(i["type"] == "security_alert_framing" for i in out["indicators"])
+            and out["risk_score"] >= 15,
+            "se: security_alert_framing detected (+15)", str(out["risk_score"]),
+        )
+        # 2 lure
+        out = engine.analyze("Please review the attached document right away.")
+        runner.assert_true(
+            any(i["type"] == "attachment_lure" for i in out["indicators"])
+            and out["risk_score"] >= 15
+            and all(i.get("match_count") for i in out["indicators"]),
+            "se: attachment_lure detected with match_count (+15)", str(out["risk_score"]),
+        )
+        # 3 urgency
+        out = engine.analyze("Your access may expire within 24 hours if not confirmed.")
+        runner.assert_true(
+            any(i["type"] == "bureaucratic_urgency" for i in out["indicators"])
+            and out["risk_score"] >= 10,
+            "se: bureaucratic_urgency detected (+10)", str(out["risk_score"]),
+        )
+        # 4 combination +45
+        out = engine.analyze(
+            "We detected a recent sign-in. Review the attached document to secure your account."
+        )
+        runner.assert_true(
+            any(i["type"] == "se_combination_rule" for i in out["indicators"])
+            and out["risk_score"] == 75,
+            "se: framing AND (lure|urgency) fires se_combination_rule (+45 => 75)",
+            str(out["risk_score"]),
+        )
+
+        # 5 eval case se_attachment_lure_001 via the real manual pipeline
+        _uid = f"setest-{os.urandom(4).hex()}"
+        _admin_maker = _get_admin_session_maker()
+        async with _admin_maker() as _db:
+            _db.add(User(id=_uid, email=f"{_uid}@cyberguard.test", full_name="SE Tester"))
+            _db.add(Organization(
+                id=f"org-{_uid}", name="SE Test Org", slug=f"personal-{_uid}",
+                is_personal=True, owner_id=_uid,
+            ))
+            _db.add(OrganizationMember(
+                id=f"mem-{os.urandom(12).hex()}", organization_id=f"org-{_uid}",
+                user_id=_uid, role="admin",
+            ))
+            await _db.commit()
+
+        _se_user = CurrentUser(id=_uid, email=f"{_uid}@cyberguard.test", full_name="SE Tester")
+
+        async def _se_mock_tenant():
+            current_user_id.set(_uid)
+            return TenantContext(
+                organization_id=f"org-{_uid}", organization_name="SE Test Org",
+                role="admin", is_single_user=True, user_id=_uid, owner_user_id=_uid,
+            )
+
+        async def _se_mock_user():
+            current_user_id.set(_uid)
+            return _se_user
+
+        app.dependency_overrides[get_current_user] = _se_mock_user
+        app.dependency_overrides[get_tenant_context] = _se_mock_tenant
+        monkeypatch37 = MonkeyPatch()
+        try:
+            _fx_lines = [l for l in (ROOT / "tests" / "data" / "synthetic" / "se_phishing_attachment_lure.txt").read_text().splitlines() if l.strip()]
+            _fx_subject = _fx_lines[1].split("Subject: ", 1)[1]
+            _fx_body = "\n".join(_fx_lines[2:])
+            _cases = _json.loads(
+                (ROOT / "tests" / "data" / "synthetic" / "se_eval_cases.json").read_text()
+            )["cases"]
+            _case = next(c for c in _cases if c["id"] == "se_attachment_lure_001")
+
+            transport37 = ASGITransport(app=app)
+            async with AsyncClient(transport=transport37, base_url="http://test") as client37:
+                resp = await client37.post(
+                    "/api/v1/analysis/email",
+                    json={"sender": _case["sender"], "subject": _fx_subject, "body": _fx_body},
+                )
+                data = resp.json() if resp.status_code == 200 else {}
+                types = [i.get("type") for i in data.get("indicators", [])]
+                runner.assert_true(
+                    resp.status_code == 200
+                    and data.get("risk_score", 0) >= _case["risk_min"]
+                    and 40 <= data.get("risk_score", 0) < 80
+                    and data.get("severity") == "high"
+                    and all(e in types for e in _case["expected_indicators"]),
+                    "se: eval case se_attachment_lure_001 => risk>=60, suspicious, 3 narrative indicators",
+                    f"risk={data.get('risk_score')} types={types}",
+                )
+
+                # 6 benign invoice — no false positive
+                resp6 = await client37.post(
+                    "/api/v1/analysis/email",
+                    json={
+                        "sender": "billing@vendor.example",
+                        "subject": "September invoice",
+                        "body": "Hi, please review the attached invoice for the September "
+                                "order. Payment is due in 30 days. Thank you.",
+                    },
+                )
+                data6 = resp6.json() if resp6.status_code == 200 else {}
+                runner.assert_true(
+                    resp6.status_code == 200 and data6.get("risk_score", 100) < 40
+                    and data6.get("severity") in ("safe", "low"),
+                    "se: benign 'review the attached invoice' stays safe (<40)",
+                    f"risk={data6.get('risk_score')} severity={data6.get('severity')}",
+                )
+
+                # 12 warnings array: auth + attachment warnings, no duplicates
+                resp12 = await client37.post(
+                    "/api/v1/analysis/email",
+                    json={
+                        "sender": "security-alert@cyberguard.com",
+                        "subject": "Security verification required",
+                        "body": "We detected a recent sign-in. Review the attached "
+                                "document as soon as possible.",
+                    },
+                )
+                warnings = (resp12.json() or {}).get("warnings") or [] if resp12.status_code == 200 else []
+                runner.assert_true(
+                    any("no message headers" in w for w in warnings)
+                    and _ATTACH_WARN in warnings
+                    and len(warnings) == len(set(warnings)),
+                    "se: warnings array carries auth_headers_missing AND attachment-reference warning, no duplicates",
+                    str(warnings),
+                )
+        finally:
+            monkeypatch37.undo()
+            app.dependency_overrides.clear()
+            current_user_id.set(None)
+
+        # 7 authority impersonation
+        out = engine.analyze("This message was sent by the IT department security team.")
+        runner.assert_true(
+            any(i["type"] == "authority_impersonation" for i in out["indicators"])
+            and out["risk_score"] >= 10,
+            "se: authority_impersonation detected (+10)", str(out["risk_score"]),
+        )
+        # 8 vague threat
+        out = engine.analyze("We noticed suspicious activity and unusual sign-in attempts.")
+        runner.assert_true(
+            any(i["type"] == "vague_threat" for i in out["indicators"])
+            and out["risk_score"] >= 10,
+            "se: vague_threat detected (+10)", str(out["risk_score"]),
+        )
+        # 9 monotonic: strong heuristic unchanged
+        runner.assert_true(
+            _blend(0.8, 0.3) == 0.8,
+            "se: monotonic blend — heuristic 0.8 + SE 0.3 stays 0.8", str(_blend(0.8, 0.3)),
+        )
+        # 10 monotonic: weak heuristic raised to ~0.35
+        runner.assert_true(
+            abs(_blend(0.2, 0.7) - 0.35) < 1e-9,
+            "se: monotonic blend — heuristic 0.2 + SE 0.7 => ~0.35", str(_blend(0.2, 0.7)),
+        )
+        # 11 confidence low-signals warning
+        conf = _conf(0.4, 0.3, url_indicator_count=0, body="see attached")
+        runner.assert_true(
+            conf["confidence"] == "low" and _LOW_CONF in conf["notes"],
+            "se: weak heuristic + weak ML => confidence low with manual-review note",
+            str(conf),
+        )
+
+    await run_se_pattern_tests()
+
     return runner.report()
 
 

@@ -36,6 +36,11 @@ from app.services.scoring_service import (
     calculate_score,
     get_severity,
 )
+from app.services.se_pattern_engine import (
+    SEPatternEngine,
+    assess_confidence,
+    blend_se,
+)
 from app.services.url_detector import analyze_url_heuristics
 from app.services.verdict_builder import VerdictBuilder
 
@@ -376,6 +381,27 @@ async def process_email_analysis(
         if auth_risk > 0:
             combined_heur_score = max(combined_heur_score, min(1.0, auth_risk / 100.0))
 
+    # --- E. Social-engineering pattern analysis (SE-HARDENING) --------------
+    # Narrative-level detection (security-alert framing + attachment lure).
+    # Merged monotonically AFTER the auth section: SE can raise the heuristic
+    # stage, never lower it. SE indicators join the display summary but their
+    # score contribution flows exclusively through the blend below.
+    se_result: Optional[dict[str, Any]] = None
+    if get_settings().SE_PATTERN_ENABLED:
+        try:
+            se_result = await asyncio.to_thread(SEPatternEngine().analyze, body_text, subject)
+        except Exception as exc:
+            logger.warning(
+                "SE pattern analysis crashed for processed_email %s: %s", processed_email_id, exc
+            )
+    se_indicators: list[dict[str, Any]] = []
+    if se_result is not None:
+        se_indicators = list(se_result.get("indicators") or [])
+        if int(se_result.get("risk_score") or 0) > 0:
+            combined_heur_score = blend_se(
+                combined_heur_score, int(se_result["risk_score"]) / 100.0
+            )
+
     all_ml_probs: list[float] = []
     if ml_email_prob is not None:
         all_ml_probs.append(ml_email_prob)
@@ -434,7 +460,9 @@ async def process_email_analysis(
     severity = get_severity(round(risk_score * 100))
 
     # 7. Build Signals Dictionary & Indicators Summary
-    all_raw_indicators = text_indicators + url_indicators + impers_indicators + auth_indicators
+    all_raw_indicators = (
+        text_indicators + url_indicators + impers_indicators + auth_indicators + se_indicators
+    )
     sorted_inds = sorted(all_raw_indicators, key=_indicator_weight, reverse=True)
     seen_keys: set[tuple[str, str]] = set()
     indicators_summary: list[dict[str, Any]] = []
@@ -459,6 +487,13 @@ async def process_email_analysis(
             "dmarc": (auth_verification.get("dmarc") or {}).get("status"),
         }
 
+    # SE-HARDENING D3: low-confidence labelling. Weak heuristic AND weak ML
+    # downgrade confidence; a weak heuristic with no URL evidence but an
+    # attachment reference is flagged for separate attachment verification.
+    confidence_info = assess_confidence(
+        combined_heur_score, max_ml, len(url_indicators), body_text
+    )
+
     signals_dict = dict(signals)
     signals_dict.update({
         "text_model": round(ml_email_score, 4),
@@ -468,6 +503,12 @@ async def process_email_analysis(
         "dkim": dkim,
         "dmarc": dmarc,
         "auth_verification": auth_verification_summary,
+        "se_patterns": {
+            "engine": (se_result or {}).get("engine", "se_patterns"),
+            "risk_score": int((se_result or {}).get("risk_score") or 0),
+            "match_counts": (se_result or {}).get("match_counts", {}),
+        },
+        "confidence": confidence_info.get("confidence") or "normal",
         "impersonation": round(impers_score, 4),
         "indicators_summary": indicators_summary,
     })
@@ -491,6 +532,8 @@ async def process_email_analysis(
         impers_score=impers_score,
         top_indicators=top_indicators,
     )
+    if confidence_info.get("notes"):
+        explanation_text = (explanation_text + " " + " ".join(confidence_info["notes"])).strip()
     engine_results = {
         "phishing": {"score": text_score, "indicators": text_indicators},
         "url": {"score": url_score, "indicators": url_indicators, "urls_analyzed": len(urls)},

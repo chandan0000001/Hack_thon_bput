@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     DNS_CB_WINDOW_S: int = 60
     DNS_CB_OPEN_S: int = 120
 
+    # --- SE-HARDENING: social-engineering narrative patterns ---
+    SE_PATTERN_ENABLED: bool = True
+
 
     # --- Email connectors (Phase 1-2): Gmail only; own Google OAuth client ---
     GOOGLE_GMAIL_CLIENT_ID: str = ""

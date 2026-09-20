@@ -1,0 +1,22 @@
+From: security-alert@cyberguard.com
+Subject: Unusual sign-in detected - Security verification required
+
+Dear Customer,
+
+We detected a recent sign-in to your account from an unrecognized device and location.
+
+Sign-in details:
+- Date: 2026-09-21 03:12 UTC
+- Device: Windows PC
+- Location: Lagos, Nigeria
+
+If this was not you, review the attached document immediately and follow the
+steps to secure your account. Your account protection will expire within 24
+hours unless identity verification is completed as soon as possible.
+
+This is an automated message from the Account Security Team. Unrecognized
+activity may result in permanent suspension of your access.
+
+See attached document for the verification form.
+
+CyberGuard Account Protection

@@ -1,0 +1,18 @@
+{
+  "description": "SE-HARDENING eval cases. Each case is evaluated through the real manual analysis pipeline (POST /analysis/email equivalent). raw_headers=null means the case deliberately scans WITHOUT SMTP headers: authentication verification is unavailable, and the SE narrative must carry the verdict on its own (the auth-verify screenshot-class false negative).",
+  "cases": [
+    {
+      "id": "se_attachment_lure_001",
+      "fixture": "se_phishing_attachment_lure.txt",
+      "sender": "security-alert@cyberguard.com",
+      "raw_headers": null,
+      "expected_verdict": "suspicious",
+      "risk_min": 60,
+      "expected_indicators": [
+        "security_alert_framing",
+        "attachment_lure",
+        "bureaucratic_urgency"
+      ]
+    }
+  ]
+}

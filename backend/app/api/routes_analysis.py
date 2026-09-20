@@ -42,8 +42,15 @@ from app.services.impersonation_detector import analyze_impersonation_heuristics
 from app.services.ml_inference import score_with_ml
 from app.services.network_threat_detector import analyze_network_heuristics
 from app.services.phishing_detector import analyze_email_heuristics
-from app.services.scoring_service import get_severity
+from app.services.scoring_service import calculate_score, get_severity
 from app.services.attachment_scanner import AttachmentScanner
+from app.services.se_pattern_engine import (
+    ATTACHMENT_REFERENCE_WARNING,
+    SEPatternEngine,
+    assess_confidence,
+    blend_se,
+    references_attachment,
+)
 from app.services.url_detector import analyze_url_heuristics
 
 logger = logging.getLogger("cyberguard.security")
@@ -218,6 +225,37 @@ async def analyze_email(
         except Exception as exc:
             logger.warning("Manual-path auth verification failed: %s", exc)
 
+    # SE-HARDENING (manual path): social-engineering narrative patterns. The
+    # SE blend is applied to the pre-SE heuristic so SE contributes through
+    # the formula exactly once; indicators join the list for display.
+    se_result: Optional[dict[str, Any]] = None
+    if get_settings().SE_PATTERN_ENABLED:
+        try:
+            se_result = await asyncio.to_thread(
+                SEPatternEngine().analyze, payload.body, payload.subject
+            )
+            if int(se_result.get("risk_score") or 0) > 0:
+                h100 = calculate_score(indicators)
+                min_score = max(
+                    min_score,
+                    int(round(blend_se(h100 / 100.0, int(se_result["risk_score"]) / 100.0) * 100)),
+                )
+            indicators.extend(
+                {**i, "source": "se_patterns"} for i in se_result.get("indicators") or []
+            )
+            raw_data["se_patterns"] = {
+                "engine": se_result.get("engine"),
+                "risk_score": int(se_result.get("risk_score") or 0),
+            }
+        except Exception as exc:
+            logger.warning("Manual-path SE pattern analysis failed: %s", exc)
+
+    # SE-HARDENING D4: the manual path can see that the message references
+    # attachments but never scans attachment content — warn in the SAME
+    # warnings array as the auth warnings, without duplicates.
+    if references_attachment(payload.body) and ATTACHMENT_REFERENCE_WARNING not in auth_warnings:
+        auth_warnings.append(ATTACHMENT_REFERENCE_WARNING)
+
     alert = await _run_analysis_pipeline(
         db,
         tenant,
@@ -236,6 +274,25 @@ async def analyze_email(
         alert.explanation = ((alert.explanation or "") + suffix).strip()
         alert.summary = ((alert.summary or "") + " " + auth_warnings[0]).strip()[:250]
         await db.commit()
+
+    # SE-HARDENING D3: low-confidence labelling on the manual path — weak
+    # heuristic + weak ML appends the manual-review note; a weak heuristic
+    # with no URL evidence but an attachment reference appends the separate-
+    # verification note.
+    try:
+        h100, _hybrid, ml_prob = score_with_ml(indicators)
+        url_indicator_count = sum(
+            1 for i in indicators if "url" in str(i.get("type", "")).lower()
+        )
+        conf = assess_confidence(h100 / 100.0, ml_prob, url_indicator_count, payload.body)
+        if conf.get("notes"):
+            alert.explanation = (
+                (alert.explanation or "") + " " + " ".join(conf["notes"])
+            ).strip()
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Manual-path confidence assessment failed: %s", exc)
+
     response = AlertResponse.model_validate(alert)
     if auth_warnings:
         response.warnings = auth_warnings
