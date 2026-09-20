@@ -568,6 +568,14 @@ async def run_tests():
 
     await run_content_analysis_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 34. ATTACH-SCAN-4 — Risk scoring + pipeline integration + explainable verdicts
+    # -----------------------------------------------------------------------
+    print("\n[Suite 34] ATTACH-SCAN-4 — Attachment Integration & Explainable Verdicts")
+    from test_attachment_integration import run_attachment_integration_tests
+
+    await run_attachment_integration_tests(runner)
+
     return runner.report()
 
 

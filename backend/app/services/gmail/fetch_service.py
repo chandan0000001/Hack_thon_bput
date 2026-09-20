@@ -131,6 +131,46 @@ def parse_auth_headers(headers: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def extract_attachments_meta(payload: dict, max_attachments: int = MAX_ATTACHMENT_META) -> list[dict]:
+    """Collect attachment metadata from a Gmail payload WITHOUT downloading bytes.
+
+    Walks MIME parts recursively (attachments can sit inside nested
+    multipart containers). Each entry carries {attachment_id, filename,
+    mime_type, size_bytes, scan_status: "pending"} — the analysis worker
+    later streams the bytes and fills scan_results (ATTACH-SCAN Phase 4).
+    """
+    meta: list[dict] = []
+
+    def _walk(part: dict) -> None:
+        if len(meta) >= max_attachments:
+            return
+        body = part.get("body", {}) or {}
+        filename = part.get("filename") or ""
+        attachment_id = body.get("attachmentId")
+        if filename or attachment_id:
+            meta.append(
+                {
+                    "attachment_id": attachment_id,
+                    "filename": filename,
+                    "mime_type": part.get("mimeType") or "application/octet-stream",
+                    "size_bytes": int(body.get("size") or 0),
+                    "scan_status": "pending",
+                }
+            )
+            return  # attachment parts have no sub-parts worth walking
+        for sub in part.get("parts", []) or []:
+            if isinstance(sub, dict):
+                _walk(sub)
+
+    root = payload or {}
+    if root.get("filename") or (root.get("body", {}) or {}).get("attachmentId"):
+        _walk(root)
+    for part in root.get("parts", []) or []:
+        if isinstance(part, dict):
+            _walk(part)
+    return meta
+
+
 async def process_email_fetch(
     db: AsyncSession,
     account_id: str,
@@ -285,6 +325,21 @@ async def process_email_fetch(
     urls, truncated_urls = extract_urls(normalized.body_text, normalized.body_html, max_urls=MAX_URLS)
     attachments_meta = (normalized.attachments_meta or [])[:MAX_ATTACHMENT_META]
 
+    # Phase 4: mission-schema attachment metadata (pending scan) persisted to
+    # the processed_emails.attachments_meta column; bytes are NOT downloaded
+    # here — the analysis worker streams them per attachment.
+    scan_attachments_meta = extract_attachments_meta(payload)
+    # Backfill from the provider walk when Gmail omits size/attachmentId on
+    # one path but the other captured it (defensive; both read the same parts).
+    provider_by_name = {
+        (a.get("filename") or "", a.get("mime_type") or ""): a for a in attachments_meta
+    }
+    for entry in scan_attachments_meta:
+        provider_entry = provider_by_name.get((entry["filename"], entry["mime_type"]))
+        if provider_entry:
+            entry["attachment_id"] = entry["attachment_id"] or provider_entry.get("attachment_id")
+            entry["size_bytes"] = entry["size_bytes"] or int(provider_entry.get("size") or 0)
+
     # 6. Capture auth headers
     auth_signals = parse_auth_headers(normalized.headers)
 
@@ -307,6 +362,7 @@ async def process_email_fetch(
     }
 
     processed_email.signals = signals_payload
+    processed_email.attachments_meta = scan_attachments_meta
     processed_email.processing_status = "fetched"
     processed_email.updated_at = datetime.now(timezone.utc)
     await db.commit()

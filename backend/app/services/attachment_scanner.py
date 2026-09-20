@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from app.core.errors import AttachmentTooLargeError
 from app.services.archive_inspector import ArchiveInspector
+from app.services.attachment_risk_scorer import AttachmentRiskScorer
 from app.services.attachment_streamer import AttachmentStreamer
 from app.services.attachment_text_analyzer import AttachmentTextAnalyzer
 from app.services.attachment_url_extractor import AttachmentUrlExtractor
@@ -68,6 +69,8 @@ class ScanResult:
     scan_duration_ms: int = 0
     error: Optional[str] = None
     temp_path: Optional[str] = None  # internal handoff; cleared after cleanup
+    severity: str = "low"  # Phase 4: final severity band from the risk scorer
+    explanation: str = ""  # Phase 4: human-readable verdict explanation
 
 
 class AttachmentScanner:
@@ -87,6 +90,7 @@ class AttachmentScanner:
         self.office = OfficeAnalyzer()
         self.url_extractor = AttachmentUrlExtractor()
         self.text = AttachmentTextAnalyzer()
+        self.risk_scorer = AttachmentRiskScorer()
 
     async def scan_attachment(
         self,
@@ -132,7 +136,17 @@ class AttachmentScanner:
                     result=result,
                 )
 
-            # Level 4 (sandbox detonation) lands in Phase 4.
+            # Level 4 (sandbox detonation) lands in Phase 5.
+
+            # Phase 4: final verdict/severity/explanation from the risk scorer
+            # (the scorer's forced-malicious checks subsume the Level-2
+            # overrides; a result's verdict never gets downgraded here).
+            scored = self.risk_scorer.score(result.indicators, total_risk=result.risk_score)
+            result.risk_score = scored["risk_score"]
+            if _VERDICT_SEVERITY.get(scored["verdict"], 0) >= _VERDICT_SEVERITY.get(result.verdict, 0):
+                result.verdict = scored["verdict"]
+            result.severity = scored["severity"]
+            result.explanation = scored["explanation"]
 
             result.scan_duration_ms = int((time.monotonic() - start) * 1000)
             result.status = "completed"
@@ -142,9 +156,11 @@ class AttachmentScanner:
                 status="failed",
                 verdict="malicious",
                 risk_score=100,
+                severity="critical",
                 indicators=[{"type": "oversized_file", "severity": "critical"}],
                 declared_mime=declared_mime,
                 error=str(exc),
+                explanation="Attachment rejected: exceeds the 25 MB size limit (treated as malicious).",
             )
         except Exception as exc:
             logger.warning("Attachment scan failed for %s/%s: %s", message_id, attachment_id, exc)

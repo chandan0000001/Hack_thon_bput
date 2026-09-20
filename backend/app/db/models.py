@@ -1108,6 +1108,12 @@ class ProcessedEmail(Base):
     #   }, ...
     # ]
     attachments_meta: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(PortableJSON, nullable=True)
+    # Phase 4: final explainable verdict including attachment signals
+    # (verdict/severity from VerdictBuilder; classification keeps its
+    # legacy body-only semantics for existing consumers).
+    verdict: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    severity: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    explanation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now)
 

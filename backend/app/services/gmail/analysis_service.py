@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 import uuid
@@ -16,7 +17,8 @@ from app.core.metrics import (
     job_processing_duration_seconds,
     processed_emails_total,
 )
-from app.db.models import ProcessedEmail, ScanResult
+from app.db.models import GmailAccount, ProcessedEmail, ScanResult
+from app.services.attachment_scanner import AttachmentScanner
 from app.services.impersonation_detector import analyze_impersonation_heuristics
 from app.services.ml_inference import (
     ml_indicator,
@@ -32,8 +34,133 @@ from app.services.scoring_service import (
     get_severity,
 )
 from app.services.url_detector import analyze_url_heuristics
+from app.services.verdict_builder import VerdictBuilder
 
 logger = logging.getLogger("cyberguard.gmail.analysis")
+
+# Attachment risk lives on the 0-100 scale; the email pipeline scores 0-1.
+ATTACHMENT_RISK_SCALE = 100
+
+
+async def scan_email_attachments(
+    gmail_client: Any,
+    access_token: Optional[str],
+    refresh_token: Optional[str],
+    message_id: str,
+    attachments_meta: list[dict[str, Any]],
+    scanner: Optional[AttachmentScanner] = None,
+) -> list[dict[str, Any]]:
+    """Stream-scan every pending attachment and fill scan_results in place.
+
+    One attachment failing (network, engine crash) records scan_status
+    "failed" with the error and the loop continues — an AV outage on one
+    attachment must not blind the rest of the email.
+    """
+    scanner = scanner or AttachmentScanner()
+    for attachment in attachments_meta:
+        if attachment.get("scan_status") not in (None, "pending"):
+            continue  # already scanned (re-analysis of a fetched email)
+        if not attachment.get("attachment_id"):
+            attachment["scan_status"] = "skipped"
+            attachment["scan_results"] = {
+                "status": "skipped",
+                "risk_score": 0,
+                "verdict": "safe",
+                "error": "no attachment_id on the Gmail part",
+            }
+            continue
+        try:
+            scan_result = await scanner.scan_attachment(
+                gmail_client,
+                message_id,
+                attachment["attachment_id"],
+                attachment.get("filename") or "",
+                attachment.get("mime_type") or "application/octet-stream",
+                int(attachment.get("size_bytes") or 0),
+                access_token=access_token,
+                refresh_token=refresh_token,
+            )
+            attachment["scan_status"] = scan_result.status
+            attachment["scan_results"] = {
+                "status": scan_result.status,
+                "risk_score": scan_result.risk_score,
+                "verdict": scan_result.verdict,
+                "severity": scan_result.severity,
+                "indicators": scan_result.indicators,
+                "sha256": scan_result.sha256,
+                "detected_mime": scan_result.detected_mime,
+                "scan_duration_ms": scan_result.scan_duration_ms,
+                "explanation": scan_result.explanation,
+            }
+            if scan_result.error:
+                attachment["scan_results"]["error"] = scan_result.error
+        except Exception as exc:
+            logger.warning(
+                "Attachment scan crashed for %s/%s: %s", message_id, attachment.get("filename"), exc
+            )
+            attachment["scan_status"] = "failed"
+            attachment["scan_results"] = {
+                "status": "failed",
+                "risk_score": 0,
+                "verdict": "unknown",
+                "error": str(exc),
+            }
+    return attachments_meta
+
+
+def aggregate_attachment_risk(
+    email_risk_100: int,
+    attachments_meta: list[dict[str, Any]],
+) -> tuple[int, str | None, list[dict[str, Any]]]:
+    """Fold attachment risk into the email's 0-100 risk (monotonic raise-only).
+
+    Returns (final_risk_100, override_verdict_or_None, attachment_indicators).
+    The attachment channel can elevate the email's risk/verdict but never
+    lower it; failed scans contribute risk 0 rather than blocking the email.
+    """
+    indicators: list[dict[str, Any]] = []
+    final_risk = email_risk_100
+    override_verdict: str | None = None
+
+    scan_results = [
+        (a.get("scan_results") or {})
+        for a in (attachments_meta or [])
+        if isinstance(a, dict)
+    ]
+    risks = [int(r.get("risk_score") or 0) for r in scan_results]
+    max_attachment_risk = max(risks) if risks else 0
+
+    if max_attachment_risk > final_risk:
+        final_risk = max_attachment_risk
+        override_verdict = "malicious" if max_attachment_risk >= 80 else "suspicious"
+
+    for r in scan_results:
+        for ind in r.get("indicators") or []:
+            if isinstance(ind, dict) and ind.get("severity") != "info":
+                indicators.append({**ind, "source": "attachment"})
+
+    return final_risk, override_verdict, indicators
+
+
+async def _load_gmail_context(
+    db: AsyncSession, processed_email: ProcessedEmail
+) -> tuple[Any, Optional[str], Optional[str]] | None:
+    """Load the Gmail client + decrypted tokens for attachment streaming."""
+    stmt = select(GmailAccount).where(GmailAccount.id == processed_email.gmail_account_id)
+    account = (await db.execute(stmt)).scalar_one_or_none()
+    if account is None:
+        return None
+    try:
+        access_token = account.get_access_token()
+        refresh_token = account.get_refresh_token()
+    except Exception as exc:
+        logger.warning("Cannot decrypt Gmail tokens for attachment scanning: %s", exc)
+        return None
+    if not access_token:
+        return None
+    from app.services.gmail.client import GmailClient
+
+    return GmailClient(), access_token, refresh_token
 
 
 def monotonic_blend(heuristic: float, ml: Optional[float]) -> float:
@@ -218,6 +345,44 @@ async def process_email_analysis(
     # Ensure individual critical engine verdicts are preserved
     risk_score = round(min(1.0, max(blended_risk, text_score, url_score, impers_score)), 3)
 
+    # --- E. Attachment scanning (ATTACH-SCAN Phase 4) --------------------
+    # Metadata was captured at fetch time (scan_status "pending"); here the
+    # bytes are streamed and scanned, then folded into the email risk
+    # monotonically (attachments can raise it, never lower it).
+    # Deep copy is REQUIRED: the scanner mutates entries in place, and a
+    # shallow copy shares dicts with the loaded attribute — SQLAlchemy would
+    # then see old == new at flush and skip the UPDATE entirely.
+    attachments_meta = copy.deepcopy(
+        [a for a in (processed_email.attachments_meta or []) if isinstance(a, dict)]
+    )
+    email_risk_100 = round(risk_score * 100)
+    attachment_indicators: list[dict[str, Any]] = []
+    if any(a.get("scan_status") in (None, "pending") for a in attachments_meta):
+        gmail_context = None
+        try:
+            gmail_context = await _load_gmail_context(db, processed_email)
+        except Exception as exc:
+            logger.warning("Gmail context unavailable for attachment scanning: %s", exc)
+        if gmail_context:
+            gmail_client, access_token, refresh_token = gmail_context
+            try:
+                attachments_meta = await scan_email_attachments(
+                    gmail_client,
+                    access_token,
+                    refresh_token,
+                    processed_email.gmail_message_id,
+                    attachments_meta,
+                )
+                processed_email.attachments_meta = attachments_meta
+            except Exception as exc:
+                logger.warning("Attachment scanning failed for email %s: %s", processed_email.id, exc)
+
+    final_risk_100, override_verdict, attachment_indicators = aggregate_attachment_risk(
+        email_risk_100, attachments_meta
+    )
+    if final_risk_100 > email_risk_100:
+        risk_score = round(min(1.0, final_risk_100 / 100.0), 3)
+
     if risk_score >= 0.7:
         classification = "phishing"
     elif risk_score >= 0.35:
@@ -237,6 +402,9 @@ async def process_email_analysis(
         if k not in seen_keys:
             seen_keys.add(k)
             indicators_summary.append(ind)
+
+    if attachment_indicators:
+        indicators_summary.extend(attachment_indicators)
 
     top_indicators = indicators_summary[:10]
 
@@ -276,6 +444,17 @@ async def process_email_analysis(
         "url": {"score": url_score, "indicators": url_indicators, "urls_analyzed": len(urls)},
         "impersonation": {"score": impers_score, "indicators": impers_indicators},
         "auth": {"spf": spf, "dkim": dkim, "dmarc": dmarc, "indicators": auth_indicators},
+        "attachments": {
+            "scanned": len(attachments_meta),
+            "results": [
+                {
+                    "filename": a.get("filename"),
+                    "scan_status": a.get("scan_status"),
+                    "scan_results": a.get("scan_results"),
+                }
+                for a in attachments_meta
+            ],
+        },
     }
 
     scan_result = ScanResult(
@@ -296,6 +475,18 @@ async def process_email_analysis(
     await db.flush()
 
     # 10. Update processed_emails.scan_result_id and 11. transition status -> 'completed'
+    # Phase 4: final explainable verdict folds in attachment signals; body
+    # risk passed on the 0-100 scale; attachment scan results included.
+    verdict_info = VerdictBuilder().build_explainable_verdict(
+        final_risk_100, indicators_summary, attachments_meta
+    )
+    if override_verdict and override_verdict == "malicious":
+        verdict_info["verdict"] = "malicious"
+        verdict_info["severity"] = "critical"
+    processed_email.verdict = verdict_info["verdict"]
+    processed_email.severity = verdict_info["severity"]
+    processed_email.explanation = verdict_info["explanation"]
+
     processed_email.scan_result_id = scan_result.id
     processed_email.processing_status = "completed"
     processed_email.updated_at = datetime.now(timezone.utc)
