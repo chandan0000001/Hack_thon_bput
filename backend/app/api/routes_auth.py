@@ -26,7 +26,7 @@ from app.core.security import (
     require_org_enabled,
 )
 from app.db.admin import is_username_taken, resolve_email_for_identifier
-from app.db.models import Organization, OrganizationMember, User
+from app.db.models import Organization, OrganizationMember, Project, User
 from app.db.session import current_user_id, get_db
 
 logger = logging.getLogger("cyberguard.auth")
@@ -218,6 +218,24 @@ async def read_current_user(
                 }
             )
 
+    # ORG-REDESIGN: the persisted project selection (org scope only) so the
+    # Topbar switcher hydrates without an extra request.
+    active_project = None
+    if get_settings().ORG_ENABLED and tenant.organization_id is not None:
+        res_user = await db.execute(select(User).where(User.id == user.id))
+        user_row = res_user.scalar_one()
+        if user_row.active_project_id:
+            res_proj = await db.execute(
+                select(Project).where(
+                    Project.id == user_row.active_project_id,
+                    Project.organization_id == tenant.organization_id,
+                    Project.status == "active",
+                )
+            )
+            proj = res_proj.scalar_one_or_none()
+            if proj is not None:
+                active_project = {"id": proj.id, "name": proj.name, "slug": proj.slug}
+
     return {
         "id": user.id,
         "email": user.email,
@@ -236,6 +254,7 @@ async def read_current_user(
             "is_personal": tenant.is_single_user,
             "role": tenant.role,
         },
+        "active_project": active_project,
         "personal_organization_id": personal_org_id,
         "organizations": orgs_list,
     }
@@ -300,3 +319,61 @@ async def switch_organization(
     invalidate_org_cache(user.id)
 
     return {"message": "Active organization updated", "active_organization_id": payload.organization_id}
+
+
+class SwitchProjectRequest(BaseModel):
+    project_id: Optional[str] = None  # None clears the selection
+
+
+@router.post("/switch-project", dependencies=[Depends(require_org_enabled())])
+async def switch_project(
+    payload: SwitchProjectRequest,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Persist the project switcher selection (org scope only).
+
+    Validates that the project belongs to one of the user's orgs and is
+    active; ``project_id: null`` clears the selection. The frontend also
+    stores the value client-side and stamps ``X-Project-Id`` on requests —
+    this endpoint makes the selection survive reloads and devices."""
+    user_query = await db.execute(select(User).where(User.id == user.id))
+    user_db = user_query.scalar_one()
+
+    if payload.project_id is None:
+        user_db.active_project_id = None
+        await db.commit()
+        return {"message": "Active project cleared", "active_project_id": None}
+
+    res = await db.execute(
+        select(Project).where(
+            Project.id == payload.project_id, Project.status == "active"
+        )
+    )
+    project = res.scalar_one_or_none()
+    if project is None:
+        raise ValidationError("Project not found")
+
+    # Membership of the project's org (member row or org ownership).
+    member_query = await db.execute(
+        select(OrganizationMember).where(
+            OrganizationMember.organization_id == project.organization_id,
+            OrganizationMember.user_id == user.id,
+        )
+    )
+    membership = member_query.scalar_one_or_none()
+    if membership is None:
+        org_query = await db.execute(
+            select(Organization).where(Organization.id == project.organization_id)
+        )
+        org = org_query.scalar_one_or_none()
+        if org is None or org.owner_id != user.id:
+            raise PermissionDeniedError("You are not a member of this project's organization")
+
+    user_db.active_project_id = project.id
+    await db.commit()
+    return {
+        "message": "Active project updated",
+        "active_project_id": project.id,
+        "project": {"id": project.id, "name": project.name, "slug": project.slug},
+    }

@@ -72,9 +72,12 @@ async def create_alert(
         except Exception:  # noqa: BLE001 - stamping is best-effort
             organization_id = None
 
+    # ORG-REDESIGN: carry the tenant's project scope onto the alert so
+    # project dashboards aggregate the right rows.
     alert = Alert(
         id=alert_id,
         organization_id=organization_id,
+        project_id=getattr(tenant, "project_id", None),
         owner_user_id=tenant.owner_user_id,
         event_id=event_id,
         title=title,

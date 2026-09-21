@@ -117,3 +117,76 @@ async def resolve_org_id(db: AsyncSession, owner_user_id: str) -> Optional[str]:
     """Org stamp for pipeline-created rows (see resolve_org_context)."""
     org_id, _ = await resolve_org_context(db, owner_user_id)
     return org_id
+
+
+# ---------------------------------------------------------------------------
+# Project resolution (ORG-REDESIGN)
+# ---------------------------------------------------------------------------
+
+_project_cache: dict[str, tuple[float, Optional[str]]] = {}
+
+
+async def resolve_project_id(
+    db: AsyncSession, owner_user_id: str, org_id: Optional[str]
+) -> Optional[str]:
+    """Project stamp for org-plane rows (best-effort, never fails the caller).
+
+    Resolution rule (per D6 of ORG-REDESIGN):
+    1. the user's persisted ``active_project_id`` — honored only when it
+       belongs to ``org_id`` and is active;
+    2. otherwise the org's oldest active project (the auto-provisioned
+       'General' one for new orgs);
+    3. otherwise None (row stays org-stamped only).
+
+    Cached per (owner, org) for the same TTL budget as the org stamp.
+    """
+    if not owner_user_id or not org_id:
+        return None
+    key = f"{owner_user_id}:{org_id}"
+    now = time.monotonic()
+    cached = _project_cache.get(key)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    project_id: Optional[str] = None
+    active = (
+        await db.execute(
+            text("select active_project_id from cyberguard.users where id = :uid"),
+            {"uid": owner_user_id},
+        )
+    ).scalar()
+    if active:
+        valid = (
+            await db.execute(
+                text(
+                    "select 1 from cyberguard.projects "
+                    "where id = :pid and organization_id = :org and status = 'active'"
+                ),
+                {"pid": active, "org": org_id},
+            )
+        ).first()
+        if valid is not None:
+            project_id = active
+    if project_id is None:
+        project_id = (
+            await db.execute(
+                text(
+                    "select id from cyberguard.projects "
+                    "where organization_id = :org and status = 'active' "
+                    "order by created_at asc limit 1"
+                ),
+                {"org": org_id},
+            )
+        ).scalar()
+
+    _project_cache[key] = (now + _TTL_SECONDS, project_id)
+    return project_id
+
+
+def invalidate_projects(owner_user_id: Optional[str] = None) -> None:
+    """Drop cached project resolutions (switch-project, tests)."""
+    if owner_user_id is None:
+        _project_cache.clear()
+    else:
+        for key in [k for k in _project_cache if k.startswith(f"{owner_user_id}:")]:
+            _project_cache.pop(key, None)

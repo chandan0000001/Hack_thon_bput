@@ -47,6 +47,8 @@ class User(Base):
     full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     is_single_user: Mapped[bool] = mapped_column(Boolean, default=True)
     active_organization_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    # ORG-REDESIGN: persisted project switcher selection (org scope only).
+    active_project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
 
     # Relationships
@@ -151,6 +153,10 @@ class OrgLogEvent(Base):
     """
 
     __tablename__ = "org_log_events"
+
+    # ORG-REDESIGN: which project produced this row (project gateway / active
+    # project). Nullable — personal-mode and legacy rows have it NULL.
+    project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     organization_id: Mapped[str] = mapped_column(
@@ -327,8 +333,57 @@ class OrganizationSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now)
 
 
+class Project(Base):
+    """Org-scoped project (ORG-REDESIGN): a gateway + dashboard surface with
+    exactly two active API keys (master, viewer). Slug is unique per org."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    slug: Mapped[str] = mapped_column(String(60), nullable=False)
+    # active | archived (archived = soft-delete; keys invalidate via org checks)
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+
+
+class ProjectAPIKey(Base):
+    """Project-scoped gateway API key (ORG-REDESIGN).
+
+    Exactly one active key per (project, role) — enforced by the partial
+    unique index in migration 0019 and re-checked in the service. role:
+    master = all gateway actions, viewer = read-only actions."""
+
+    __tablename__ = "project_api_keys"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    organization_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    # master | viewer
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    key_prefix: Mapped[str] = mapped_column(String(12), nullable=False)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # active | revoked (revocation frees the (project, role) slot)
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+
+
+
 class Event(Base):
     __tablename__ = "events"
+
+    # ORG-REDESIGN: which project produced this row (project gateway / active
+    # project). Nullable — personal-mode and legacy rows have it NULL.
+    project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     organization_id: Mapped[Optional[str]] = mapped_column(
@@ -371,6 +426,10 @@ class MediaFile(Base):
 
 class Alert(Base):
     __tablename__ = "alerts"
+
+    # ORG-REDESIGN: which project produced this row (project gateway / active
+    # project). Nullable — personal-mode and legacy rows have it NULL.
+    project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     organization_id: Mapped[Optional[str]] = mapped_column(
@@ -524,6 +583,10 @@ class ResponseExecution(Base):
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
+
+    # ORG-REDESIGN: which project produced this row (project gateway / active
+    # project). Nullable — personal-mode and legacy rows have it NULL.
+    project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     organization_id: Mapped[Optional[str]] = mapped_column(
@@ -732,6 +795,10 @@ class SecurityEvent(Base):
 
     __tablename__ = "security_events"
 
+    # ORG-REDESIGN: which project produced this row (project gateway / active
+    # project). Nullable — personal-mode and legacy rows have it NULL.
+    project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     owner_user_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True,
@@ -802,6 +869,10 @@ class NotificationLog(Base):
 
 class ActionExecution(Base):
     __tablename__ = "action_executions"
+
+    # ORG-REDESIGN: which project produced this row (project gateway / active
+    # project). Nullable — personal-mode and legacy rows have it NULL.
+    project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     organization_id: Mapped[Optional[str]] = mapped_column(

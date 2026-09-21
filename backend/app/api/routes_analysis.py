@@ -111,6 +111,7 @@ async def _create_analysis_event(
     event = Event(
         id=event_id,
         organization_id=tenant.organization_id,
+        project_id=tenant.project_id,
         owner_user_id=tenant.owner_user_id,
         event_type=event_type,
         source=source,

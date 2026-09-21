@@ -84,6 +84,72 @@ export function revokeApiKey(orgId: string, keyId: string): Promise<OrgApiKey> {
   return apiFetch(`/orgs/${orgId}/api-keys/${keyId}`, { method: 'DELETE' });
 }
 
+// --- Projects (ORG-REDESIGN) ---
+
+export interface Project {
+  id: string;
+  organization_id: string;
+  name: string;
+  slug: string;
+  status: string;
+  created_at?: string;
+}
+
+export interface ProjectApiKey {
+  id: string;
+  project_id: string;
+  name: string;
+  role: 'master' | 'viewer';
+  key_prefix: string;
+  last_used_at: string | null;
+  status: string;
+  created_at?: string;
+}
+
+export interface ProjectApiKeyCreated extends ProjectApiKey {
+  /** Plaintext — returned EXACTLY ONCE by the create endpoint. */
+  key: string;
+}
+
+export function listProjects(orgId: string): Promise<Project[]> {
+  return apiFetch(`/orgs/${orgId}/projects`);
+}
+
+export function createProject(orgId: string, name: string): Promise<Project> {
+  return apiFetch(`/orgs/${orgId}/projects`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function archiveProject(orgId: string, projectId: string): Promise<{ message: string }> {
+  return apiFetch(`/orgs/${orgId}/projects/${projectId}`, { method: 'DELETE' });
+}
+
+export function listProjectKeys(orgId: string, projectId: string): Promise<ProjectApiKey[]> {
+  return apiFetch(`/orgs/${orgId}/projects/${projectId}/keys`);
+}
+
+export function createProjectKey(
+  orgId: string,
+  projectId: string,
+  role: 'master' | 'viewer',
+  name: string,
+): Promise<ProjectApiKeyCreated> {
+  return apiFetch(`/orgs/${orgId}/projects/${projectId}/keys`, {
+    method: 'POST',
+    body: JSON.stringify({ role, name }),
+  });
+}
+
+export function revokeProjectKey(
+  orgId: string,
+  projectId: string,
+  keyId: string,
+): Promise<{ message: string }> {
+  return apiFetch(`/orgs/${orgId}/projects/${projectId}/keys/${keyId}`, { method: 'DELETE' });
+}
+
 // --- Settings ---
 
 export function listSettings(orgId: string): Promise<OrgSetting[]> {
@@ -167,6 +233,14 @@ export type LogAction =
   | 'mark_safe'
   | 'isolate_host';
 
+export interface FeatureAggregate {
+  total: number;
+  /** critical/high/medium/low/other — event features only. */
+  severity?: Record<string, number>;
+  /** Mail servers only. */
+  by_status?: Record<string, number>;
+}
+
 export interface DashboardSummary {
   organization_id: string;
   total_scans: number;
@@ -175,6 +249,8 @@ export interface DashboardSummary {
   blocked_senders: number;
   critical_alerts: number;
   last_scan_at: string | null;
+  project_id?: string | null;
+  features?: Record<string, FeatureAggregate>;
 }
 
 export interface FeatureScanRow {
@@ -224,8 +300,10 @@ function qs(params: Record<string, string | number | null | undefined>): string 
   return pairs.length ? `?${pairs.join('&')}` : '';
 }
 
-export function getDashboardSummary(orgId: string): Promise<DashboardSummary> {
-  return apiFetch(`/org/${orgId}/dashboard/summary`);
+export function getDashboardSummary(orgId: string, projectId?: string | null): Promise<DashboardSummary> {
+  return apiFetch(
+    `/org/${orgId}/dashboard/summary${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`,
+  );
 }
 
 export function getFeatureDashboard(

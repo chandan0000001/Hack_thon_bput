@@ -42,12 +42,15 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
   const isFormData = options.body instanceof FormData;
   const execute = (token: string | null) => {
     const activeOrgId = useAuthStore.getState().activeOrganizationId;
+    const activeProjectId = useAuthStore.getState().activeProjectId;
     return fetch(`${BASE_URL}${path}`, {
       ...options,
       headers: {
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(activeOrgId ? { 'X-Organization-Id': activeOrgId } : {}),
+        // ORG-REDESIGN: scope org-plane reads to the selected project.
+        ...(activeOrgId && activeProjectId ? { 'X-Project-Id': activeProjectId } : {}),
         ...(options.headers ?? {}),
       },
     });

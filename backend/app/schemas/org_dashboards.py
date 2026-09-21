@@ -61,6 +61,11 @@ class DashboardSummaryResponse(BaseModel):
     blocked_senders: int
     critical_alerts: int
     last_scan_at: Optional[Any] = None
+    # ORG-REDESIGN: project scope + per-feature aggregates. Additive and
+    # optional so existing clients (and the pre-project test suites) keep
+    # passing: features is {} when no project filter was requested.
+    project_id: Optional[str] = None
+    features: dict[str, Any] = {}
 
 
 class FeatureScanRow(BaseModel):

@@ -1048,6 +1048,15 @@ async def run_tests():
 
     await run_org_wire_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 40. ORG-REDESIGN — projects, project-scoped API keys, project gateway,
+    #     project RLS
+    # -----------------------------------------------------------------------
+    print("\n[Suite 40] ORG-REDESIGN — Projects + Project-Scoped API Keys + Gateway")
+    from test_org_redesign import run_org_redesign_tests
+
+    await run_org_redesign_tests(runner)
+
     return runner.report()
 
 

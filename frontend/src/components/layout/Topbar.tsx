@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Building2, Check, ChevronDown, LogOut, Radio, Shield, User, Users } from 'lucide-react';
+import { Building2, Check, ChevronDown, FolderOpen, LogOut, Radio, Shield, User, Users } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useUiStore } from '../../store/uiStore';
+import * as orgApi from '../../services/orgApi';
 
 const ROUTE_TITLES: [RegExp, string][] = [
   [/^\/dashboard/, 'Security Operations Center'],
@@ -37,8 +38,12 @@ export default function Topbar() {
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [orgMenuOpen, setOrgMenuOpen] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [projects, setProjects] = useState<orgApi.Project[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const orgMenuRef = useRef<HTMLDivElement>(null);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
 
   const title = ROUTE_TITLES.find(([re]) => re.test(location.pathname))?.[1] ?? 'CYBERGUARD';
 
@@ -46,6 +51,7 @@ export default function Topbar() {
     const handler = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
       if (orgMenuRef.current && !orgMenuRef.current.contains(e.target as Node)) setOrgMenuOpen(false);
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) setProjectMenuOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -60,6 +66,7 @@ export default function Topbar() {
   const handleSelectOrg = async (orgId: string, orgName: string) => {
     try {
       setOrgMenuOpen(false);
+      setProjects([]);
       await switchOrganization(orgId);
       addToast(`Switched workspace to ${orgName}`, 'safe');
     } catch (err) {
@@ -68,6 +75,41 @@ export default function Topbar() {
   };
 
   const currentOrg = activeOrganization || (organizations.length > 0 ? organizations[0] : null);
+  const activeProject = useAuthStore((s) => s.activeProject);
+  const activeProjectId = useAuthStore((s) => s.activeProjectId);
+  const switchProject = useAuthStore((s) => s.switchProject);
+  // ORG-REDESIGN: the project switcher only exists in a non-personal org.
+  const showProjectSwitcher = Boolean(currentOrg && !currentOrg.is_personal);
+
+  useEffect(() => {
+    if (!projectMenuOpen || !currentOrg || currentOrg.is_personal) return;
+    let cancelled = false;
+    setProjectsLoading(true);
+    orgApi
+      .listProjects(currentOrg.id)
+      .then((rows) => {
+        if (!cancelled) setProjects(rows.filter((r) => r.status === 'active'));
+      })
+      .catch(() => {
+        if (!cancelled) setProjects([]);
+      })
+      .finally(() => {
+        if (!cancelled) setProjectsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectMenuOpen, currentOrg]);
+
+  const handleSelectProject = async (projectId: string | null, name: string) => {
+    try {
+      setProjectMenuOpen(false);
+      await switchProject(projectId);
+      addToast(projectId ? `Switched to project ${name}` : 'Project selection cleared', 'safe');
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : 'Failed to switch project', 'high');
+    }
+  };
 
   return (
     <header className="relative z-40 flex h-14 items-center justify-between border-b border-zinc-800 bg-zinc-900/90 px-5 backdrop-blur">
@@ -152,6 +194,80 @@ export default function Topbar() {
             </div>
           )}
         </div>
+
+        {/* Project Switcher (ORG-REDESIGN) — org workspaces only */}
+        {showProjectSwitcher && (
+          <div className="relative" ref={projectMenuRef}>
+            <button
+              onClick={() => setProjectMenuOpen((o) => !o)}
+              className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 transition hover:border-red-500/50 hover:bg-zinc-900"
+            >
+              <FolderOpen className="h-3.5 w-3.5 text-red-400" />
+              <span className="max-w-[130px] truncate font-medium">
+                {activeProject ? activeProject.name : 'All Projects'}
+              </span>
+              <ChevronDown className="h-3 w-3 text-zinc-500" />
+            </button>
+
+            {projectMenuOpen && (
+              <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-xl border border-zinc-800 bg-zinc-900 p-2 shadow-2xl backdrop-blur">
+                <div className="px-2 py-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
+                  Project
+                </div>
+                <div className="space-y-1">
+                  {projectsLoading ? (
+                    <div className="px-2 py-2 font-mono text-xs text-zinc-500">Loading…</div>
+                  ) : projects.length === 0 ? (
+                    <div className="px-2 py-2 text-xs text-zinc-500">
+                      No projects — create one in{' '}
+                      <a href={`/org/${currentOrg?.id ?? ''}/settings`} className="text-red-400 hover:underline">
+                        Settings
+                      </a>
+                      .
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => handleSelectProject(null, '')}
+                        className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition ${
+                          !activeProjectId
+                            ? 'bg-red-500/15 text-red-300 ring-1 ring-red-500/30'
+                            : 'text-zinc-300 hover:bg-zinc-800'
+                        }`}
+                      >
+                        <span>All Projects (org-wide)</span>
+                        {!activeProjectId && <Check className="h-3.5 w-3.5 text-red-400 shrink-0 ml-2" />}
+                      </button>
+                      {projects.map((p) => {
+                        const isSelected = activeProjectId === p.id;
+                        return (
+                          <button
+                            key={p.id}
+                            onClick={() => handleSelectProject(p.id, p.name)}
+                            className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition ${
+                              isSelected
+                                ? 'bg-red-500/15 text-red-300 ring-1 ring-red-500/30'
+                                : 'text-zinc-300 hover:bg-zinc-800'
+                            }`}
+                          >
+                            <div className="flex min-w-0 items-center gap-2">
+                              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-zinc-500" />
+                              <div className="truncate">
+                                <div className="truncate font-medium">{p.name}</div>
+                                <div className="font-mono text-[10px] text-zinc-500">{p.slug}</div>
+                              </div>
+                            </div>
+                            {isSelected && <Check className="h-3.5 w-3.5 text-red-400 shrink-0 ml-2" />}
+                          </button>
+                        );
+                      })}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Live backend badge */}
         <span className="rounded-md bg-red-500/15 px-2.5 py-1 font-mono text-[11px] font-bold tracking-wider text-red-400 ring-1 ring-red-500/40">

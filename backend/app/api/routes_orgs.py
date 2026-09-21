@@ -24,7 +24,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.errors import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
+from app.core.errors import (
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    UnauthorizedError,
+    ValidationError,
+)
+from fastapi import Request
 from app.core.permissions import OrgRole, can_read_setting, require_org_role
 from app.core.security import CurrentUser, TenantContext, get_current_user
 from app.db.models import (
@@ -34,6 +41,8 @@ from app.db.models import (
     OrganizationAPIKey,
     OrganizationMember,
     OrganizationSetting,
+    Project,
+    ProjectAPIKey,
     User,
 )
 from app.db.session import get_db
@@ -50,9 +59,14 @@ from app.schemas.organizations import (
     SettingResponse,
     SettingUpsert,
 )
+from app.services import project_service
 from app.services.api_key_service import (
     create_api_key,
+    create_project_key,
     get_org_from_api_key,
+    list_project_keys,
+    revoke_project_key,
+    validate_project_key,
 )
 
 logger = logging.getLogger("cyberguard.orgs")
@@ -66,6 +80,46 @@ MAX_SALT_ATTEMPTS = 8
 class GatewayPayload(BaseModel):
     action: str
     data: dict[str, Any] = {}
+
+
+# ---------------------------------------------------------------------------
+# Projects + project-scoped API keys (ORG-REDESIGN)
+# ---------------------------------------------------------------------------
+
+
+class ProjectCreate(BaseModel):
+    name: str
+
+
+class ProjectResponse(BaseModel):
+    id: str
+    organization_id: str
+    name: str
+    slug: str
+    status: str
+    created_at: Any = None
+
+
+class ProjectKeyCreate(BaseModel):
+    role: str  # master | viewer
+    name: str = ""
+
+
+class ProjectKeyResponse(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    role: str
+    key_prefix: str
+    last_used_at: Any = None
+    status: str
+    created_at: Any = None
+
+
+class ProjectKeyCreatedResponse(ProjectKeyResponse):
+    """Plaintext ``key`` is returned EXACTLY ONCE by the create endpoint."""
+
+    key: str
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +197,12 @@ async def create_organization(
         description="Auto-block critical/high, require approval for medium.",
         is_active=True,
     ))
+
+    # ORG-REDESIGN: every new org starts with a 'General' project so the
+    # project switcher and the project gateway are usable immediately.
+    from app.services.project_service import ensure_default_project  # noqa: PLC0415
+
+    await ensure_default_project(db, org_id=org.id, actor_user_id=user.id)
 
     await db.commit()
 
@@ -475,11 +535,144 @@ async def remove_org_member(
 
 
 # ---------------------------------------------------------------------------
+# Projects + project-scoped API keys (ORG-REDESIGN)
+# ---------------------------------------------------------------------------
+
+
+def _project_response(project: Project) -> dict[str, Any]:
+    return {
+        "id": project.id,
+        "organization_id": project.organization_id,
+        "name": project.name,
+        "slug": project.slug,
+        "status": project.status,
+        "created_at": project.created_at,
+    }
+
+
+def _project_key_response(key: ProjectAPIKey) -> dict[str, Any]:
+    return {
+        "id": key.id,
+        "project_id": key.project_id,
+        "name": key.name,
+        "role": key.role,
+        "key_prefix": key.key_prefix,
+        "last_used_at": key.last_used_at,
+        "status": key.status,
+        "created_at": key.created_at,
+    }
+
+
+@router.get("/{org_id}/projects", response_model=list[ProjectResponse])
+async def list_org_projects(
+    org_id: str,
+    member: OrganizationMember = Depends(require_org_role(OrgRole.VIEWER)),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Active projects of the org (viewer+; feeds the project switcher)."""
+    projects = await project_service.list_projects(db, org_id=org_id)
+    return [_project_response(p) for p in projects]
+
+
+@router.post("/{org_id}/projects", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
+async def create_org_project(
+    org_id: str,
+    payload: ProjectCreate,
+    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Create a project (admin). Slug auto-derived; duplicate name -> 409."""
+    project = await project_service.create_project(
+        db, org_id=org_id, name=payload.name, actor_user_id=member.user_id
+    )
+    return _project_response(project)
+
+
+@router.delete("/{org_id}/projects/{project_id}")
+async def archive_org_project(
+    org_id: str,
+    project_id: str,
+    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Soft-archive a project (admin). Gateway 404s; history keeps stamps."""
+    await project_service.archive_project(
+        db, project_id=project_id, org_id=org_id, actor_user_id=member.user_id
+    )
+    return {"message": "Project archived", "status": "archived"}
+
+
+@router.get("/{org_id}/projects/{project_id}/keys", response_model=list[ProjectKeyResponse])
+async def list_org_project_keys(
+    org_id: str,
+    project_id: str,
+    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Keys of one project (admin). No plaintext — ever."""
+    keys = await list_project_keys(db, project_id=project_id, organization_id=org_id)
+    return [_project_key_response(k) for k in keys]
+
+
+@router.post(
+    "/{org_id}/projects/{project_id}/keys",
+    response_model=ProjectKeyCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_org_project_key(
+    org_id: str,
+    project_id: str,
+    payload: ProjectKeyCreate,
+    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Generate the project's master or viewer key (admin). Plaintext is
+    returned ONCE. One active key per (project, role): creating again is 409
+    until the existing key is revoked."""
+    project = await db.get(Project, project_id)
+    if project is None or project.organization_id != org_id:
+        raise NotFoundError("Project", project_id)
+    created = await create_project_key(
+        db,
+        project_id=project_id,
+        organization_id=org_id,
+        role=payload.role,
+        name=payload.name,
+        actor_user_id=member.user_id,
+    )
+    key = await db.get(ProjectAPIKey, created["id"])
+    resp = _project_key_response(key)
+    resp["key"] = created["key"]
+    return resp
+
+
+@router.delete("/{org_id}/projects/{project_id}/keys/{key_id}")
+async def revoke_org_project_key(
+    org_id: str,
+    project_id: str,
+    key_id: str,
+    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Revoke a project key (admin) — frees the (project, role) slot."""
+    revoked = await revoke_project_key(
+        db,
+        key_id=key_id,
+        project_id=project_id,
+        organization_id=org_id,
+        actor_user_id=member.user_id,
+    )
+    if revoked is None:
+        raise NotFoundError("Project key", key_id)
+    return {"message": f"{revoked.role} key revoked", "status": "revoked"}
+
+
+# ---------------------------------------------------------------------------
 # Org-scoped gateway (server-to-server, API-key auth)
 # ---------------------------------------------------------------------------
 
 
-def _org_tenant(org: Organization) -> TenantContext:
+def _org_tenant(org: Organization, project_id: str | None = None) -> TenantContext:
     """Tenant context for gateway requests: the org's service identity.
 
     Server-to-server calls have no user; the request runs under the org
@@ -493,10 +686,13 @@ def _org_tenant(org: Organization) -> TenantContext:
         organization_name=org.name,
         role=OrgRole.ADMIN.value,
         is_single_user=False,
+        project_id=project_id,
     )
 
 
-async def _gateway_scan_email(db: AsyncSession, org: Organization, data: dict[str, Any]) -> Any:
+async def _gateway_scan_email(
+    db: AsyncSession, org: Organization, data: dict[str, Any], project_id: str | None = None
+) -> Any:
     from app.ai.prompt_templates import (
         PHISHING_SYSTEM_PROMPT,
         format_phishing_user_prompt,
@@ -507,7 +703,7 @@ async def _gateway_scan_email(db: AsyncSession, org: Organization, data: dict[st
     sender = data.get("sender")
     if not sender:
         raise ValidationError("scan_email requires data.sender")
-    tenant = _org_tenant(org)
+    tenant = _org_tenant(org, project_id)
     indicators = await asyncio.to_thread(
         analyze_email_heuristics,
         sender=sender,
@@ -546,7 +742,9 @@ async def _gateway_scan_email(db: AsyncSession, org: Organization, data: dict[st
     return AlertResponse.model_validate(alert).model_dump(mode="json")
 
 
-async def _gateway_scan_url(db: AsyncSession, org: Organization, data: dict[str, Any]) -> Any:
+async def _gateway_scan_url(
+    db: AsyncSession, org: Organization, data: dict[str, Any], project_id: str | None = None
+) -> Any:
     from app.ai.prompt_templates import URL_SYSTEM_PROMPT, format_url_user_prompt
     from app.api.routes_analysis import _run_analysis_pipeline
     from app.services.url_detector import analyze_url_heuristics
@@ -554,7 +752,7 @@ async def _gateway_scan_url(db: AsyncSession, org: Organization, data: dict[str,
     url = data.get("url")
     if not url:
         raise ValidationError("scan_url requires data.url")
-    tenant = _org_tenant(org)
+    tenant = _org_tenant(org, project_id)
     indicators = await asyncio.to_thread(analyze_url_heuristics, url)
     alert = await _run_analysis_pipeline(
         db,
@@ -570,7 +768,9 @@ async def _gateway_scan_url(db: AsyncSession, org: Organization, data: dict[str,
     return AlertResponse.model_validate(alert).model_dump(mode="json")
 
 
-async def _gateway_ingest_log(db: AsyncSession, org: Organization, data: dict[str, Any]) -> dict[str, Any]:
+async def _gateway_ingest_log(
+    db: AsyncSession, org: Organization, data: dict[str, Any], project_id: str | None = None
+) -> dict[str, Any]:
     """Splunk-style log ingestion: persist the raw log event AND the analyzed
     org log stream row (ORG-WIRE D4).
 
@@ -586,6 +786,7 @@ async def _gateway_ingest_log(db: AsyncSession, org: Organization, data: dict[st
     event = Event(
         id=str(uuid.uuid4()),
         organization_id=org.id,
+        project_id=project_id,
         owner_user_id=org.owner_id,
         event_type="log",
         source="gateway",
@@ -598,6 +799,7 @@ async def _gateway_ingest_log(db: AsyncSession, org: Organization, data: dict[st
     analysis = analyze_log(data)
     log_event = OrgLogEvent(
         organization_id=org.id,
+        project_id=project_id,
         log_type=analysis["log_type"],
         raw_data=data if isinstance(data, (dict, list)) else {"value": str(data)},
         analysis_result=analysis,
@@ -621,7 +823,15 @@ async def org_gateway(
     org: Organization = Depends(get_org_from_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Organization-scoped gateway: scan_email | scan_url | ingest_log."""
+    """DEPRECATED (ORG-REDESIGN): org-flat gateway kept one version for
+    compatibility. Use ``POST /org/{org_id}/projects/{project_slug}/gateway``
+    with a project key instead. Removal tracked in DECISIONS.md."""
+    logger.warning(
+        "DEPRECATED org gateway used: POST /org/%s/gateway (org %s) — "
+        "migrate to /org/{org_id}/projects/{project_slug}/gateway",
+        org_id,
+        org.id,
+    )
     if org.id != org_id:
         raise PermissionDeniedError("API key does not belong to this organization")
 
@@ -636,3 +846,70 @@ async def org_gateway(
         raise ValidationError(f"Unknown action: {action}")
 
     return {"status": "success", "action": action, "result": result}
+
+
+# ---------------------------------------------------------------------------
+# Project-scoped gateway (ORG-REDESIGN)
+# ---------------------------------------------------------------------------
+
+# Viewer keys may call exactly these read-only actions; anything else is a
+# 403 for viewers (master keys may attempt any action — unknown ones 404).
+_PROJECT_VIEWER_ACTIONS = {"scan_email", "scan_url", "ingest_log"}
+
+
+async def get_project_gateway_context(
+    org_id: str,
+    project_slug: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> tuple[Organization, Project, str]:
+    """Authenticate a project-gateway call: the ``org_authorization`` header
+    must carry an ACTIVE key of THIS project in THIS org.
+
+    Returns (org, project, role). 401 for missing/invalid/revoked keys and
+    keys of another org/project; 404 for unknown or archived slugs."""
+    raw_key = request.headers.get("org_authorization") or ""
+    if not raw_key:
+        raise UnauthorizedError("Missing org_authorization header")
+    claims = await validate_project_key(db, raw_key)
+    if claims is None:
+        raise UnauthorizedError("Invalid or revoked project API key")
+    if claims["organization_id"] != org_id:
+        raise UnauthorizedError("Project API key does not belong to this organization")
+    org = await db.get(Organization, org_id)
+    if org is None or org.status != "active":
+        raise UnauthorizedError("Organization is not active")
+    project = await project_service.get_project_by_slug(db, org_id=org_id, slug=project_slug)
+    if claims["project_id"] != project.id:
+        raise UnauthorizedError("Project API key does not belong to this project")
+    return org, project, claims["role"]
+
+
+@gateway_router.post("/{org_id}/projects/{project_slug}/gateway")
+async def org_project_gateway(
+    payload: GatewayPayload,
+    ctx: tuple[Organization, Project, str] = Depends(get_project_gateway_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Project-scoped gateway: the project key (master|viewer) authenticates
+    the call; events/alerts/log rows are stamped with the project_id.
+
+    master: all actions. viewer: read-only actions only (scan_email,
+    scan_url, ingest_log); future write actions reject 403."""
+    org, project, role = ctx
+
+    action = payload.action
+    if role == "viewer" and action not in _PROJECT_VIEWER_ACTIONS:
+        raise PermissionDeniedError(
+            f"Viewer keys cannot perform '{action}' — ask for a master key"
+        )
+    if action == "scan_email":
+        result = await _gateway_scan_email(db, org, payload.data, project.id)
+    elif action == "scan_url":
+        result = await _gateway_scan_url(db, org, payload.data, project.id)
+    elif action == "ingest_log":
+        result = await _gateway_ingest_log(db, org, payload.data, project.id)
+    else:
+        raise ValidationError(f"Unknown action: {action}")
+
+    return {"status": "success", "action": action, "project": project.slug, "result": result}

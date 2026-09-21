@@ -3,6 +3,7 @@ import { getSupabase } from '../lib/supabaseClient';
 import type { Organization, OrganizationRole, User } from '../types';
 
 const ACTIVE_ORG_KEY = 'cyberguard_active_org';
+const ACTIVE_PROJECT_KEY = 'cyberguard_active_project';
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
 export type Role = OrganizationRole;
@@ -31,6 +32,9 @@ interface AuthState {
   organizations: Organization[];
   activeOrganization: Organization | null;
   activeOrganizationId: string | null;
+  /** ORG-REDESIGN: selected project inside the active org (org scope only). */
+  activeProjectId: string | null;
+  activeProject: { id: string; name: string; slug: string } | null;
 
   login: (email: string, password: string) => Promise<void>;
   loginWithOAuth: (provider: 'google' | 'github') => Promise<void>;
@@ -46,6 +50,8 @@ interface AuthState {
   hydrate: () => Promise<void>;
   fetchUserContext: () => Promise<void>;
   switchOrganization: (orgId: string) => Promise<void>;
+  /** ORG-REDESIGN: persist + activate the selected project (org scope only). */
+  switchProject: (projectId: string | null) => Promise<void>;
   getToken: () => string | null;
   setAccessToken: (token: string | null) => void;
   can: (permission: Permission) => boolean;
@@ -80,6 +86,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   organizations: [],
   activeOrganization: null,
   activeOrganizationId: localStorage.getItem(ACTIVE_ORG_KEY),
+  activeProjectId: localStorage.getItem(ACTIVE_PROJECT_KEY),
+  activeProject: null,
 
   login: async (email, password) => {
     // Backend-mediated sign-in: usernames are resolved to emails server-side.
@@ -187,7 +195,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       organizations: [],
       activeOrganization: null,
       activeOrganizationId: null,
+      activeProject: null,
+      activeProjectId: null,
     });
+    localStorage.removeItem(ACTIVE_PROJECT_KEY);
   },
 
   fetchUserContext: async () => {
@@ -210,6 +221,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           ? orgs.find((o) => o.id === storedOrgId) || (data.active_organization as Organization | null)
           : null;
         const activeRole = (data.active_role || active?.role || 'analyst') as Role;
+        // ORG-REDESIGN: the server-persisted selection wins; a stale local
+        // copy (e.g. from another org) is discarded. Org scope only.
+        const meProject = (data.active_project as { id: string; name: string; slug: string } | null) ?? null;
+        const projectActive = active && meProject ? meProject : null;
+        if (projectActive) {
+          localStorage.setItem(ACTIVE_PROJECT_KEY, projectActive.id);
+        } else {
+          localStorage.removeItem(ACTIVE_PROJECT_KEY);
+        }
         set({
           orgEnabled,
           username: data.username ?? null,
@@ -218,6 +238,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           // Personal mode: no active organization; org rows stay frozen.
           activeOrganization: active || null,
           activeOrganizationId: active?.id ?? null,
+          activeProject: projectActive,
+          activeProjectId: projectActive?.id ?? null,
           role: activeRole,
           fullName: data.full_name || get().user?.name || null,
           user: get().user
@@ -259,9 +281,44 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       localStorage.setItem(ACTIVE_ORG_KEY, orgId);
       const org = get().organizations.find((o) => o.id === orgId) || null;
       set({ activeOrganization: org, activeOrganizationId: orgId });
+      // Projects are org-scoped: switching workspaces resets the selection.
+      localStorage.removeItem(ACTIVE_PROJECT_KEY);
+      set({ activeProject: null, activeProjectId: null });
       await get().fetchUserContext();
     } catch (err) {
       console.error('Failed to switch organization:', err);
+      throw err;
+    }
+  },
+
+  switchProject: async (projectId: string | null) => {
+    const token = get().accessToken;
+    if (!token) return;
+    try {
+      const res = await fetch(`${BASE_URL}/auth/switch-project`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ project_id: projectId }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.detail || errBody.message || 'Failed to switch project');
+      }
+      const data = await res.json().catch(() => ({}));
+      if (projectId) {
+        localStorage.setItem(ACTIVE_PROJECT_KEY, projectId);
+        const project =
+          (data.project as { id: string; name: string; slug: string } | undefined) ?? null;
+        set({ activeProject: project, activeProjectId: projectId });
+      } else {
+        localStorage.removeItem(ACTIVE_PROJECT_KEY);
+        set({ activeProject: null, activeProjectId: null });
+      }
+    } catch (err) {
+      console.error('Failed to switch project:', err);
       throw err;
     }
   },

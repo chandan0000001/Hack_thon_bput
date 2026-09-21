@@ -11,13 +11,11 @@ import OrganizationSettings from './pages/OrganizationSettings';
 import OrganizationDashboard from './pages/OrganizationDashboard';
 import OrgFeatureDashboard from './pages/OrgFeatureDashboard';
 import OrgLogAnalysis from './pages/OrgLogAnalysis';
-import OrgAccountTakeover from './pages/OrgAccountTakeover';
 import OrgMailServers from './pages/OrgMailServers';
 import OrgMailServerLogs from './pages/OrgMailServerLogs';
 import OrgMailServerSettings from './pages/OrgMailServerSettings';
 import OrgNotifications from './pages/OrgNotifications';
 import OrgNotificationLog from './pages/OrgNotificationLog';
-import Docs from './pages/Docs';
 import ComingSoon from './pages/ComingSoon';
 import EmailConnectors from './pages/EmailConnectors';
 import BlockedSenders from './pages/BlockedSenders';
@@ -131,8 +129,7 @@ export default function App() {
           <Route path="/audit-logs" element={<WorkspaceGuard path="/audit-logs"><AuditLogs /></WorkspaceGuard>} />
           <Route path="/reports" element={<WorkspaceGuard path="/reports"><Reports /></WorkspaceGuard>} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="/docs" element={<Docs />} />
-          <Route
+                    <Route
             path="/dlq"
             element={
               <RoleGuard minimumRole="admin">
@@ -147,7 +144,10 @@ export default function App() {
           <Route path="/org/:orgId/dashboard" element={<OrganizationDashboard />} />
           <Route path="/org/:orgId/dashboard/:feature" element={<OrgFeatureDashboard />} />
           <Route path="/org/:orgId/logs" element={<OrgLogAnalysis />} />
-          <Route path="/org/:orgId/account-takeover" element={<OrgAccountTakeover />} />
+          <Route
+            path="/org/:orgId/account-takeover"
+            element={<Navigate to="/account-takeover" replace />}
+          />
           {/* ORG-3: server-to-server mail connectors */}
           <Route path="/org/:orgId/mail-servers" element={<OrgMailServers />} />
           <Route path="/org/:orgId/mail-servers/:serverId/logs" element={<OrgMailServerLogs />} />

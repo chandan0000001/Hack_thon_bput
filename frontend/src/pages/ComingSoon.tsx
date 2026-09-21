@@ -27,7 +27,7 @@ export default function ComingSoon({
         </div>
         <h1 className="mt-4 font-mono text-lg font-bold tracking-wider text-zinc-100">{title}</h1>
         <div className="mx-auto mt-2 inline-flex items-center gap-1.5 rounded-md bg-zinc-800 px-2.5 py-1 font-mono text-[11px] font-bold tracking-wider text-zinc-300 ring-1 ring-zinc-700">
-          <Clock className="h-3 w-3" /> COMING SOON
+          <Clock className="h-3 w-3" /> ORG FEATURE
         </div>
         <p className="mt-4 text-sm leading-relaxed text-zinc-400">
           {message ??

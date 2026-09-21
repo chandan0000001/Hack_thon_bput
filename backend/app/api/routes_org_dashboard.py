@@ -14,10 +14,10 @@ initial-load + pagination source.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,9 @@ from app.db.models import (
     Organization,
     OrganizationMember,
     OrgLogEvent,
+    OrgMailServer,
+    OrgNotificationEmail,
+    Project,
 )
 from app.schemas.org_dashboards import (
     DashboardSummaryResponse,
@@ -63,23 +66,70 @@ def _parse_date(value: str | None, field: str) -> datetime | None:
         raise ValidationError(f"Invalid {field} (expected ISO-8601)") from exc
 
 
-async def _summary(db: AsyncSession, org_id: str) -> DashboardSummaryResponse:
-    """Aggregate counts for one organization (service-role session)."""
+async def _feature_severity(
+    db: AsyncSession,
+    model: Any,
+    *,
+    org_id: str,
+    project_id: str | None,
+    since: datetime | None,
+    module: str | None = None,
+) -> dict[str, Any]:
+    """Count + severity distribution for one feature (7-day window)."""
+    preds = [model.organization_id == org_id]
+    if project_id is not None:
+        preds.append(model.project_id == project_id)
+    if since is not None:
+        preds.append(model.created_at >= since)
+    if module is not None:
+        preds.append(model.module == module)
+    total = (
+        await db.execute(select(func.count()).select_from(model).where(*preds))
+    ).scalar() or 0
+    sev_rows = (
+        await db.execute(
+            select(model.severity, func.count())
+            .where(*preds)
+            .group_by(model.severity)
+        )
+    ).all()
+    dist = {"critical": 0, "high": 0, "medium": 0, "low": 0, "other": 0}
+    for sev, cnt in sev_rows:
+        dist[str(sev) if str(sev) in dist else "other"] += int(cnt)
+    return {"total": int(total), "severity": dist}
+
+
+async def _summary(
+    db: AsyncSession, org_id: str, project_id: str | None = None
+) -> DashboardSummaryResponse:
+    """Aggregate counts for one organization, optionally scoped to a project
+    (service-role session; membership enforced on the request path)."""
+    project_filter = [Event.project_id == project_id] if project_id is not None else []
+    project_filter_alert = [Alert.project_id == project_id] if project_id is not None else []
+    project_filter_exec = [ActionExecution.project_id == project_id] if project_id is not None else []
     total_scans = (
         await db.execute(
-            select(func.count()).select_from(Event).where(Event.organization_id == org_id)
+            select(func.count()).select_from(Event).where(
+                Event.organization_id == org_id, *project_filter
+            )
         )
     ).scalar() or 0
     threats_detected = (
         await db.execute(
-            select(func.count()).select_from(Alert).where(Alert.organization_id == org_id)
+            select(func.count()).select_from(Alert).where(
+                Alert.organization_id == org_id, *project_filter_alert
+            )
         )
     ).scalar() or 0
     critical_alerts = (
         await db.execute(
             select(func.count())
             .select_from(Alert)
-            .where(Alert.organization_id == org_id, Alert.severity == "critical")
+            .where(
+                Alert.organization_id == org_id,
+                Alert.severity == "critical",
+                *project_filter_alert,
+            )
         )
     ).scalar() or 0
     quarantined_emails = (
@@ -89,6 +139,7 @@ async def _summary(db: AsyncSession, org_id: str) -> DashboardSummaryResponse:
             .where(
                 ActionExecution.organization_id == org_id,
                 ActionExecution.action_type == "quarantine_email",
+                *project_filter_exec,
             )
         )
     ).scalar() or 0
@@ -99,14 +150,53 @@ async def _summary(db: AsyncSession, org_id: str) -> DashboardSummaryResponse:
             .where(
                 ActionExecution.organization_id == org_id,
                 ActionExecution.action_type.like("block%"),
+                *project_filter_exec,
             )
         )
     ).scalar() or 0
     last_scan_at = (
         await db.execute(
-            select(func.max(Event.created_at)).where(Event.organization_id == org_id)
+            select(func.max(Event.created_at)).where(
+                Event.organization_id == org_id, *project_filter
+            )
         )
     ).scalar()
+
+    # ORG-REDESIGN: per-feature aggregates for the dashboard tiles — event
+    # counts + severity distributions over the LAST 7 DAYS, scoped to the
+    # project when one is selected. Mail servers / email groups are config
+    # surfaces, so they report inventory counts instead of event counts.
+    features: dict[str, Any] = {}
+    if project_id is not None:
+        since = datetime.now(timezone.utc) - timedelta(days=7)
+        for feature, module in FEATURE_MODULES.items():
+            features[feature] = await _feature_severity(
+                db, Alert, org_id=org_id, project_id=project_id, since=since, module=module
+            )
+        features["logs"] = await _feature_severity(
+            db, OrgLogEvent, org_id=org_id, project_id=project_id, since=since
+        )
+        mail_rows = (
+            await db.execute(
+                select(OrgMailServer.status, func.count()).where(
+                    OrgMailServer.organization_id == org_id
+                ).group_by(OrgMailServer.status)
+            )
+        ).all()
+        mail_total = sum(int(c) for _, c in mail_rows)
+        features["mail_servers"] = {
+            "total": mail_total,
+            "by_status": {str(s): int(c) for s, c in mail_rows},
+        }
+        groups_total = (
+            await db.execute(
+                select(func.count()).select_from(OrgNotificationEmail).where(
+                    OrgNotificationEmail.organization_id == org_id
+                )
+            )
+        ).scalar() or 0
+        features["email_groups"] = {"total": int(groups_total)}
+
     return DashboardSummaryResponse(
         organization_id=org_id,
         total_scans=total_scans,
@@ -115,17 +205,26 @@ async def _summary(db: AsyncSession, org_id: str) -> DashboardSummaryResponse:
         blocked_senders=blocked_senders,
         critical_alerts=critical_alerts,
         last_scan_at=last_scan_at,
+        project_id=project_id,
+        features=features,
     )
 
 
 @router.get("/{org_id}/dashboard/summary", response_model=DashboardSummaryResponse)
 async def org_dashboard_summary(
     org_id: str,
+    request: Request,
+    project_id: str | None = Query(default=None),
     member: OrganizationMember = Depends(require_org_role(OrgRole.ANALYST)),
 ) -> Any:
-    """Org-scoped headline metrics (analyst+)."""
+    """Org-scoped headline metrics (analyst+).
+
+    ORG-REDESIGN: pass ``?project_id=`` (or the ``X-Project-Id`` header the
+    frontend stamps) to scope every count to one project and receive the
+    per-feature aggregates for the dashboard tiles."""
+    scoped = project_id or request.headers.get("x-project-id") or None
     async with _get_admin_session_maker()() as db:
-        return await _summary(db, org_id)
+        return await _summary(db, org_id, scoped)
 
 
 @router.get("/{org_id}/dashboard/{feature}", response_model=FeatureDashboardResponse)

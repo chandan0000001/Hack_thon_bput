@@ -97,9 +97,9 @@ export default function Login() {
 
   const handleSignUp = async () => {
     if (accountType === 'organization') {
-      if (orgMode) return handleOrgSignUp();
-      setOrgMessage('Organization accounts are coming soon.');
-      return;
+      // Unified flow: the Organization tab is only reachable when the backend
+      // reports org_enabled via /auth/config — go straight to org signup.
+      return handleOrgSignUp();
     }
     if (!USERNAME_PATTERN.test(username)) {
       setError('Username must be 3-32 chars: lowercase letters, digits, "_" or "."');
@@ -216,9 +216,7 @@ export default function Login() {
     resetMessages();
     if (accountType === 'organization') {
       if (mode === 'signin') return handleSignIn(orgEmail.trim() || undefined);
-      if (orgMode) return handleOrgSignUp();
-      setOrgMessage('Organization accounts are coming soon.');
-      return;
+      return handleOrgSignUp();
     }
     if (mode === 'signin') return handleSignIn();
     if (mode === 'signup') return handleSignUp();
@@ -322,28 +320,25 @@ export default function Login() {
               >
                 <User className="h-3.5 w-3.5" /> User
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAccountType('organization');
-                  setError(null);
-                  setNotice(null);
-                }}
-                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-semibold transition ${
-                  accountType === 'organization' ? 'bg-zinc-700 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <Building2 className="h-3.5 w-3.5" /> Organization
-                {!orgMode && (
-                  <span className="ml-1 rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-zinc-400 ring-1 ring-zinc-700">
-                    Coming soon
-                  </span>
-                )}
-              </button>
+              {orgMode && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAccountType('organization');
+                    setError(null);
+                    setNotice(null);
+                  }}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-semibold transition ${
+                    accountType === 'organization' ? 'bg-zinc-700 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <Building2 className="h-3.5 w-3.5" /> Organization
+                </button>
+              )}
             </div>
           )}
 
-          {/* Organization (coming soon) panel */}
+          {/* Organization workspace panel (unified flow) */}
           {accountType === 'organization' && mode !== 'forgot' ? (
             <form
               onSubmit={handleSubmit}
@@ -356,11 +351,9 @@ export default function Login() {
                     Organization accounts
                   </p>
                   <p className="mt-0.5 text-[11px] text-zinc-400">
-                    {orgMode
-                      ? mode === 'signin'
-                        ? 'Sign in with your work email to reach your organization workspace.'
-                        : 'Register an admin account for your team — you will create the workspace with role-based access (admin, analyst, viewer) right after.'
-                      : 'Multi-analyzer workspaces with team roles are on the roadmap. Create a user account today — your data carries over when organizations launch.'}
+                    {mode === 'signin'
+                      ? 'Sign in with your work email to reach your organization workspace.'
+                      : 'Register an admin account for your team — you will create the workspace with role-based access (admin, analyst, viewer) right after.'}
                   </p>
                 </div>
               </div>

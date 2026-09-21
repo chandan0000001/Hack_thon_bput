@@ -62,6 +62,9 @@ class TenantContext(BaseModel):
     organization_name: str = "Personal Workspace"
     role: str  # 'admin' | 'analyst' | 'viewer'
     is_single_user: bool  # True when accessing personal workspace
+    # ORG-REDESIGN: project scope when the request carries one (project
+    # gateway calls, or JWT paths resolved against the active project).
+    project_id: Optional[str] = None
 
     model_config = {"arbitrary_types_allowed": True}
 
