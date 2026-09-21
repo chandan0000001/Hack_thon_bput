@@ -84,6 +84,89 @@ export function revokeApiKey(orgId: string, keyId: string): Promise<OrgApiKey> {
   return apiFetch(`/orgs/${orgId}/api-keys/${keyId}`, { method: 'DELETE' });
 }
 
+// --- Monitored event streams (ORG-LIVE-VIEWS) ---
+
+export type StreamFeature =
+  | 'phishing'
+  | 'url'
+  | 'impersonation'
+  | 'deepfake'
+  | 'logs'
+  | 'network'
+  | 'ato';
+
+export interface StreamRow {
+  id: string;
+  ts: string | null;
+  event_type: string;
+  feature: string;
+  severity: string | null;
+  source: 'gateway' | 'connector' | 'pipeline' | 'manual-org';
+  summary: string | null;
+  risk_score: number | null;
+  status: string | null;
+  project_id: string | null;
+  organization_id: string | null;
+}
+
+export interface StreamResponse {
+  feature: string;
+  project_slug: string;
+  rows: StreamRow[];
+  next_cursor?: string | null;
+}
+
+export interface StreamDetail {
+  row: StreamRow;
+  analysis: {
+    title?: string;
+    summary?: string;
+    explanation?: string;
+    indicators?: Record<string, unknown>[];
+    mitre?: Record<string, unknown>[];
+    analysis_result?: Record<string, unknown>;
+    raw_data?: Record<string, unknown>;
+  };
+}
+
+export interface StreamQuery {
+  severity?: string;
+  source?: string;
+  q?: string;
+  /** preset: 1h | 24h | 7d | all */
+  range?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export function getOrgStream(
+  orgId: string,
+  projectSlug: string | null,
+  feature: StreamFeature,
+  query: StreamQuery = {},
+): Promise<StreamResponse> {
+  const slug = projectSlug ?? '__all__';
+  const qs = new URLSearchParams();
+  if (query.severity) qs.set('severity', query.severity);
+  if (query.source) qs.set('source', query.source);
+  if (query.q) qs.set('q', query.q);
+  if (query.range) qs.set('range', query.range);
+  if (query.limit) qs.set('limit', String(query.limit));
+  if (query.cursor) qs.set('cursor', query.cursor);
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return apiFetch(`/org/${orgId}/projects/${slug}/streams/${feature}${suffix}`);
+}
+
+export function getOrgStreamDetail(
+  orgId: string,
+  projectSlug: string | null,
+  feature: StreamFeature,
+  eventId: string,
+): Promise<StreamDetail> {
+  const slug = projectSlug ?? '__all__';
+  return apiFetch(`/org/${orgId}/projects/${slug}/streams/${feature}/${eventId}`);
+}
+
 // --- Projects (ORG-REDESIGN) ---
 
 export interface Project {
@@ -251,6 +334,15 @@ export interface DashboardSummary {
   last_scan_at: string | null;
   project_id?: string | null;
   features?: Record<string, FeatureAggregate>;
+  ingestion?: IngestionStatus;
+}
+
+export interface IngestionStatus {
+  gateway_last_event_ts: string | null;
+  gateway_event_count_24h: number;
+  connectors_connected: number;
+  connectors_total: number;
+  pipeline_last_sync_ts: string | null;
 }
 
 export interface FeatureScanRow {

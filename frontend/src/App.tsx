@@ -12,6 +12,15 @@ import OrganizationDashboard from './pages/OrganizationDashboard';
 import OrgFeatureDashboard from './pages/OrgFeatureDashboard';
 import OrgLogAnalysis from './pages/OrgLogAnalysis';
 import OrgMailServers from './pages/OrgMailServers';
+import {
+  AccountTakeoverView,
+  DeepfakeAnalysisView,
+  ImpersonationView,
+  LogAnalysisView,
+  NetworkThreatsView,
+  PhishingAnalysisView,
+  UrlAnalysisView,
+} from './components/org/OrgFeatureView';
 import OrgMailServerLogs from './pages/OrgMailServerLogs';
 import OrgMailServerSettings from './pages/OrgMailServerSettings';
 import OrgNotifications from './pages/OrgNotifications';
@@ -21,7 +30,6 @@ import EmailConnectors from './pages/EmailConnectors';
 import BlockedSenders from './pages/BlockedSenders';
 import SecurityHistory from './pages/SecurityHistory';
 import NotificationLog from './pages/NotificationLog';
-import LogAnalysis from './pages/LogAnalysis';
 import { isOrgScopeRoute } from './nav';
 import { useAuthStore } from './store/authStore';
 import Dashboard from './pages/Dashboard';
@@ -30,12 +38,6 @@ import QuarantineQueue from './pages/QuarantineQueue';
 import BlockList from './pages/BlockList';
 import ActionLog from './pages/ActionLog';
 import PolicyManagement from './pages/PolicyManagement';
-import PhishingAnalysis from './pages/PhishingAnalysis';
-import UrlAnalysis from './pages/UrlAnalysis';
-import ImpersonationAnalysis from './pages/ImpersonationAnalysis';
-import DeepfakeAnalysis from './pages/DeepfakeAnalysis';
-import AccountTakeover from './pages/AccountTakeover';
-import NetworkThreats from './pages/NetworkThreats';
 import Alerts from './pages/Alerts';
 import AlertDetail from './pages/AlertDetail';
 import Incidents from './pages/Incidents';
@@ -89,7 +91,7 @@ export default function App() {
           <Route path="/email-connectors" element={<EmailConnectors />} />
           <Route path="/blocked-senders" element={<BlockedSenders />} />
           <Route path="/security-history" element={<SecurityHistory />} />
-          <Route path="/log-analysis" element={<LogAnalysis />} />
+          <Route path="/log-analysis" element={<LogAnalysisView />} />
           <Route path="/notification-log" element={<NotificationLog />} />
           <Route path="/approvals" element={<WorkspaceGuard path="/approvals"><ApprovalQueue /></WorkspaceGuard>} />
           <Route path="/quarantine" element={<QuarantineQueue />} />
@@ -115,12 +117,12 @@ export default function App() {
               </WorkspaceGuard>
             }
           />
-          <Route path="/phishing" element={<PhishingAnalysis />} />
-          <Route path="/url-analysis" element={<UrlAnalysis />} />
-          <Route path="/impersonation" element={<ImpersonationAnalysis />} />
-          <Route path="/deepfake" element={<DeepfakeAnalysis />} />
-          <Route path="/account-takeover" element={<WorkspaceGuard path="/account-takeover"><AccountTakeover /></WorkspaceGuard>} />
-          <Route path="/network-threats" element={<WorkspaceGuard path="/network-threats"><NetworkThreats /></WorkspaceGuard>} />
+          <Route path="/phishing" element={<PhishingAnalysisView />} />
+          <Route path="/url-analysis" element={<UrlAnalysisView />} />
+          <Route path="/impersonation" element={<ImpersonationView />} />
+          <Route path="/deepfake" element={<DeepfakeAnalysisView />} />
+          <Route path="/account-takeover" element={<WorkspaceGuard path="/account-takeover"><AccountTakeoverView /></WorkspaceGuard>} />
+          <Route path="/network-threats" element={<WorkspaceGuard path="/network-threats"><NetworkThreatsView /></WorkspaceGuard>} />
           <Route path="/alerts" element={<WorkspaceGuard path="/alerts"><Alerts /></WorkspaceGuard>} />
           <Route path="/alerts/:id" element={<AlertDetail />} />
           <Route path="/incidents" element={<WorkspaceGuard path="/incidents"><Incidents /></WorkspaceGuard>} />

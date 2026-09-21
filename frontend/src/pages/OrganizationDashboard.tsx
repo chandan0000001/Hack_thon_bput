@@ -17,6 +17,7 @@ import {
   Video,
 } from 'lucide-react';
 import PageHeader from '../components/common/PageHeader';
+import OrgIngestionStrip from '../components/org/OrgIngestionStrip';
 import { useUiStore } from '../store/uiStore';
 import { useAuthStore } from '../store/authStore';
 import { useOrgRealtime } from '../hooks/useOrgRealtime';
@@ -218,6 +219,9 @@ export default function OrganizationDashboard() {
           )}
         </div>
       </div>
+
+      {/* Ingestion health strip (ORG-LIVE-VIEWS) */}
+      <OrgIngestionStrip orgId={orgId ?? ''} projectId={activeProjectId} />
 
       {/* Project scope banner */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/70 px-4 py-2.5 text-xs">

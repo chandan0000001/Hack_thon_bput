@@ -66,6 +66,8 @@ class DashboardSummaryResponse(BaseModel):
     # passing: features is {} when no project filter was requested.
     project_id: Optional[str] = None
     features: dict[str, Any] = {}
+    # ORG-LIVE-VIEWS: ingestion health for the monitoring strip.
+    ingestion: dict[str, Any] = {}
 
 
 class FeatureScanRow(BaseModel):

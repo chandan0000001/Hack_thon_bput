@@ -34,6 +34,7 @@ from app.db.models import (
     OrgMailServer,
     OrgNotificationEmail,
     Project,
+    SecurityEvent,
 )
 from app.schemas.org_dashboards import (
     DashboardSummaryResponse,
@@ -197,6 +198,48 @@ async def _summary(
         ).scalar() or 0
         features["email_groups"] = {"total": int(groups_total)}
 
+    # ORG-LIVE-VIEWS: ingestion health strip — proves the system is
+    # monitoring even when the feature tiles are quiet. Gateway metrics
+    # honor the project scope; connector/pipeline metrics are org-wide.
+    now_utc = datetime.now(timezone.utc)
+    gateway_preds = [Event.organization_id == org_id, Event.source == "gateway"]
+    if project_id is not None:
+        gateway_preds.append(Event.project_id == project_id)
+    gateway_last_event_ts = (
+        await db.execute(
+            select(func.max(Event.created_at)).where(*gateway_preds)
+        )
+    ).scalar()
+    gateway_event_count_24h = (
+        await db.execute(
+            select(func.count()).select_from(Event).where(
+                *gateway_preds, Event.created_at >= now_utc - timedelta(hours=24)
+            )
+        )
+    ).scalar() or 0
+    connector_rows = (
+        await db.execute(
+            select(OrgMailServer.status, func.count()).where(
+                OrgMailServer.organization_id == org_id
+            ).group_by(OrgMailServer.status)
+        )
+    ).all()
+    by_status = {str(s): int(c) for s, c in connector_rows}
+    pipeline_last_sync_ts = (
+        await db.execute(
+            select(func.max(SecurityEvent.created_at)).where(
+                SecurityEvent.organization_id == org_id
+            )
+        )
+    ).scalar()
+    ingestion = {
+        "gateway_last_event_ts": gateway_last_event_ts,
+        "gateway_event_count_24h": int(gateway_event_count_24h),
+        "connectors_connected": by_status.get("connected", 0),
+        "connectors_total": sum(by_status.values()),
+        "pipeline_last_sync_ts": pipeline_last_sync_ts,
+    }
+
     return DashboardSummaryResponse(
         organization_id=org_id,
         total_scans=total_scans,
@@ -207,6 +250,7 @@ async def _summary(
         last_scan_at=last_scan_at,
         project_id=project_id,
         features=features,
+        ingestion=ingestion,
     )
 
 

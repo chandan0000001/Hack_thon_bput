@@ -1057,6 +1057,14 @@ async def run_tests():
 
     await run_org_redesign_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 41. ORG-LIVE-VIEWS — feature streams, ingestion status, project scoping
+    # -----------------------------------------------------------------------
+    print("\n[Suite 41] ORG-LIVE-VIEWS — Monitored Event Streams")
+    from test_org_streams import run_org_streams_tests
+
+    await run_org_streams_tests(runner)
+
     return runner.report()
 
 
