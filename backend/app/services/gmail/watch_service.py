@@ -48,6 +48,7 @@ async def _run_renew_watches(
                 (GmailAccount.watch_expiration < threshold)
                 | (GmailAccount.watch_expiration.is_(None))
             )
+            & (GmailAccount.status == "connected")
             & (GmailAccount.sync_status != "paused")
         )
     )

@@ -48,6 +48,8 @@ class GmailAccountItem(BaseModel):
     email: str
     status: str
     disconnected_at: Optional[str] = None
+    paused_at: Optional[str] = None
+    last_push_at: Optional[str] = None
     removes_at: Optional[str] = None
     created_at: Optional[str] = None
     last_sync_at: Optional[str] = None
@@ -58,6 +60,15 @@ class GmailAccountItem(BaseModel):
 class GmailAccountsListResponse(BaseModel):
     connected: list[GmailAccountItem]
     recent: list[GmailAccountItem]
+
+
+class GmailActionResponse(BaseModel):
+    success: bool
+    message: str
+    status: str
+    account_id: Optional[str] = None
+    id: Optional[str] = None
+    gap_job_id: Optional[str] = None
 
 
 

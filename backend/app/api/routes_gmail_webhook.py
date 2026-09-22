@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 from typing import Any
 
@@ -73,14 +74,44 @@ async def gmail_pubsub_webhook(request: Request) -> dict[str, Any]:
             logger.warning("Pub/Sub notification received for unknown email: %s", email_address)
             return {"status": "ignored", "reason": "unknown_email"}
 
-        # D7 WORKER GUARD: Pub/Sub events for rows with status != 'connected' or NULL refresh_token -> ACK + ignore, no scan, no retry
-        if getattr(account, "status", "connected") != "connected" or not account.get_refresh_token():
+        # Diagnostic plateau check: record last_push_at on every push (accepted or dropped)
+        now_push = datetime.now(timezone.utc)
+        account.last_push_at = now_push
+
+        # WORKER GUARD: drop + ACK for disconnected, purged, missing token, or paused
+        if account.status in ("disconnected", "purged"):
             logger.info(
-                "Gmail account %s is not connected (status=%s); ignoring Pub/Sub notification",
+                "Dropping push for disconnected account %s (%s, status=%s)",
+                account.id,
                 email_address,
-                getattr(account, "status", None),
+                account.status,
             )
+            await db.commit()
             return {"status": "ignored", "reason": "account_disconnected"}
+
+        if not account.get_refresh_token():
+            logger.info(
+                "Dropping push for account %s (%s) due to missing refresh token",
+                account.id,
+                email_address,
+            )
+            await db.commit()
+            return {"status": "ignored", "reason": "no_refresh_token"}
+
+        if account.status == "paused" or account.sync_status == "paused":
+            logger.info("Dropping push for paused account %s (%s)", account.id, email_address)
+            await db.commit()
+            return {"status": "ignored", "reason": "account_paused"}
+
+        if account.status != "connected":
+            logger.info(
+                "Dropping push for account %s (%s) with status=%s",
+                account.id,
+                email_address,
+                account.status,
+            )
+            await db.commit()
+            return {"status": "ignored", "reason": f"account_{account.status}"}
 
         # Increment Prometheus metric for received Gmail webhook events
         try:
@@ -88,11 +119,6 @@ async def gmail_pubsub_webhook(request: Request) -> dict[str, Any]:
             gmail_events_received_total.labels(owner_user_id=account.owner_user_id).inc()
         except Exception:
             pass
-
-        # 3. If account sync is paused, acknowledge notification but skip enqueueing
-        if account.sync_status == "paused":
-            logger.info("Gmail account %s is paused; skipping sync enqueue", email_address)
-            return {"status": "ignored", "reason": "account_paused"}
 
         # 4. Generate deterministic job ID
         job_id = make_gmail_sync_job_id(account.owner_user_id, history_id)

@@ -23,7 +23,11 @@ from app.db.models import GmailAccount
 from app.db.session import get_db
 from app.schemas.connectors import GmailAccountItem, GmailAccountsListResponse
 from app.services.gmail.client import GmailClient
-from app.services.gmail_account_service import perform_gmail_disconnect
+from app.services.gmail_account_service import (
+    perform_gmail_disconnect,
+    perform_gmail_pause,
+    perform_gmail_resume,
+)
 
 logger = logging.getLogger("cyberguard.routes_gmail")
 
@@ -34,12 +38,14 @@ class GmailDisconnectResponse(BaseModel):
     success: bool
     message: str
     status: str = "disconnected"
+    id: Optional[str] = None
+    account_id: Optional[str] = None
 
 
 class GmailStatusResponse(BaseModel):
     connected: bool
     email: Optional[str] = None
-    status: str = Field(description="connected or disconnected")
+    status: str = Field(description="connected, paused, or disconnected")
 
 
 def get_gmail_client() -> GmailClient:
@@ -60,18 +66,31 @@ async def get_gmail_status(
     )
     account = (await db.execute(stmt)).scalars().first()
 
-    if account is None or account.status != "connected":
+    if account is None or account.status == "purged":
         return GmailStatusResponse(
             connected=False,
-            email=account.email if account and account.status != "purged" else None,
+            email=None,
             status="disconnected",
         )
 
-    return GmailStatusResponse(
-        connected=True,
-        email=account.email,
-        status="connected",
-    )
+    if account.status == "connected":
+        return GmailStatusResponse(
+            connected=True,
+            email=account.email,
+            status="connected",
+        )
+    elif account.status == "paused":
+        return GmailStatusResponse(
+            connected=True,
+            email=account.email,
+            status="paused",
+        )
+    else:
+        return GmailStatusResponse(
+            connected=False,
+            email=account.email,
+            status="disconnected",
+        )
 
 
 @router.post("/gmail/disconnect", response_model=GmailDisconnectResponse)
@@ -85,7 +104,7 @@ async def disconnect_gmail(
     Idempotent operation:
     - 404 if no Gmail account exists for this user.
     - If status is already 'disconnected', returns success immediately without Google API calls.
-    - If connected: calls gmail.users.stop, revokes Google OAuth token, marks disconnected,
+    - If connected/paused: calls gmail.users.stop, revokes Google OAuth token, marks disconnected,
       and cleans up stored credentials.
     """
     stmt = (
@@ -100,6 +119,88 @@ async def disconnect_gmail(
 
     res = await perform_gmail_disconnect(db, account, gmail_client=gmail_client)
     return GmailDisconnectResponse(**res)
+
+
+@router.post("/gmail/accounts/{account_id}/disconnect", response_model=GmailDisconnectResponse)
+async def disconnect_gmail_by_id(
+    account_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    gmail_client: GmailClient = Depends(get_gmail_client),
+) -> GmailDisconnectResponse:
+    """Disconnect a specific Gmail account by ID."""
+    stmt = select(GmailAccount).where(GmailAccount.id == account_id)
+    account = (await db.execute(stmt)).scalar_one_or_none()
+    if account is None or account.owner_user_id != current_user.id:
+        raise NotFoundError("Gmail account", account_id)
+    res = await perform_gmail_disconnect(db, account, gmail_client=gmail_client)
+    return GmailDisconnectResponse(**res)
+
+
+@router.post("/gmail/accounts/{account_id}/pause")
+async def pause_gmail_account_by_id_route(
+    account_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    gmail_client: GmailClient = Depends(get_gmail_client),
+) -> dict[str, Any]:
+    """Pause live sync for a specific Gmail account."""
+    stmt = select(GmailAccount).where(GmailAccount.id == account_id)
+    account = (await db.execute(stmt)).scalar_one_or_none()
+    if account is None or account.owner_user_id != current_user.id:
+        raise NotFoundError("Gmail account", account_id)
+    return await perform_gmail_pause(db, account, gmail_client=gmail_client)
+
+
+@router.post("/gmail/pause")
+async def pause_gmail_account_default_route(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    gmail_client: GmailClient = Depends(get_gmail_client),
+) -> dict[str, Any]:
+    """Pause live sync for default Gmail account."""
+    stmt = (
+        select(GmailAccount)
+        .where(GmailAccount.owner_user_id == current_user.id, GmailAccount.status.in_(["connected", "paused"]))
+        .order_by(GmailAccount.created_at.desc())
+    )
+    account = (await db.execute(stmt)).scalars().first()
+    if account is None:
+        raise NotFoundError("Gmail account not found")
+    return await perform_gmail_pause(db, account, gmail_client=gmail_client)
+
+
+@router.post("/gmail/accounts/{account_id}/resume")
+async def resume_gmail_account_by_id_route(
+    account_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    gmail_client: GmailClient = Depends(get_gmail_client),
+) -> dict[str, Any]:
+    """Resume live sync for a specific Gmail account."""
+    stmt = select(GmailAccount).where(GmailAccount.id == account_id)
+    account = (await db.execute(stmt)).scalar_one_or_none()
+    if account is None or account.owner_user_id != current_user.id:
+        raise NotFoundError("Gmail account", account_id)
+    return await perform_gmail_resume(db, account, gmail_client=gmail_client)
+
+
+@router.post("/gmail/resume")
+async def resume_gmail_account_default_route(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    gmail_client: GmailClient = Depends(get_gmail_client),
+) -> dict[str, Any]:
+    """Resume live sync for default Gmail account."""
+    stmt = (
+        select(GmailAccount)
+        .where(GmailAccount.owner_user_id == current_user.id, GmailAccount.status.in_(["connected", "paused"]))
+        .order_by(GmailAccount.created_at.desc())
+    )
+    account = (await db.execute(stmt)).scalars().first()
+    if account is None:
+        raise NotFoundError("Gmail account not found")
+    return await perform_gmail_resume(db, account, gmail_client=gmail_client)
 
 
 @router.get("/gmail/accounts", response_model=GmailAccountsListResponse)
@@ -133,12 +234,14 @@ async def list_gmail_accounts_route(
     recent_list: list[GmailAccountItem] = []
 
     for acc in accounts:
-        if acc.status == "connected":
+        if acc.status in ("connected", "paused"):
             connected_list.append(
                 GmailAccountItem(
                     id=acc.id,
                     email=acc.email,
-                    status="connected",
+                    status=acc.status,
+                    paused_at=acc.paused_at.isoformat() if acc.paused_at else None,
+                    last_push_at=acc.last_push_at.isoformat() if acc.last_push_at else None,
                     created_at=acc.created_at.isoformat() if acc.created_at else None,
                     last_sync_at=acc.last_sync_at.isoformat() if acc.last_sync_at else None,
                     sync_status=acc.sync_status,
@@ -157,6 +260,8 @@ async def list_gmail_accounts_route(
                         email=acc.email,
                         status="disconnected",
                         disconnected_at=disc_at.isoformat(),
+                        paused_at=None,
+                        last_push_at=acc.last_push_at.isoformat() if acc.last_push_at else None,
                         removes_at=removes_at.isoformat(),
                         created_at=acc.created_at.isoformat() if acc.created_at else None,
                         last_sync_at=acc.last_sync_at.isoformat() if acc.last_sync_at else None,
@@ -169,3 +274,4 @@ async def list_gmail_accounts_route(
         connected=connected_list,
         recent=recent_list,
     )
+

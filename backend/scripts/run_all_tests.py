@@ -1074,6 +1074,15 @@ async def run_tests():
 
     await run_gmail_reconnect_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 44. GMAIL-FULL-CLEAR — Disconnect = full clear (Google + Pub/Sub drain + app side),
+    #     Pause/Resume live-sync state, gap catch-up, plateau check
+    # -----------------------------------------------------------------------
+    print("\n[Suite 44] GMAIL-FULL-CLEAR — Full Clear Disconnect, Pause/Resume Live Sync")
+    from test_gmail_full_clear import run_gmail_full_clear_tests
+
+    await run_gmail_full_clear_tests(runner)
+
     return runner.report()
 
 

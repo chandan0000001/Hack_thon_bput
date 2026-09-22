@@ -365,7 +365,7 @@ export interface PolicyUpdatePayload {
 // --- Email Connectors (Phase 1-2: Gmail only) ---
 
 export type ConnectorProvider = 'gmail' | 'outlook' | 'yahoo' | 'icloud';
-export type ConnectorStatus = 'connected' | 'reauth_required' | 'revoked' | 'error';
+export type ConnectorStatus = 'connected' | 'paused' | 'reauth_required' | 'revoked' | 'error';
 export type ConnectorProviderStatus = 'enabled' | 'coming_soon' | 'unsupported';
 
 export interface EmailProviderCapability {

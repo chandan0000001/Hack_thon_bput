@@ -1003,8 +1003,11 @@ class GmailAccount(Base):
         String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="connected", index=True)  # 'connected', 'disconnected', 'purged'
+    status: Mapped[str] = mapped_column(String(32), default="connected", index=True)  # 'connected', 'paused', 'disconnected', 'purged'
     disconnected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    paused_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    pubsub_stopped_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_push_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     access_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     refresh_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_history_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

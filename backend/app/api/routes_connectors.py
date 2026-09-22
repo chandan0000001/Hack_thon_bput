@@ -212,12 +212,14 @@ async def list_gmail_accounts(
     recent_list: list[GmailAccountItem] = []
 
     for acc in accounts:
-        if acc.status == "connected":
+        if acc.status in ("connected", "paused"):
             connected_list.append(
                 GmailAccountItem(
                     id=acc.id,
                     email=acc.email,
-                    status="connected",
+                    status=acc.status,
+                    paused_at=acc.paused_at.isoformat() if acc.paused_at else None,
+                    last_push_at=acc.last_push_at.isoformat() if acc.last_push_at else None,
                     created_at=acc.created_at.isoformat() if acc.created_at else None,
                     last_sync_at=acc.last_sync_at.isoformat() if acc.last_sync_at else None,
                     sync_status=acc.sync_status,
@@ -236,6 +238,8 @@ async def list_gmail_accounts(
                         email=acc.email,
                         status="disconnected",
                         disconnected_at=disc_at.isoformat(),
+                        paused_at=None,
+                        last_push_at=acc.last_push_at.isoformat() if acc.last_push_at else None,
                         removes_at=removes_at.isoformat(),
                         created_at=acc.created_at.isoformat() if acc.created_at else None,
                         last_sync_at=acc.last_sync_at.isoformat() if acc.last_sync_at else None,
@@ -259,7 +263,7 @@ async def early_remove_gmail_account(
     """Early remove a disconnected Gmail account (owner-scoped).
 
     - Allowed ONLY for status='disconnected' rows -> sets status='purged'.
-    - If status='connected' -> 409 Conflict.
+    - If status='connected' or status='paused' -> 409 Conflict.
     - If account not found or wrong owner -> 404 Not Found.
     """
     stmt = select(GmailAccount).where(GmailAccount.id == account_id)
@@ -268,10 +272,10 @@ async def early_remove_gmail_account(
     if account is None or account.owner_user_id != user.id:
         raise NotFoundError("Gmail account", account_id)
 
-    if account.status == "connected":
+    if account.status in ("connected", "paused"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot early-remove an active connected account. Disconnect first.",
+            detail="Cannot early-remove an active connected or paused account. Disconnect first.",
         )
 
     account.status = "purged"
@@ -316,6 +320,80 @@ async def disconnect_gmail_account_default(
 
     from app.services.gmail_account_service import perform_gmail_disconnect
     return await perform_gmail_disconnect(db, account)
+
+
+@router.post("/gmail/accounts/{account_id}/pause")
+async def pause_gmail_account_by_id(
+    account_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Pause live sync for a specific Gmail account."""
+    stmt = select(GmailAccount).where(GmailAccount.id == account_id)
+    account = (await db.execute(stmt)).scalar_one_or_none()
+
+    if account is None or account.owner_user_id != user.id:
+        raise NotFoundError("Gmail account", account_id)
+
+    from app.services.gmail_account_service import perform_gmail_pause
+    return await perform_gmail_pause(db, account)
+
+
+@router.post("/gmail/pause")
+async def pause_gmail_account_default(
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Pause live sync for the default Gmail account for the authenticated user."""
+    stmt = (
+        select(GmailAccount)
+        .where(GmailAccount.owner_user_id == user.id, GmailAccount.status.in_(["connected", "paused"]))
+        .order_by(GmailAccount.created_at.desc())
+    )
+    account = (await db.execute(stmt)).scalars().first()
+
+    if account is None:
+        raise NotFoundError("Gmail account not found")
+
+    from app.services.gmail_account_service import perform_gmail_pause
+    return await perform_gmail_pause(db, account)
+
+
+@router.post("/gmail/accounts/{account_id}/resume")
+async def resume_gmail_account_by_id(
+    account_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Resume live sync for a specific Gmail account."""
+    stmt = select(GmailAccount).where(GmailAccount.id == account_id)
+    account = (await db.execute(stmt)).scalar_one_or_none()
+
+    if account is None or account.owner_user_id != user.id:
+        raise NotFoundError("Gmail account", account_id)
+
+    from app.services.gmail_account_service import perform_gmail_resume
+    return await perform_gmail_resume(db, account)
+
+
+@router.post("/gmail/resume")
+async def resume_gmail_account_default(
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Resume live sync for the default Gmail account for the authenticated user."""
+    stmt = (
+        select(GmailAccount)
+        .where(GmailAccount.owner_user_id == user.id, GmailAccount.status.in_(["connected", "paused"]))
+        .order_by(GmailAccount.created_at.desc())
+    )
+    account = (await db.execute(stmt)).scalars().first()
+
+    if account is None:
+        raise NotFoundError("Gmail account not found")
+
+    from app.services.gmail_account_service import perform_gmail_resume
+    return await perform_gmail_resume(db, account)
 
 
 

@@ -9,6 +9,8 @@ import {
   FolderClock,
   Loader2,
   Mail,
+  Pause,
+  Play,
   PlugZap,
   RefreshCw,
   RotateCcw,
@@ -39,6 +41,7 @@ const PROVIDER_ICONS: Record<string, typeof Mail> = {
 
 const STATUS_STYLES: Record<string, string> = {
   connected: 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30',
+  paused: 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30',
   reauth_required: 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30',
   revoked: 'bg-zinc-800 text-zinc-400 ring-1 ring-zinc-700',
   error: 'bg-red-500/10 text-red-400 ring-1 ring-red-500/30',
@@ -99,10 +102,14 @@ export default function EmailConnectors() {
 
   const [registry, setRegistry] = useState<EmailProviderRegistryEntry[]>([]);
   const [connectors, setConnectors] = useState<EmailConnectorAccount[]>([]);
+  const [gmailAccounts, setGmailAccounts] = useState<api.GmailAccountItem[]>([]);
   const [recentAccounts, setRecentAccounts] = useState<api.GmailAccountItem[]>([]);
   const [accountToRemove, setAccountToRemove] = useState<api.GmailAccountItem | null>(null);
+  const [connectorToDisconnect, setConnectorToDisconnect] = useState<EmailConnectorAccount | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
+  const [pausingId, setPausingId] = useState<string | null>(null);
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [authorizing, setAuthorizing] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -153,8 +160,9 @@ export default function EmailConnectors() {
         api.listGmailAccounts().catch(() => ({ connected: [], recent: [] })),
       ]);
       setRegistry(caps);
-      // Connected Accounts section renders ONLY active connected rows
-      setConnectors(conns.filter((c) => c.status === 'connected'));
+      // Connected Accounts section renders active connected and paused rows
+      setConnectors(conns.filter((c) => c.status === 'connected' || c.status === 'paused'));
+      setGmailAccounts(gmailData.connected || []);
       setRecentAccounts(gmailData.recent || []);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to load connectors');
@@ -162,6 +170,62 @@ export default function EmailConnectors() {
       setLoading(false);
     }
   }, []);
+
+  const getGmailAccount = (connector: EmailConnectorAccount): api.GmailAccountItem | undefined => {
+    return gmailAccounts.find(
+      (a) => a.email.toLowerCase() === connector.provider_email.toLowerCase()
+    );
+  };
+
+  const isConnectorPaused = (connector: EmailConnectorAccount): boolean => {
+    if (connector.status === 'paused') return true;
+    const gAcc = getGmailAccount(connector);
+    return gAcc?.status === 'paused' || gAcc?.sync_status === 'paused';
+  };
+
+  const handlePause = async (connector: EmailConnectorAccount) => {
+    setPausingId(connector.id);
+    setActionError(null);
+    try {
+      const gAcc = getGmailAccount(connector);
+      await api.pauseGmailAccount(gAcc?.id);
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to pause Gmail sync');
+    } finally {
+      setPausingId(null);
+    }
+  };
+
+  const handleResume = async (connector: EmailConnectorAccount) => {
+    setResumingId(connector.id);
+    setActionError(null);
+    try {
+      const gAcc = getGmailAccount(connector);
+      await api.resumeGmailAccount(gAcc?.id);
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to resume Gmail sync');
+    } finally {
+      setResumingId(null);
+    }
+  };
+
+  const handleConfirmDisconnect = async () => {
+    if (!connectorToDisconnect) return;
+    setDisconnectingId(connectorToDisconnect.id);
+    setActionError(null);
+    setTestResult(null);
+    try {
+      await api.disconnectEmailConnector(connectorToDisconnect.id);
+      setConnectorToDisconnect(null);
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to disconnect');
+    } finally {
+      setDisconnectingId(null);
+    }
+  };
 
   const handleReconnect = async (account: api.GmailAccountItem) => {
     setReconnectingId(account.id);
@@ -298,20 +362,6 @@ export default function EmailConnectors() {
     }
   };
 
-  const handleDisconnect = async (connector: EmailConnectorAccount) => {
-    setDisconnectingId(connector.id);
-    setActionError(null);
-    setTestResult(null);
-    try {
-      await api.disconnectEmailConnector(connector.id);
-      await load();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to disconnect');
-    } finally {
-      setDisconnectingId(null);
-    }
-  };
-
   const gmailEntry = registry.find((r) => r.provider === 'gmail');
   const otherProviders = registry.filter((r) => r.provider !== 'gmail');
   const gmailEnabled = gmailEntry?.status === 'enabled';
@@ -426,76 +476,110 @@ export default function EmailConnectors() {
           </div>
         ) : (
           <div className="divide-y divide-zinc-800">
-            {connectors.map((connector) => (
-              <div key={connector.id} className="flex flex-col gap-3 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold text-zinc-100">{connector.provider_email}</span>
-                    <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
-                      {connector.provider}
-                    </span>
-                    <span className={`rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${STATUS_STYLES[connector.status] ?? STATUS_STYLES.error}`}>
-                      {connector.status.replace('_', ' ')}
-                    </span>
-                  </div>
-                  <p className="mt-1 truncate font-mono text-[11px] text-zinc-500">
-                    Scopes: {connector.scopes.length ? connector.scopes.join(', ') : '—'} · Last test: {formatWhen(connector.last_test_at)}
-                  </p>
-                  {connector.last_error && (
-                    <p className="mt-1 text-xs text-red-400">{connector.last_error}</p>
-                  )}
-                  {testResult?.id === connector.id && (
-                    <p className={`mt-1 text-xs ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {testResult.ok ? '✔ ' : '✖ '}
-                      {testResult.message}
+            {connectors.map((connector) => {
+              const paused = isConnectorPaused(connector);
+              return (
+                <div key={connector.id} className="flex flex-col gap-3 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold text-zinc-100">{connector.provider_email}</span>
+                      <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
+                        {connector.provider}
+                      </span>
+                      <span className={`rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${STATUS_STYLES[paused ? 'paused' : 'connected']}`}>
+                        {paused ? 'PAUSED' : 'CONNECTED'}
+                      </span>
+                    </div>
+                    <p className="mt-1 truncate font-mono text-[11px] text-zinc-500">
+                      Scopes: {connector.scopes.length ? connector.scopes.join(', ') : '—'} · Last test: {formatWhen(connector.last_test_at)}
                     </p>
-                  )}
-                </div>
-                <div className="flex flex-shrink-0 items-center gap-2">
-                  {connector.provider === 'gmail' && connector.status === 'connected' && (
+                    {connector.last_error && (
+                      <p className="mt-1 text-xs text-red-400">{connector.last_error}</p>
+                    )}
+                    {testResult?.id === connector.id && (
+                      <p className={`mt-1 text-xs ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {testResult.ok ? '✔ ' : '✖ '}
+                        {testResult.message}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex flex-shrink-0 items-center gap-2">
+                    {connector.provider === 'gmail' && (
+                      paused ? (
+                        <button
+                          type="button"
+                          onClick={() => handleResume(connector)}
+                          disabled={resumingId === connector.id}
+                          className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400 transition hover:bg-emerald-500/20 disabled:opacity-50"
+                        >
+                          {resumingId === connector.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Play className="h-3.5 w-3.5" />
+                          )}
+                          Resume Sync
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handlePause(connector)}
+                          disabled={pausingId === connector.id}
+                          className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-400 transition hover:bg-amber-500/20 disabled:opacity-50"
+                        >
+                          {pausingId === connector.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Pause className="h-3.5 w-3.5" />
+                          )}
+                          Pause Sync
+                        </button>
+                      )
+                    )}
+                    {connector.provider === 'gmail' && !paused && (
+                      <button
+                        type="button"
+                        onClick={() => handleScan(connector)}
+                        disabled={scanningConnector === connector.id}
+                        className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition hover:border-red-500/40 hover:bg-zinc-800/60 disabled:opacity-50"
+                      >
+                        {scanningConnector === connector.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <FileSearch className="h-3.5 w-3.5" />
+                        )}
+                        {scanningConnector === connector.id ? 'Scanning…' : 'Scan Recent Mail'}
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => handleScan(connector)}
-                      disabled={scanningConnector === connector.id}
-                      className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition hover:border-red-500/40 hover:bg-zinc-800/60 disabled:opacity-50"
+                      onClick={() => openSettings(connector)}
+                      className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800/60"
                     >
-                      {scanningConnector === connector.id ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <FileSearch className="h-3.5 w-3.5" />
-                      )}
-                      {scanningConnector === connector.id ? 'Scanning…' : 'Scan Recent Mail'}
+                      <Settings2 className="h-3.5 w-3.5" />
+                      Settings
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => openSettings(connector)}
-                    className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800/60"
-                  >
-                    <Settings2 className="h-3.5 w-3.5" />
-                    Settings
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleTest(connector)}
-                    disabled={testingId === connector.id}
-                    className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800/60 disabled:opacity-50"
-                  >
-                    {testingId === connector.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="h-3.5 w-3.5" />}
-                    Test
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDisconnect(connector)}
-                    disabled={disconnectingId === connector.id}
-                    className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-400 transition hover:bg-red-500/20 disabled:opacity-50"
-                  >
-                    {disconnectingId === connector.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Unplug className="h-3.5 w-3.5" />}
-                    Disconnect
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => handleTest(connector)}
+                      disabled={testingId === connector.id}
+                      className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800/60 disabled:opacity-50"
+                    >
+                      {testingId === connector.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="h-3.5 w-3.5" />}
+                      Test
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConnectorToDisconnect(connector)}
+                      disabled={disconnectingId === connector.id}
+                      className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-400 transition hover:bg-red-500/20 disabled:opacity-50"
+                    >
+                      {disconnectingId === connector.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Unplug className="h-3.5 w-3.5" />}
+                      Disconnect
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -976,6 +1060,58 @@ export default function EmailConnectors() {
               >
                 {removingId === accountToRemove.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                 Remove now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Disconnect Confirmation Modal */}
+      {connectorToDisconnect && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div
+            className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-red-500/30 bg-red-500/10 text-red-400">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-100">Disconnect Mailbox</h3>
+                  <p className="font-mono text-xs text-zinc-400">{connectorToDisconnect.provider_email}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConnectorToDisconnect(null)}
+                className="rounded-lg border border-zinc-800 bg-zinc-900 p-1.5 text-zinc-400 transition hover:text-red-400"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <p className="text-sm text-zinc-300 leading-relaxed">
+              Stops mailbox monitoring, revokes Google authorization, and removes stored credentials and watch state. Recent entry kept 3 days for reconnect. Scan history is retained for audit.
+            </p>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConnectorToDisconnect(null)}
+                className="rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-zinc-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDisconnect}
+                disabled={disconnectingId === connectorToDisconnect.id}
+                className="flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-red-500 disabled:opacity-50"
+              >
+                {disconnectingId === connectorToDisconnect.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Unplug className="h-3.5 w-3.5" />}
+                Disconnect
               </button>
             </div>
           </div>

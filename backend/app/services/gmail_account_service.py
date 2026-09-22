@@ -81,6 +81,8 @@ async def perform_gmail_disconnect(
     account.watch_expiration = None
     account.status = "disconnected"
     account.disconnected_at = now
+    account.pubsub_stopped_at = now
+    account.paused_at = None
     account.sync_status = "paused"
 
     # Also synchronize corresponding EmailConnectorAccount if present
@@ -99,7 +101,193 @@ async def perform_gmail_disconnect(
     await db.commit()
     await db.refresh(account)
     logger.info("Successfully disconnected Gmail account %s (%s)", account.id, account.email)
-    return {"success": True, "message": "Gmail disconnected", "status": "disconnected"}
+    return {
+        "success": True,
+        "message": "Gmail disconnected",
+        "status": "disconnected",
+        "id": account.id,
+        "account_id": account.id,
+    }
+
+
+async def perform_gmail_pause(
+    db: AsyncSession,
+    account: GmailAccount,
+    gmail_client: Optional[GmailClient] = None,
+) -> dict[str, Any]:
+    """Pause live sync for a Gmail account.
+
+    - If status is 'paused', returns immediately without action (idempotent).
+    - If status is 'disconnected' or 'purged', raises HTTPException 400.
+    - If status is 'connected':
+      - Calls gmail.users.stop() at Google (no new pushes sent).
+      - Retains stored credentials.
+      - Sets paused_at = now, status = 'paused', sync_status = 'paused'.
+    """
+    if account.status == "paused":
+        return {
+            "success": True,
+            "message": "Gmail sync already paused",
+            "status": "paused",
+            "id": account.id,
+            "account_id": account.id,
+        }
+
+    if account.status in ("disconnected", "purged"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Cannot pause a disconnected or purged account")
+
+    client = gmail_client or GmailClient()
+    access_token = account.get_access_token()
+    refresh_token = account.get_refresh_token()
+
+    if access_token or refresh_token:
+        try:
+            await client.stop(
+                access_token=access_token or "",
+                refresh_token=refresh_token,
+            )
+        except Exception as exc:
+            logger.warning("Error stopping Gmail watch during pause: %s", exc)
+
+    now = datetime.now(timezone.utc)
+    account.status = "paused"
+    account.sync_status = "paused"
+    account.paused_at = now
+    account.updated_at = now
+
+    stmt = select(EmailConnectorAccount).where(
+        EmailConnectorAccount.owner_user_id == account.owner_user_id,
+        EmailConnectorAccount.provider == "gmail",
+        func.lower(EmailConnectorAccount.provider_email) == func.lower(account.email),
+    )
+    connector = (await db.execute(stmt)).scalar_one_or_none()
+    if connector is not None:
+        connector.status = "paused"
+
+    await db.commit()
+    await db.refresh(account)
+    logger.info("Paused Gmail account %s (%s)", account.id, account.email)
+    return {
+        "success": True,
+        "message": "Gmail sync paused",
+        "status": "paused",
+        "id": account.id,
+        "account_id": account.id,
+    }
+
+
+async def perform_gmail_resume(
+    db: AsyncSession,
+    account: GmailAccount,
+    gmail_client: Optional[GmailClient] = None,
+) -> dict[str, Any]:
+    """Resume live sync for a paused Gmail account.
+
+    - If status is 'connected', raises 409 Conflict per spec.
+    - If status is 'disconnected' or 'purged', raises 400 Bad Request.
+    - If status is 'paused':
+      - Calls gmail.users.watch() at Google (stores new history_id + expiration).
+      - GAP CATCH-UP: enqueues gmail_sync job from the PRE-PAUSE last_history_id
+        to fetch messages received while paused.
+      - Clears paused_at = None, sets status = 'connected', sync_status = 'active'.
+    """
+    from fastapi import HTTPException
+
+    if account.status == "connected":
+        raise HTTPException(status_code=409, detail="Gmail account is already connected and active")
+
+    if account.status in ("disconnected", "purged"):
+        raise HTTPException(status_code=400, detail="Cannot resume a disconnected account; reconnect first")
+
+    client = gmail_client or GmailClient()
+    access_token = account.get_access_token()
+    refresh_token = account.get_refresh_token()
+
+    if not access_token and not refresh_token:
+        raise HTTPException(status_code=400, detail="Account has no credentials to resume watch")
+
+    from app.core.config import get_settings
+    settings = get_settings()
+
+    pre_pause_history_id = account.last_history_id
+
+    watch_resp = await client.watch(
+        access_token=access_token or "",
+        topic=settings.GMAIL_PUBSUB_TOPIC,
+        labels=["INBOX"],
+        refresh_token=refresh_token,
+    )
+
+    if hasattr(client, "last_refreshed_access_token") and client.last_refreshed_access_token:
+        account.set_access_token(client.last_refreshed_access_token)
+
+    from app.services.gmail.watch_service import epoch_ms_to_datetime
+    exp_raw = watch_resp.get("expiration")
+    if exp_raw is not None:
+        account.watch_expiration = epoch_ms_to_datetime(exp_raw)
+
+    resp_hist = watch_resp.get("historyId")
+    if resp_hist:
+        account.last_history_id = str(resp_hist)
+
+    now = datetime.now(timezone.utc)
+    account.status = "connected"
+    account.sync_status = "active"
+    account.paused_at = None
+    account.last_error = None
+    account.updated_at = now
+
+    stmt = select(EmailConnectorAccount).where(
+        EmailConnectorAccount.owner_user_id == account.owner_user_id,
+        EmailConnectorAccount.provider == "gmail",
+        func.lower(EmailConnectorAccount.provider_email) == func.lower(account.email),
+    )
+    connector = (await db.execute(stmt)).scalar_one_or_none()
+    if connector is not None:
+        connector.status = "connected"
+
+    await db.commit()
+    await db.refresh(account)
+
+    # GAP CATCH-UP: enqueue sync job from pre-pause last_history_id
+    gap_job_id = None
+    target_history_id = pre_pause_history_id or resp_hist
+    if target_history_id:
+        try:
+            from app.queue.client import enqueue, make_gmail_sync_job_id
+            from app.services.idempotency_service import ensure_job
+
+            gap_job_id = make_gmail_sync_job_id(account.owner_user_id, str(target_history_id))
+            payload = {
+                "account_id": account.id,
+                "history_id": str(target_history_id),
+            }
+            await ensure_job(
+                db,
+                owner_user_id=account.owner_user_id,
+                job_type="gmail_sync",
+                job_id=gap_job_id,
+                payload=payload,
+            )
+            await enqueue(
+                "gmail_sync",
+                kwargs=payload,
+                job_id=gap_job_id,
+            )
+            logger.info("Enqueued gap catch-up sync %s for account %s from history %s", gap_job_id, account.id, target_history_id)
+        except Exception as exc:
+            logger.warning("Error enqueuing gap catch-up sync: %s", exc)
+
+    logger.info("Resumed Gmail account %s (%s)", account.id, account.email)
+    return {
+        "success": True,
+        "message": "Gmail sync resumed",
+        "status": "connected",
+        "id": account.id,
+        "account_id": account.id,
+        "gap_job_id": gap_job_id,
+    }
 
 
 async def get_or_create_gmail_account(
@@ -132,6 +320,8 @@ async def get_or_create_gmail_account(
         if rec_acc is not None and rec_acc.status == "disconnected":
             rec_acc.status = "connected"
             rec_acc.disconnected_at = None
+            rec_acc.paused_at = None
+            rec_acc.pubsub_stopped_at = None
             rec_acc.sync_status = "active"
             rec_acc.last_error = None
             rec_acc.email = email
@@ -153,6 +343,8 @@ async def get_or_create_gmail_account(
     if account is not None:
         account.status = "connected"
         account.disconnected_at = None
+        account.paused_at = None
+        account.pubsub_stopped_at = None
         account.sync_status = "active"
         account.last_error = None
         account.set_access_token(access_token)
@@ -167,6 +359,8 @@ async def get_or_create_gmail_account(
         email=email,
         status="connected",
         disconnected_at=None,
+        paused_at=None,
+        pubsub_stopped_at=None,
         sync_status="active",
         last_history_id=None,
         watch_expiration=None,
@@ -179,6 +373,7 @@ async def get_or_create_gmail_account(
     await db.commit()
     await db.refresh(account)
     return account
+
 
 
 def is_greater_history_id(new_id: Optional[str], old_id: Optional[str]) -> bool:

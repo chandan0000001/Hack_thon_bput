@@ -427,8 +427,10 @@ export async function listEmailConnectors(): Promise<EmailConnectorAccount[]> {
 export interface GmailAccountItem {
   id: string;
   email: string;
-  status: 'connected' | 'disconnected' | 'purged' | string;
+  status: 'connected' | 'paused' | 'disconnected' | 'purged' | string;
   disconnected_at?: string | null;
+  paused_at?: string | null;
+  last_push_at?: string | null;
   removes_at?: string | null;
   created_at?: string | null;
   last_sync_at?: string | null;
@@ -453,6 +455,16 @@ export async function earlyRemoveGmailAccount(id: string): Promise<void> {
 
 export async function disconnectGmailAccount(id: string): Promise<void> {
   await apiFetch(`/connectors/gmail/accounts/${id}/disconnect`, { method: 'POST' });
+}
+
+export async function pauseGmailAccount(id?: string): Promise<{ success: boolean; status: string; message: string }> {
+  const path = id ? `/connectors/gmail/accounts/${id}/pause` : '/connectors/gmail/pause';
+  return (await apiFetch(path, { method: 'POST' })) as { success: boolean; status: string; message: string };
+}
+
+export async function resumeGmailAccount(id?: string): Promise<{ success: boolean; status: string; message: string }> {
+  const path = id ? `/connectors/gmail/accounts/${id}/resume` : '/connectors/gmail/resume';
+  return (await apiFetch(path, { method: 'POST' })) as { success: boolean; status: string; message: string };
 }
 
 export async function authorizeGmailConnector(redirectAfter?: string, reconnect?: string): Promise<string> {

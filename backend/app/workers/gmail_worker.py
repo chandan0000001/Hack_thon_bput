@@ -47,21 +47,23 @@ async def gmail_sync_job(
             account_stmt = select(GmailAccount).where(GmailAccount.id == account_id)
             account = (await db.execute(account_stmt)).scalar_one_or_none()
 
-            # D7 WORKER GUARD: ignore if account is not connected or lacks refresh token
-            if not account or getattr(account, "status", "connected") != "connected" or not account.get_refresh_token():
+            # WORKER GUARD: ignore if account is not connected or lacks refresh token or is paused
+            if not account or getattr(account, "status", "connected") != "connected" or not account.get_refresh_token() or account.sync_status == "paused":
+                reason = "account_paused" if (account and (getattr(account, "status", None) == "paused" or account.sync_status == "paused")) else "account_disconnected"
                 logger.info(
-                    "gmail_sync ignored: account %s is not connected (status=%s)",
+                    "gmail_sync ignored: account %s is not active (status=%s, reason=%s)",
                     account_id,
                     getattr(account, "status", None) if account else "not_found",
+                    reason,
                 )
                 if job_id:
                     try:
                         await update_job_status(
-                            db, job_id, "completed", result={"status": "skipped", "reason": "account_disconnected"}
+                            db, job_id, "completed", result={"status": "skipped", "reason": reason}
                         )
                     except Exception:
                         pass
-                return {"status": "skipped", "reason": "account_disconnected"}
+                return {"status": "skipped", "reason": reason}
 
             # Resolve target job_id from DB if not provided explicitly in ctx
             if not job_id:
