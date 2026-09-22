@@ -6,11 +6,14 @@ import {
   Cloud,
   ExternalLink,
   FileSearch,
+  FolderClock,
   Loader2,
   Mail,
   PlugZap,
   RefreshCw,
+  RotateCcw,
   Settings2,
+  Trash2,
   Unplug,
   X,
   XCircle,
@@ -59,11 +62,47 @@ function formatWhen(iso: string | null): string {
   return formatLocal(iso);
 }
 
+function formatRelativeTime(iso: string | null | undefined): string {
+  if (!iso) return 'recently';
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (diffMs < 0) return 'just now';
+  const diffSecs = Math.floor(diffMs / 1000);
+  if (diffSecs < 60) return `${diffSecs}s ago`;
+  const diffMins = Math.floor(diffSecs / 60);
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d ago`;
+}
+
+function formatCountdown(removesAtIso: string | null | undefined): string {
+  if (!removesAtIso) return '3 days';
+  const diffMs = new Date(removesAtIso).getTime() - Date.now();
+  if (diffMs <= 0) return 'soon';
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  if (diffHours >= 48) {
+    const days = Math.floor(diffHours / 24);
+    const remHours = diffHours % 24;
+    return `${days}d ${remHours}h`;
+  }
+  if (diffHours >= 1) {
+    const mins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    return `${diffHours}h ${mins}m`;
+  }
+  const mins = Math.max(1, Math.floor(diffMs / (1000 * 60)));
+  return `${mins}m`;
+}
+
 export default function EmailConnectors() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [registry, setRegistry] = useState<EmailProviderRegistryEntry[]>([]);
   const [connectors, setConnectors] = useState<EmailConnectorAccount[]>([]);
+  const [recentAccounts, setRecentAccounts] = useState<api.GmailAccountItem[]>([]);
+  const [accountToRemove, setAccountToRemove] = useState<api.GmailAccountItem | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [authorizing, setAuthorizing] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -108,15 +147,48 @@ export default function EmailConnectors() {
     setLoading(true);
     setActionError(null);
     try {
-      const [caps, conns] = await Promise.all([api.listConnectorCapabilities(), api.listEmailConnectors()]);
+      const [caps, conns, gmailData] = await Promise.all([
+        api.listConnectorCapabilities(),
+        api.listEmailConnectors(),
+        api.listGmailAccounts().catch(() => ({ connected: [], recent: [] })),
+      ]);
       setRegistry(caps);
-      setConnectors(conns);
+      // Connected Accounts section renders ONLY active connected rows
+      setConnectors(conns.filter((c) => c.status === 'connected'));
+      setRecentAccounts(gmailData.recent || []);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to load connectors');
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const handleReconnect = async (account: api.GmailAccountItem) => {
+    setReconnectingId(account.id);
+    setActionError(null);
+    try {
+      const url = await api.authorizeGmailConnector(undefined, account.id);
+      window.location.href = url;
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to reconnect Gmail');
+      setReconnectingId(null);
+    }
+  };
+
+  const handleConfirmRemove = async () => {
+    if (!accountToRemove) return;
+    setRemovingId(accountToRemove.id);
+    setActionError(null);
+    try {
+      await api.earlyRemoveGmailAccount(accountToRemove.id);
+      setAccountToRemove(null);
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to remove account');
+    } finally {
+      setRemovingId(null);
+    }
+  };
 
   useEffect(() => {
     load();
@@ -427,6 +499,61 @@ export default function EmailConnectors() {
           </div>
         )}
       </div>
+
+      {/* Recently Connected */}
+      {recentAccounts.length > 0 && (
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/90 shadow-sm backdrop-blur">
+          <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
+            <div className="flex items-center gap-2">
+              <FolderClock className="h-4 w-4 text-zinc-400" />
+              <h2 className="text-sm font-semibold text-zinc-100">Recently Connected</h2>
+              <span className="rounded-full bg-zinc-800 px-2 py-0.5 font-mono text-[10px] text-zinc-400">
+                {recentAccounts.length}
+              </span>
+            </div>
+          </div>
+          <div className="divide-y divide-zinc-800">
+            {recentAccounts.map((account) => (
+              <div key={account.id} className="flex flex-col gap-3 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold text-zinc-300">{account.email}</span>
+                    <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
+                      gmail
+                    </span>
+                    <span className="rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider bg-zinc-800 text-zinc-400 ring-1 ring-zinc-700">
+                      DISCONNECTED
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Disconnected {formatRelativeTime(account.disconnected_at)} — credentials removed. Auto-removes in {formatCountdown(account.removes_at)}.
+                  </p>
+                </div>
+                <div className="flex flex-shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleReconnect(account)}
+                    disabled={reconnectingId === account.id}
+                    className="flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg shadow-red-600/20 transition hover:bg-red-500 disabled:opacity-50"
+                  >
+                    {reconnectingId === account.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                    Reconnect
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAccountToRemove(account)}
+                    disabled={removingId === account.id}
+                    className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs font-semibold text-zinc-400 transition hover:border-red-500/40 hover:text-red-400 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Remove now
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Real-time Mailbox Ingestion & Threat Analysis Monitor */}
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900/90 shadow-sm backdrop-blur">
@@ -798,6 +925,58 @@ export default function EmailConnectors() {
                   <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…
                 </p>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Remove Confirmation Modal */}
+      {accountToRemove && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div
+            className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-red-500/30 bg-red-500/10 text-red-400">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-100">Remove from recently connected?</h3>
+                  <p className="font-mono text-xs text-zinc-400">{accountToRemove.email}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAccountToRemove(null)}
+                className="rounded-lg border border-zinc-800 bg-zinc-900 p-1.5 text-zinc-400 transition hover:text-red-400"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <p className="text-sm text-zinc-400">
+              Remove from recently connected? Scan history will be preserved.
+            </p>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setAccountToRemove(null)}
+                className="rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-zinc-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmRemove}
+                disabled={removingId === accountToRemove.id}
+                className="flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-red-500 disabled:opacity-50"
+              >
+                {removingId === accountToRemove.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                Remove now
+              </button>
             </div>
           </div>
         </div>

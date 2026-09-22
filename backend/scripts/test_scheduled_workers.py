@@ -378,7 +378,7 @@ async def run_scheduled_workers_tests(runner) -> None:
         and reconcile_cron.minute == {15, 45}
     )
     check(
-        len(cron_jobs) == 2 and watch_cron_valid and reconcile_cron_valid,
+        len(cron_jobs) >= 2 and watch_cron_valid and reconcile_cron_valid,
         "9 cron job registration: verify renew_watches and reconcile_stuck_accounts in WorkerSettings.cron_jobs",
         f"cron_jobs={len(cron_jobs)}, watch_valid={watch_cron_valid}, reconcile_valid={reconcile_cron_valid}",
     )

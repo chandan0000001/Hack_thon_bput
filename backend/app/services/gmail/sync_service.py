@@ -127,7 +127,11 @@ async def process_gmail_sync(
         logger.warning("Gmail account %s not found for sync", account_id)
         return {"status": "not_found", "messages_enqueued": 0}
 
-    # 2. Skip paused or error accounts
+    # 2. Skip disconnected, paused, or error accounts
+    if getattr(account, "status", "connected") != "connected" or not account.get_refresh_token():
+        logger.info("Account %s status is '%s'; skipping sync", account_id, getattr(account, "status", None))
+        return {"status": "skipped", "reason": "account_disconnected", "messages_enqueued": 0}
+
     if account.sync_status in ("paused", "error"):
         logger.info("Account %s sync_status is '%s'; skipping sync", account_id, account.sync_status)
         return {"status": "skipped", "reason": account.sync_status, "messages_enqueued": 0}

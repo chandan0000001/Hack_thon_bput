@@ -1065,6 +1065,15 @@ async def run_tests():
 
     await run_org_streams_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 42. GMAIL-RECONNECT-UX — Disconnect=stop, Reconnect=start, Recently Connected
+    #     folder (3-day TTL), purge job, FK-safe soft-purge, worker guards
+    # -----------------------------------------------------------------------
+    print("\n[Suite 42] GMAIL-RECONNECT-UX — Reconnect UX, 3d TTL Folder & Purge Job")
+    from test_gmail_reconnect import run_gmail_reconnect_tests
+
+    await run_gmail_reconnect_tests(runner)
+
     return runner.report()
 
 

@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import decrypt_secret
@@ -188,6 +188,18 @@ async def disconnect_connector(
     connector.refresh_token_enc = None
     connector.access_token_expires_at = None
     connector.last_error = revoke_note  # None on a clean revoke
+
+    if connector.provider == "gmail":
+        from app.db.models import GmailAccount
+        from app.services.gmail_account_service import perform_gmail_disconnect
+
+        gm_stmt = select(GmailAccount).where(
+            GmailAccount.owner_user_id == connector.owner_user_id,
+            func.lower(GmailAccount.email) == connector.provider_email.lower(),
+        )
+        gm_acc = (await db.execute(gm_stmt)).scalar_one_or_none()
+        if gm_acc is not None:
+            await perform_gmail_disconnect(db, gm_acc)
 
     await log_operation(
         db,

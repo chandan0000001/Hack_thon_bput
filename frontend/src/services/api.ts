@@ -424,8 +424,45 @@ export async function listEmailConnectors(): Promise<EmailConnectorAccount[]> {
   return res.items as EmailConnectorAccount[];
 }
 
-export async function authorizeGmailConnector(): Promise<string> {
-  const res = await apiFetch('/connectors/gmail/authorize', { method: 'POST', body: '{}' });
+export interface GmailAccountItem {
+  id: string;
+  email: string;
+  status: 'connected' | 'disconnected' | 'purged' | string;
+  disconnected_at?: string | null;
+  removes_at?: string | null;
+  created_at?: string | null;
+  last_sync_at?: string | null;
+  sync_status?: string | null;
+  last_error?: string | null;
+}
+
+export interface GmailAccountsResponse {
+  connected: GmailAccountItem[];
+  recent: GmailAccountItem[];
+}
+
+export async function listGmailAccounts(now?: string): Promise<GmailAccountsResponse> {
+  const query = now ? `?now=${encodeURIComponent(now)}` : '';
+  const res = await apiFetch(`/connectors/gmail/accounts${query}`);
+  return res as GmailAccountsResponse;
+}
+
+export async function earlyRemoveGmailAccount(id: string): Promise<void> {
+  await apiFetch(`/connectors/gmail/accounts/${id}`, { method: 'DELETE' });
+}
+
+export async function disconnectGmailAccount(id: string): Promise<void> {
+  await apiFetch(`/connectors/gmail/accounts/${id}/disconnect`, { method: 'POST' });
+}
+
+export async function authorizeGmailConnector(redirectAfter?: string, reconnect?: string): Promise<string> {
+  const body: { redirect_after?: string; reconnect?: string } = {};
+  if (redirectAfter) body.redirect_after = redirectAfter;
+  if (reconnect) body.reconnect = reconnect;
+  const res = await apiFetch('/connectors/gmail/authorize', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
   return res.authorization_url as string;
 }
 

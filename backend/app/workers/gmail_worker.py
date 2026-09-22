@@ -44,15 +44,31 @@ async def gmail_sync_job(
         )
 
         async with get_db_session(ctx) as db:
+            account_stmt = select(GmailAccount).where(GmailAccount.id == account_id)
+            account = (await db.execute(account_stmt)).scalar_one_or_none()
+
+            # D7 WORKER GUARD: ignore if account is not connected or lacks refresh token
+            if not account or getattr(account, "status", "connected") != "connected" or not account.get_refresh_token():
+                logger.info(
+                    "gmail_sync ignored: account %s is not connected (status=%s)",
+                    account_id,
+                    getattr(account, "status", None) if account else "not_found",
+                )
+                if job_id:
+                    try:
+                        await update_job_status(
+                            db, job_id, "completed", result={"status": "skipped", "reason": "account_disconnected"}
+                        )
+                    except Exception:
+                        pass
+                return {"status": "skipped", "reason": "account_disconnected"}
+
             # Resolve target job_id from DB if not provided explicitly in ctx
             if not job_id:
-                account_stmt = select(GmailAccount).where(GmailAccount.id == account_id)
-                account = (await db.execute(account_stmt)).scalar_one_or_none()
-                if account is not None:
-                    candidate_id = make_gmail_sync_job_id(account.owner_user_id, history_id)
-                    q_stmt = select(JobQueue).where(JobQueue.job_id == candidate_id)
-                    if (await db.execute(q_stmt)).scalar_one_or_none() is not None:
-                        job_id = candidate_id
+                candidate_id = make_gmail_sync_job_id(account.owner_user_id, history_id)
+                q_stmt = select(JobQueue).where(JobQueue.job_id == candidate_id)
+                if (await db.execute(q_stmt)).scalar_one_or_none() is not None:
+                    job_id = candidate_id
 
             # Transition job state to 'running'
             if job_id:

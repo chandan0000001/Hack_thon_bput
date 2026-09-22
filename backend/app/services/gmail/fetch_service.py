@@ -194,9 +194,9 @@ async def process_email_fetch(
 
     stmt = select(GmailAccount).where(GmailAccount.id == account_id)
     account = (await db.execute(stmt)).scalar_one_or_none()
-    if account is None:
-        logger.warning("Gmail account %s not found for email fetch", account_id)
-        return {"status": "not_found", "message_id": message_id}
+    if account is None or getattr(account, "status", "connected") != "connected" or not account.get_refresh_token():
+        logger.warning("Gmail account %s not connected or missing token for email fetch", account_id)
+        return {"status": "skipped", "reason": "account_disconnected", "message_id": message_id}
 
     # 1. Ensure processed_email idempotency check
     processed_email = await ensure_processed_email(

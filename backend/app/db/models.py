@@ -1003,8 +1003,10 @@ class GmailAccount(Base):
         String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="connected", index=True)  # 'connected', 'disconnected', 'purged'
+    disconnected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     access_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    refresh_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_history_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     watch_expiration: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     sync_status: Mapped[str] = mapped_column(String(32), default="active")  # 'active', 'paused', 'error'
@@ -1039,12 +1041,17 @@ class GmailAccount(Base):
 
         return decrypt_secret(self.access_token_encrypted)
 
-    def set_refresh_token(self, token: str) -> None:
-        from app.core.crypto import encrypt_secret
+    def set_refresh_token(self, token: Optional[str]) -> None:
+        if token is None:
+            self.refresh_token_encrypted = None
+        else:
+            from app.core.crypto import encrypt_secret
 
-        self.refresh_token_encrypted = encrypt_secret(token)
+            self.refresh_token_encrypted = encrypt_secret(token)
 
-    def get_refresh_token(self) -> str:
+    def get_refresh_token(self) -> Optional[str]:
+        if not self.refresh_token_encrypted:
+            return None
         from app.core.crypto import decrypt_secret
 
         return decrypt_secret(self.refresh_token_encrypted)

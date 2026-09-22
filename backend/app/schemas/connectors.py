@@ -36,10 +36,29 @@ class ConnectorListResponse(BaseModel):
 
 class ConnectorAuthorizeRequest(BaseModel):
     redirect_after: Optional[str] = None
+    reconnect: Optional[str] = None
 
 
 class ConnectorAuthorizeResponse(BaseModel):
     authorization_url: str
+
+
+class GmailAccountItem(BaseModel):
+    id: str
+    email: str
+    status: str
+    disconnected_at: Optional[str] = None
+    removes_at: Optional[str] = None
+    created_at: Optional[str] = None
+    last_sync_at: Optional[str] = None
+    sync_status: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+class GmailAccountsListResponse(BaseModel):
+    connected: list[GmailAccountItem]
+    recent: list[GmailAccountItem]
+
 
 
 class ConnectorTestResponse(BaseModel):

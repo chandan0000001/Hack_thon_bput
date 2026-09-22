@@ -6,10 +6,10 @@ responses never contain token material.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.errors import AppError, NotFoundError, PermissionDeniedError
 from app.core.security import CurrentUser, get_current_user
-from app.db.models import JobQueue, ProcessedEmail
+from app.db.models import GmailAccount, JobQueue, ProcessedEmail
 from app.db.session import get_db
 from app.schemas.connectors import (
     ConnectorAccountRead,
@@ -30,6 +30,8 @@ from app.schemas.connectors import (
     ConnectorOperationListResponse,
     ConnectorOperationRead,
     ConnectorTestResponse,
+    GmailAccountItem,
+    GmailAccountsListResponse,
 )
 from app.schemas.email import MessageSummary, NormalizedMessage
 from app.services.action_engine import enforce_scan_results
@@ -156,18 +158,165 @@ async def list_connectors(
 @router.post("/gmail/authorize", response_model=ConnectorAuthorizeResponse)
 async def gmail_authorize(
     payload: ConnectorAuthorizeRequest | None = None,
+    reconnect: Optional[str] = Query(default=None),
     user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConnectorAuthorizeResponse:
     """Create a single-use OAuth state and return the Google consent URL."""
     redirect_after = payload.redirect_after if payload else None
+    rec = (payload.reconnect if payload else None) or reconnect
     if not get_settings().GMAIL_CONNECTOR_ENABLED:
         raise PermissionDeniedError("Gmail connector is disabled")
     try:
-        url = await create_gmail_authorization_url(db, user.id, redirect_after)
+        url = await create_gmail_authorization_url(db, user.id, redirect_after, reconnect=rec)
     except OAuthFlowError as exc:
         raise PermissionDeniedError(exc.message)
     return ConnectorAuthorizeResponse(authorization_url=url)
+
+
+@router.get("/gmail/accounts", response_model=GmailAccountsListResponse)
+async def list_gmail_accounts(
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    now: Optional[str] = Query(default=None),
+    x_test_now: Optional[str] = Header(default=None, alias="X-Test-Now"),
+) -> GmailAccountsListResponse:
+    """List Gmail accounts separated into active connected and recently disconnected (3-day TTL).
+
+    - connected: status == 'connected'
+    - recent: status == 'disconnected' AND disconnected_at > now - 3 days
+    - each recent item includes removes_at = disconnected_at + 3 days
+    - purged rows are omitted entirely
+    - zero tokens exposed in response
+    """
+    ref_time = None
+    time_source = now or x_test_now
+    if time_source:
+        try:
+            ref_time = datetime.fromisoformat(time_source.replace(" ", "+").replace("Z", "+00:00"))
+        except Exception:
+            ref_time = None
+    if ref_time is None:
+        ref_time = datetime.now(timezone.utc)
+
+    cutoff = ref_time - timedelta(days=3)
+
+    stmt = (
+        select(GmailAccount)
+        .where(GmailAccount.owner_user_id == user.id)
+        .order_by(GmailAccount.created_at.desc())
+    )
+    accounts = (await db.execute(stmt)).scalars().all()
+
+    connected_list: list[GmailAccountItem] = []
+    recent_list: list[GmailAccountItem] = []
+
+    for acc in accounts:
+        if acc.status == "connected":
+            connected_list.append(
+                GmailAccountItem(
+                    id=acc.id,
+                    email=acc.email,
+                    status="connected",
+                    created_at=acc.created_at.isoformat() if acc.created_at else None,
+                    last_sync_at=acc.last_sync_at.isoformat() if acc.last_sync_at else None,
+                    sync_status=acc.sync_status,
+                    last_error=acc.last_error,
+                )
+            )
+        elif acc.status == "disconnected" and acc.disconnected_at is not None:
+            disc_at = acc.disconnected_at
+            if disc_at.tzinfo is None:
+                disc_at = disc_at.replace(tzinfo=timezone.utc)
+            removes_at = disc_at + timedelta(days=3)
+            if disc_at > cutoff:
+                recent_list.append(
+                    GmailAccountItem(
+                        id=acc.id,
+                        email=acc.email,
+                        status="disconnected",
+                        disconnected_at=disc_at.isoformat(),
+                        removes_at=removes_at.isoformat(),
+                        created_at=acc.created_at.isoformat() if acc.created_at else None,
+                        last_sync_at=acc.last_sync_at.isoformat() if acc.last_sync_at else None,
+                        sync_status=acc.sync_status,
+                        last_error=acc.last_error,
+                    )
+                )
+
+    return GmailAccountsListResponse(
+        connected=connected_list,
+        recent=recent_list,
+    )
+
+
+@router.delete("/gmail/accounts/{account_id}")
+async def early_remove_gmail_account(
+    account_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Early remove a disconnected Gmail account (owner-scoped).
+
+    - Allowed ONLY for status='disconnected' rows -> sets status='purged'.
+    - If status='connected' -> 409 Conflict.
+    - If account not found or wrong owner -> 404 Not Found.
+    """
+    stmt = select(GmailAccount).where(GmailAccount.id == account_id)
+    account = (await db.execute(stmt)).scalar_one_or_none()
+
+    if account is None or account.owner_user_id != user.id:
+        raise NotFoundError("Gmail account", account_id)
+
+    if account.status == "connected":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot early-remove an active connected account. Disconnect first.",
+        )
+
+    account.status = "purged"
+    account.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    logger.info("Early-removed Gmail account %s for user %s -> status=purged", account_id, user.id)
+    return {"success": True, "id": account.id, "status": "purged"}
+
+
+@router.post("/gmail/accounts/{account_id}/disconnect")
+async def disconnect_gmail_account_by_id(
+    account_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Disconnect a specific Gmail account by ID."""
+    stmt = select(GmailAccount).where(GmailAccount.id == account_id)
+    account = (await db.execute(stmt)).scalar_one_or_none()
+
+    if account is None or account.owner_user_id != user.id:
+        raise NotFoundError("Gmail account", account_id)
+
+    from app.services.gmail_account_service import perform_gmail_disconnect
+    return await perform_gmail_disconnect(db, account)
+
+
+@router.post("/gmail/disconnect")
+async def disconnect_gmail_account_default(
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Disconnect the default Gmail account for the authenticated user."""
+    stmt = (
+        select(GmailAccount)
+        .where(GmailAccount.owner_user_id == user.id)
+        .order_by(GmailAccount.created_at.desc())
+    )
+    account = (await db.execute(stmt)).scalars().first()
+
+    if account is None:
+        raise NotFoundError("Gmail account not found")
+
+    from app.services.gmail_account_service import perform_gmail_disconnect
+    return await perform_gmail_disconnect(db, account)
+
 
 
 @router.get("/gmail/callback", include_in_schema=False)

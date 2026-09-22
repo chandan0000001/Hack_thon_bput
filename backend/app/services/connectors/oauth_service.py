@@ -37,7 +37,10 @@ class OAuthFlowError(Exception):
 
 
 async def create_gmail_authorization_url(
-    db: AsyncSession, user_id: str, redirect_after: str | None
+    db: AsyncSession,
+    user_id: str,
+    redirect_after: str | None = None,
+    reconnect: str | None = None,
 ) -> str:
     """Create a single-use OAuth state row and build the Google consent URL."""
     settings = get_settings()
@@ -48,7 +51,8 @@ async def create_gmail_authorization_url(
             "GOOGLE_GMAIL_CLIENT_SECRET to enable it.",
         )
 
-    state = secrets.token_urlsafe(48)
+    raw_token = secrets.token_urlsafe(32)
+    state = f"{raw_token}:rec:{reconnect}" if reconnect else secrets.token_urlsafe(48)
     db.add(
         ConnectorOAuthState(
             state=state,
@@ -117,6 +121,10 @@ async def handle_gmail_callback(code: str, state: str) -> EmailConnectorAccount:
         raise OAuthFlowError("invalid_state", "OAuth state provider mismatch.")
 
     owner_user_id = state_data["owner_user_id"]
+
+    reconnect_account_id = None
+    if state and ":rec:" in state:
+        reconnect_account_id = state.split(":rec:")[1]
 
     # 1. Exchange the authorization code.
     try:
@@ -222,27 +230,41 @@ async def handle_gmail_callback(code: str, state: str) -> EmailConnectorAccount:
         try:
             from app.services.gmail_account_service import get_or_create_gmail_account
 
-            # Also register or update in GmailAccount for real-time Pub/Sub background workers
             gmail_acc = await get_or_create_gmail_account(
                 session,
                 owner_user_id=owner_user_id,
                 email=provider_email,
                 access_token=access_token,
                 refresh_token=refresh_token,
+                reconnect_account_id=reconnect_account_id,
             )
             logger.info("Mirrored Gmail connector to gmail_accounts for %s", provider_email)
 
-            # Auto-register Gmail push watch if GMAIL_PUBSUB_TOPIC is configured
+            # Register push watch and record new history baseline so pre-disconnect history is NOT replayed
             from app.core.config import get_settings
-            from app.services.gmail.watch_service import renew_watches
+            from app.services.gmail.watch_service import epoch_ms_to_datetime
+            from app.services.gmail.client import GmailClient
 
             cfg = get_settings()
-            if cfg.GMAIL_PUBSUB_TOPIC and "<" not in cfg.GMAIL_PUBSUB_TOPIC:
-                try:
-                    await renew_watches(session, account_ids=[str(gmail_acc.id)])
-                    logger.info("Successfully activated Gmail push watch for %s", provider_email)
-                except Exception as watch_exc:
-                    logger.warning("Could not activate push watch on connect for %s: %s", provider_email, watch_exc)
+            topic = cfg.GMAIL_PUBSUB_TOPIC or "projects/test/topics/cyberguard-gmail-push"
+            try:
+                gclient = GmailClient()
+                w_resp = await gclient.watch(access_token, topic=topic, refresh_token=refresh_token)
+                if w_resp.get("historyId"):
+                    gmail_acc.last_history_id = str(w_resp["historyId"])
+                if w_resp.get("expiration"):
+                    gmail_acc.watch_expiration = epoch_ms_to_datetime(w_resp["expiration"])
+                gmail_acc.sync_status = "active"
+                gmail_acc.last_error = None
+                await session.commit()
+                await session.refresh(gmail_acc)
+                logger.info(
+                    "Successfully activated Gmail push watch for %s with baseline historyId %s",
+                    provider_email,
+                    gmail_acc.last_history_id,
+                )
+            except Exception as watch_exc:
+                logger.warning("Could not activate push watch on connect for %s: %s", provider_email, watch_exc)
         except Exception:
             logger.exception("Failed to mirror connector to gmail_accounts for %s", provider_email)
 

@@ -265,3 +265,12 @@ class GmailClient:
         url = f"{GMAIL_API_BASE}/users/me/stop"
         return await self._request("POST", url, access_token, refresh_token=refresh_token)
 
+    async def stop(
+        self,
+        access_token: str,
+        refresh_token: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Call POST https://gmail.googleapis.com/gmail/v1/users/me/stop (alias)."""
+        return await self.stop_watch(access_token, refresh_token=refresh_token)
+
+

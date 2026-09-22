@@ -298,6 +298,37 @@ async def _ensure_schema_if_privileged(schema: str) -> None:
                     END $$;
                 """))
             await conn.execute(text(f'ALTER TABLE IF EXISTS "{schema}".organizations ALTER COLUMN status SET DEFAULT \'active\''))
+            has_auth = (await conn.execute(text("SELECT to_regprocedure('auth.uid()') IS NOT NULL;"))).scalar()
+            if has_auth:
+                await conn.execute(text(f"""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_policies WHERE schemaname = '{schema}' AND policyname = 'org_log_events_realtime_select'
+                        ) THEN
+                            CREATE POLICY org_log_events_realtime_select ON "{schema}".org_log_events
+                            FOR SELECT TO authenticated
+                            USING (
+                                cyberguard.org_member_role(
+                                    org_log_events.organization_id,
+                                    auth.uid()::text
+                                ) IS NOT NULL
+                            );
+                        END IF;
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_policies WHERE schemaname = '{schema}' AND policyname = 'alerts_realtime_select'
+                        ) THEN
+                            CREATE POLICY alerts_realtime_select ON "{schema}".alerts
+                            FOR SELECT TO authenticated
+                            USING (
+                                (alerts.organization_id IS NOT NULL
+                                 AND cyberguard.org_member_role(alerts.organization_id, auth.uid()::text) IS NOT NULL)
+                                OR
+                                (alerts.organization_id IS NULL AND alerts.owner_user_id = auth.uid()::text)
+                            );
+                        END IF;
+                    END $$;
+                """))
             await conn.commit()
         logger.info("ensured schema '%s' and auth compatibility exist", schema)
     except Exception as exc:  # noqa: BLE001 - never block startup on the bootstrap
