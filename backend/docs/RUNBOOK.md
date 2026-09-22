@@ -76,6 +76,17 @@ npm run dev
 On first boot the app seeds `cyberguard.response_catalog` (10 actions) and a
 default enforcement policy per organization (no-op when no orgs exist).
 
+### Key environment variables (backend/.env)
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `DATABASE_URL` / `MIGRATION_DATABASE_URL` | yes | App / migration Postgres DSNs (see section 1) |
+| `REDIS_URL` | yes | Redis broker for Arq queues, caches |
+| `SUPABASE_*` | yes | Auth, RBAC, storage |
+| `GOOGLE_GMAIL_*` | optional | Gmail OAuth connector |
+| `GROQ_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | optional | LLM explanations; missing ⇒ deterministic heuristic mode |
+| `FIRECRAWL_API_KEY` | optional | Live page intelligence for URL enrichment (see [FIRECRAWL_INTEGRATION.md](FIRECRAWL_INTEGRATION.md)); missing ⇒ heuristics-only URL analysis, no extra latency |
+
 ---
 
 ## 3. Schema was deleted / wiped (the incident)
@@ -217,6 +228,7 @@ gracefully when an artifact is missing.
 | Frontend status pill shows amber `POLLING` instead of green `LIVE` | Supabase Realtime websocket disconnected or offline keys | Normal graceful fallback; 60s background polling is active and maintaining freshness automatically |
 | `GmailAuthError: 401 Unauthorized` in worker logs | OAuth token expired or revoked by mailbox owner | Job immediately transitions to `dead_letter` (0 retries); prompt user to reconnect in Email Connectors |
 | `/metrics` Prometheus endpoint returns empty values | No telemetry processed since worker pool start | Trigger webhook curl or run test suite to populate Prometheus counter and histogram collectors |
+| URL analysis shows no Firecrawl enrichment indicators | `FIRECRAWL_API_KEY` unset or `FIRECRAWL_ENABLED=false` | Expected graceful degradation; set the key in backend/.env to enable live enrichment (see docs/FIRECRAWL_INTEGRATION.md) |
 
 ---
 

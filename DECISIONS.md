@@ -3,6 +3,97 @@
 Append-only decision log. Each entry: date, decision, rationale, and
 consequences. Newest entries at the bottom.
 
+## Table of Contents
+
+**Architecture & Tenancy:** Monotonic hybrid blending · Dedicated `cyberguard`
+schema + RLS (Phase -1) · Owner-scoped tenancy & org freeze · Phase -1 spec
+deviations · Backend-mediated signup/sign-in · ORG-1 org foundation (API keys,
+RBAC) · ORG-2 log analytics & realtime publication · ORG-3 org mail connectors ·
+ORG-4 role-grouped notifications · ORG-5 provenance docs & realtime tightening
+
+**Integrations & Response:** Gmail connector & token vault (Phase 1-2) ·
+Stateless mailbox scanning (Phase 3) · Real Gmail enforcement + expiry
+scheduler (Phase 4) · Dual-write security history (Phase 5) · 14-method
+provider contract + DB-logged notifications (Phase 6-7) · Workspace-scoped nav
+
+**Quality & Evaluation:** Pytest evaluation harness
+
+**Real-Time Pipeline (RT-1..RT-10):** Arq over Celery · Durable job ledger ·
+Thin webhook · history.list sync · Poison-pill fetch worker · Engine reuse in
+analysis worker · Realtime-first frontend · Watch renewal crons · Observability ·
+DLQ ops
+
+## Decision Timeline
+
+```mermaid
+flowchart LR
+    subgraph P0["Phase -1 · Foundations"]
+        A1["Schema + RLS<br/>cyberguard_api NOBYPASSRLS"]
+        A2["Owner-scoped tenancy<br/>ORG_ENABLED=false"]
+        A3["Backend-mediated auth<br/>server-enforced usernames"]
+    end
+
+    subgraph P12["Phases 1-3 · Connect & Scan"]
+        B1["Own OAuth client<br/>+ Fernet token vault"]
+        B2["Stateless deterministic<br/>mailbox scanning"]
+    end
+
+    subgraph P47["Phases 4-7 · Respond & Notify"]
+        C1["Real Gmail enforcement<br/>+ 5-min expiry scheduler"]
+        C2["Dual-write history<br/>+ actor distinction"]
+        C3["14-method provider contract<br/>+ DB-logged notifications"]
+    end
+
+    subgraph ORG["Orgs Phase · ORG-1..5"]
+        D1["Header API keys<br/>cg_live_* · SHA-256"]
+        D2["Shape-based log analytics<br/>+ alert promotion"]
+        D3["Org mail connectors<br/>(SimulationTransport)"]
+        D4["Role-grouped<br/>notifications"]
+        D5["Provenance docs +<br/>realtime policy tightening"]
+    end
+
+    subgraph RT["RT Phase · RT-1..10"]
+        E1["Arq + Redis<br/>worker separation"]
+        E2["Durable job_queue<br/>+ deterministic IDs"]
+        E3["Thin webhook<br/><50 ms"]
+        E4["Retry matrix<br/>+ DLQ"]
+    end
+
+    A1 --> A2 --> A3 --> B1 --> B2 --> C1 --> C2 --> C3 --> D1 --> D2 --> D3 --> D4 --> D5 --> E1 --> E2 --> E3 --> E4
+```
+
+## Technology Selection Matrix
+
+The decisions below record *why* each major technology won its slot:
+
+| Decision Domain | Selected | Rejected Alternatives | Rationale (source ADR) |
+|---|---|---|---|
+| Distributed task queue | **Arq + Redis** | Celery (+ kombu/AMQP) | asyncio-native; fits FastAPI + SQLAlchemy 2.0 async with zero threadpools and only two dependencies (RT-1) |
+| Job durability | **PostgreSQL `job_queue` ledger** | Redis-only queues | In-memory queues are ephemeral; durable table enables audit, re-enqueue, DLQ (RT-2) |
+| Tenancy isolation | **PostgreSQL RLS + GUCs** | App-layer filters only | A query-filter bug cannot leak cross-tenant data; `cyberguard_api` is NOBYPASSRLS (Phase -1) |
+| Mailbox token custody | **Own Google OAuth client + Fernet vault** | Supabase Google IdP tokens | Login tokens must never be confused with mailbox tokens (Phase 1-2) |
+| Key hashing (org API keys) | **SHA-256 exact-match** | bcrypt / argon2 | Keys are 256-bit random secrets; indexed exact-match validation needs no password-style stretching (ORG-1) |
+| Log-type detection | **Payload SHAPE auto-detection** | Client-declared type | Clients lie / misconfigure; shape is intrinsic (ORG-2) |
+| Realtime policy recursion | **SECURITY DEFINER `org_member_role()`** | Direct EXISTS on `organization_members` | Self-referential policy recursion; definer function avoids infinite loop (ORG-1) |
+| Enforcement gating | **Corroboration gate** | Single-engine auto-block | Auto-enforcement only on critical severity AND ≥2 engines high+ (DATABASE_DESIGN / action_engine) |
+| Expiry scheduling | **Hand-rolled asyncio loop (5 min)** | apscheduler | Fails safe, no extra dependency, service-role engine (Phase 4) |
+| LLM explanation fallback | **Deterministic rule-based generator** | Fail the request | 100% platform availability regardless of LLM key health (ai/llm_client) |
+| Notification delivery | **DB-logged backend by default** | SMTP-only | Deterministic demo with zero external dependency; SMTP optional with fallback (Phase 6-7) |
+| Frontend realtime | **Supabase Realtime + 60 s polling fallback** | Raw WebSockets / SSE | Sub-3 s push latency with silent graceful degradation (RT-7) |
+
+## How to Read an ADR (and Add One)
+
+```mermaid
+flowchart LR
+    A["Identify a<br/>binding decision"] --> B["Write entry:<br/>date · decision · rationale · consequences"]
+    B --> C["Append at the bottom<br/>(never rewrite history)"]
+    C --> D["Record deviations from<br/>any spec explicitly"]
+    D --> E["Note consequences:<br/>what becomes easier, what is<br/>now required of future work"]
+```
+
+Every entry below follows that shape. Documented deviations from a phase spec
+are deliberate extensions, not omissions — each one lists the reason it exists.
+
 ---
 
 - **Decision.** Hybrid blending is monotonic: ML can raise but never lower a heuristic score (safety property).
@@ -467,3 +558,34 @@ consequences. Newest entries at the bottom.
      Unlike disconnect (which destroys credentials and watch state), `pause` temporarily halts mailbox monitoring without requiring the user to repeat the full OAuth consent flow. `pause` invokes `gmail.users.stop()`, preserves encrypted OAuth credentials, and sets `status = 'paused'`, `sync_status = 'paused'`, and `paused_at = now()`. `resume` invokes `gmail.users.watch()` to register a new watch with Google, restores `status = 'connected'`, `sync_status = 'active'`, and `paused_at = NULL`, and crucially enqueues a gap-sync background job using the pre-pause `last_history_id`. This guarantees that any emails received during the paused window are retrieved and analyzed rather than silently lost.
   5. **Why the Scheduled Watch Renewal Cron Filters Strictly by `status == 'connected'`:**
      The background watch renewal cron (`_run_renew_watches`) executes 4x daily to prevent 7-day watch expirations. If paused or disconnected accounts were included, the renewal job would fail on missing tokens or inadvertently reactivate a Google watch that the user intentionally paused. The query strictly restricts renewals to `GmailAccount.status == 'connected' AND GmailAccount.refresh_token.is_not(None)`, keeping paused accounts safely dormant until explicitly resumed by the user.
+
+---
+
+## The Five Invariants Every Later Decision Preserves
+
+The decisions above are individually motivated, but they also compound into a
+small set of platform invariants. Any future change that weakens one of these
+should be treated as a new ADR with explicit justification:
+
+```mermaid
+flowchart TB
+    subgraph INV["Platform Invariants"]
+        I1["1 · Monotonic fusion<br/>ML may raise, never lower,<br/>a heuristic score"]
+        I2["2 · Database-enforced isolation<br/>RLS beneath app filters;<br/>app role is NOBYPASSRLS"]
+        I3["3 · Single detection source of truth<br/>all entry points share the same<br/>engines + scoring + blend"]
+        I4["4 · Honest status reporting<br/>no fake provider success;<br/>simulation is always flagged"]
+        I5["5 · Durable auditability<br/>every automated or manual action<br/>lands in security_events + audit_logs"]
+    end
+
+    I1 --> G["A verdict can always be<br/>reproduced and explained"]
+    I2 --> G
+    I3 --> G
+    I4 --> H["An operator is never misled<br/>about what the system did"]
+    I5 --> H
+```
+
+**Why these matter:** I1 guarantees detection safety, I2 guarantees tenant
+safety, I3 guarantees verdict consistency across interactive scans, mailbox
+scans, gateway integrations, and the real-time worker pipeline, I4 preserves
+operational trust (the "no fake provider success anywhere" rule), and I5
+preserves the forensic chain required by SOC 2 / ISO 27001-style audit review.

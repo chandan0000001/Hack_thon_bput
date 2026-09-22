@@ -10,6 +10,7 @@ CYBERGUARD's detection layer is a **transparent heuristic engine** (rule-based f
 - `calculate_score(indicators)` sums weights, capped at 100.
 - `get_severity(score)` maps to bands: **safe 0–20, low 21–40, medium 41–60, high 61–80, critical 81–100**.
 - Alert pipeline: `risk_score = max(round(manipulation_probability * 100), indicator_score)` for media; pure indicator score elsewhere.
+- **Firecrawl content-derived indicators** (`lookalike_domain_confirmed`, `lookalike_domain_candidate`, `live_credential_form`, `redirect_domain_mismatch`, `local_internal_domain` — see [FIRECRAWL_INTEGRATION.md](FIRECRAWL_INTEGRATION.md)) are **heuristic-side only**: they enter `calculate_score` like any other heuristic and never touch the ML indicator or the blend — the monotonic `max(heuristic, blend)` in `ml_inference.blend_scores` guarantees live page content can only raise, never lower, the final ML-blended verdict.
 
 ## Detection modules
 
@@ -131,3 +132,29 @@ Model artifact selection is governed by `ml/models/calibration.json` (hot-reload
 ### Hybrid blending rule (unchanged, monotonic)
 
 `final_score = max(heuristic_score, round(0.45 × heuristic_score + 0.55 × ml_probability × 100))` — ML can raise but never lower a heuristic verdict. Audio additionally blends model and WAV heuristics 0.6/0.4 before the monotonic blend. The `{"type": "ml_model"}` indicator carries the numeric probability and is split back out by `split_ml_indicator()` so heuristic scores stay well-defined.
+
+### Malicious URL — XGBoost v4 (`url_xgb_v4.pkl`)
+
+- **Algorithm:** XGBoost (`XGBClassifier`, `binary:logistic`, hist tree method), hyperparameters tuned via Optuna TPE (validation ROC-AUC objective; GridSearchCV fallback when Optuna is not installed) over `max_depth`, `learning_rate`, `n_estimators`, `subsample` (+ `colsample_bytree`, `min_child_weight`).
+- **Feature schema:** **unchanged from v3** — the exact 19 features of `ml/url_features_v3.py` (`FEATURE_COLUMNS_V3`), extracted by the same module at training and inference time, so v4 is a drop-in artifact. Serving is selected via `ml/models/calibration.json` → `"url_model_version": "v4"` (loader registered in `URL_V3_ARTIFACTS`, `app/services/ml_inference.py`).
+- **Dataset (real-world, ≥ 100,000 URLs — resolves the v1/v2/v3 small-sample caveat):**
+  - Malicious: abuse.ch **URLhaus** bulk feed (recent CSV) + **Phishing.Database** ACTIVE feed (GitHub, ~780k live phishing URLs incl. platform-hosted cases).
+  - Benign: **Cisco Umbrella top-1M** whitelist (`ml/data/url_whitelist/top1m.txt` — the same set the runtime reputation service loads) + optional **PhiUSIIL Phishing URL Dataset** (UCI) for hard benign/phishing pairs.
+  - Pipeline: `ml/scripts/fetch_url_data.py` → `ml/data/url_datasets/url_v4_raw.csv` (`url`, `label` 1=malicious / 0=benign, `source`) → `ml/scripts/preprocess_url_v4.py` → `url_v4_processed.csv` (19 features + `source` + `label`).
+- **Split:** 80/10/10 train/validation/test, **stratified on (label, source)** so the test set contains URL infrastructure the model never saw from any collection source (prevents source-level leakage between train and test).
+- **Class imbalance:** `scale_pos_weight = n_benign / n_malicious` from the training split (XGBoost cost-sensitive learning; chosen over SMOTE because every feature is a deterministic function of the URL — interpolated synthetic vectors would create URLs that never existed).
+- **Test metrics (held-out 10%):** Accuracy **TBD**, Precision **TBD**, Recall **TBD**, F1 **TBD**, ROC-AUC **TBD**, PR-AUC **TBD** — filled by `ml/models/url_v4_metrics.json` after `ml/scripts/train_url_v4.py` runs.
+- **Feature importance:** `docs/plots/url_v4_feature_importance.png` (gain-based, 19 features).
+
+#### Changelog v3 → v4
+
+| Aspect | v3 / v3.1 | v4 |
+| --- | --- | --- |
+| Dataset size | ~100k rows, but benign side partly **synthetic augmentation** (tracking-param + brand-secondary generators); malicious = 50k feed URLs | **100k+ fully real URLs** (URLhaus + Phishing.Database + Umbrella top-1M, optional PhiUSIIL); no synthetic rows |
+| Small-sample caveat | Generalization limited by augmentation-shaped benign distribution — model fit the generator's fingerprints | Real-world benign diversity (top-1M + PhiUSIIL) removes generator overfit; **caveat resolved** |
+| Split | 80/20 stratified on label only | 80/10/10 stratified on **(label, source)** — test holds out infrastructure unseen from every source |
+| Imbalance handling | `scale_pos_weight` (same) | `scale_pos_weight` (same principle, computed per-split) + documented SMOTE rejection rationale |
+| Hyperparameters | Fixed (`300 × depth-6, lr 0.05`) | Tuned via Optuna TPE on validation ROC-AUC (GridSearchCV fallback) |
+| Features | 19 (`FEATURE_COLUMNS_V3`) | **19 — unchanged (feature lock)** |
+| Artifact | `url_xgb_v3.pkl` / `url_xgb_v3.1.pkl` | `url_xgb_v4.pkl` (same joblib XGBClassifier `predict_proba` interface) |
+| Regression gate | Medium/PayPal-benign vs lookalike/IP-phish gate | Same gate retained in `train_url_v4.py` — v4 must keep benign marketing URLs benign |

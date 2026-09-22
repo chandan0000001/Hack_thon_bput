@@ -9,6 +9,7 @@ recommended enforcement action is reported honestly as
 ``provider_operation_status = "deferred_to_phase_4"``.
 """
 
+import inspect
 import logging
 import re
 from collections.abc import Iterable
@@ -21,6 +22,7 @@ from app.schemas.scan_results import (
     Indicator,
     ScanResult,
 )
+from app.services.domain_intelligence import live_enrich_url
 from app.services.impersonation_detector import analyze_impersonation_heuristics
 from app.services.ml_inference import blend_scores, split_ml_indicator
 from app.services.phishing_detector import analyze_email_heuristics
@@ -128,7 +130,7 @@ def _phishing_analysis(message: NormalizedMessage) -> tuple[FeatureAnalysis, lis
     return _feature_analysis("phishing_detector", indicators, explanation)
 
 
-def _url_analysis(message: NormalizedMessage) -> tuple[FeatureAnalysis, list[dict]]:
+async def _url_analysis(message: NormalizedMessage) -> tuple[FeatureAnalysis, list[dict]]:
     urls = _extract_urls(message)
     if not urls:
         return (
@@ -146,6 +148,8 @@ def _url_analysis(message: NormalizedMessage) -> tuple[FeatureAnalysis, list[dic
     per_url_notes: list[str] = []
     for url in urls:
         indicators = analyze_url_heuristics(url)
+        # Firecrawl live enrichment (optional; additive heuristics-side indicators).
+        indicators = await live_enrich_url(url, indicators)
         all_indicators.extend(indicators)
         if indicators:
             per_url_notes.append(f"URL '{url}' raised {len(indicators)} indicator(s):\n" + _verbose_indicator_summary(indicators, limit=4))
@@ -229,7 +233,9 @@ async def scan_message(message: NormalizedMessage) -> ScanResult:
     analyses: list[FeatureAnalysis] = []
     raw_indicators: list[dict] = []
     for build in (_phishing_analysis, _url_analysis, _impersonation_analysis):
-        analysis, indicators = build(message)
+        result = build(message)
+        # _url_analysis is async (Firecrawl live enrichment); the rest are sync.
+        analysis, indicators = await result if inspect.isawaitable(result) else result
         analyses.append(analysis)
         raw_indicators.extend(indicators)
     attachment_analysis = _attachment_analysis(message)

@@ -23,6 +23,7 @@ if str(BACKEND_ROOT) not in sys.path:
 _DB_FD, _DB_PATH = tempfile.mkstemp(suffix=".db", prefix="cg_eval_")
 os.close(_DB_FD)
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_DB_PATH}"
+os.environ["TEST_MODE"] = "false"
 # Deterministic, offline-first harness: no external LLM calls during scoring.
 for _key in (
     "OPENROUTER_API_KEY", "OPENROUTER_API_KEYS", "GROQ_API_KEY", "GROQ_API_KEYS",

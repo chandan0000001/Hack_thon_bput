@@ -18,6 +18,33 @@ For a complete step-by-step walkthrough on configuring real-time Gmail inbox sca
 
 ---
 
+## 📚 Documentation Index
+
+CYBERGUARD is documented as a linked knowledge base. Each document is the single source of truth for its domain and cross-references the others.
+
+| Document | Audience | Purpose |
+|---|---|---|
+| [README.md](README.md) | Everyone | Platform overview, quickstart, verification |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Engineers | Full system architecture, C4 views, component interactions, data flows |
+| [THREAT_DETECTION_ENGINES.md](THREAT_DETECTION_ENGINES.md) | Detection / ML engineers | The 6 detection engines, heuristic catalogs, hybrid fusion, per-engine pipelines |
+| [API_DOCUMENTATION.md](API_DOCUMENTATION.md) | Integrators, frontend devs | Complete REST surface, auth flows, error envelopes, rate limiting |
+| [DATA_MODEL.md](DATA_MODEL.md) | Backend / DBA | Entity-relationship diagram, RLS policies, lifecycle & retention |
+| [SECURITY_MODEL.md](SECURITY_MODEL.md) | Security / Compliance | Threat model, encryption, key rotation, audit, compliance mapping |
+| [ML_MODELS.md](ML_MODELS.md) | ML engineers | Model cards, training pipelines, calibration, evaluation metrics |
+| [WORKER_ARCHITECTURE.md](WORKER_ARCHITECTURE.md) | Platform / SRE | Arq worker pools, job state machine, retries, DLQ operations |
+| [FRONTEND_ARCHITECTURE.md](FRONTEND_ARCHITECTURE.md) | Frontend devs | Routing, Zustand stores, realtime hooks, component hierarchy |
+| [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) | Integrators / SOC | Gmail OAuth, Pub/Sub webhooks, org gateway, provider contract |
+| [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) | DevOps | Docker Compose topologies, EC2 production, backup & recovery |
+| [MONITORING_OBSERVABILITY.md](MONITORING_OBSERVABILITY.md) | SRE | Prometheus metrics catalog, structured logging, alerting workflows |
+| [RUNBOOK.md](RUNBOOK.md) | On-call / SOC | Startup in every condition, schema recovery, troubleshooting |
+| [DECISIONS.md](DECISIONS.md) | Architects | Append-only ADR log with rationale & consequences |
+| [EC2_DEPLOY.md](EC2_DEPLOY.md) | DevOps | Single-instance AWS production deployment |
+| [REALTIME_GMAIL_SETUP_GUIDE.md](REALTIME_GMAIL_SETUP_GUIDE.md) | Operators | Beginner-friendly Gmail real-time pipeline setup |
+
+> Backend-specific deep dives also live in [`backend/docs/`](backend/docs/) (28 engineering documents covering RT-1..RT-10, ORG-1..ORG-5, DLQ ops, observability, and the database design), and the in-app `/docs` page renders provenance-verified operator documentation directly in the dashboard.
+
+---
+
 ## ⚡ Key Capabilities & Platform Highlights
 
 ### 1. 🔍 6 Enterprise Threat Detection Engines + Hybrid ML
@@ -142,11 +169,147 @@ flowchart TB
     FrontendUI --- DocsPage
 ```
 
+### System Context (C4 Level 1)
+
+Who uses CYBERGUARD and which external systems it depends on:
+
+```mermaid
+flowchart LR
+    subgraph People
+        Analyst["SOC Analyst"]
+        Admin["SOC Admin"]
+        OrgSystem["Enterprise System<br/>(SIEM / Mail Gateway)"]
+    end
+
+    subgraph CyberGuard["CYBERGUARD AI SOAR Platform"]
+        UI["SOC Web Application"]
+        API["Detection & Response API"]
+    end
+
+    subgraph External["External Services"]
+        Supabase["Supabase<br/>Auth · Realtime · Storage"]
+        Gmail["Gmail API"]
+        PubSub["Google Cloud Pub/Sub"]
+        LLM["LLM Providers<br/>Groq · Gemini · OpenRouter"]
+    end
+
+    Analyst -->|Analyzes threats, reviews quarantine| UI
+    Admin -->|Policies, DLQ ops, RBAC| UI
+    OrgSystem -->|Server-to-server telemetry<br/>org_authorization: cg_live_*| API
+    UI -->|JWT auth · realtime CDC · media storage| Supabase
+    API -->|"Token verification — anon client"| Supabase
+    API -->|history.list · watch · quarantine| Gmail
+    PubSub -->|Push notifications| API
+    API -->|XAI threat explanations| LLM
+```
+
+### Threat Detection Pipeline (Ingestion → Analysis → Response)
+
+Every telemetry vector — whether submitted interactively via the REST API, ingested by the real-time Gmail workers, or pushed through the organization gateway — flows through the same detection spine. This single-source-of-truth pipeline is what guarantees identical verdicts across all entry points:
+
+```mermaid
+flowchart TB
+    Ingest(["Telemetry Ingestion<br/>(REST /analysis/* · email-worker · org gateway)"]) --> Normalize["Normalization<br/>(NormalizedMessage / raw payload → typed schema)"]
+
+    Normalize --> Heur["Heuristic Engines<br/>(transparent, rule-based indicators)"]
+    Normalize --> ML["ML Predictors<br/>(XGBoost + TF-IDF / CNNs)"]
+
+    Heur --> Split["split_ml_indicator<br/>separate heuristic vs ML signals"]
+    ML --> Split
+
+    Split --> Fusion["Hybrid Fusion (monotonic blend)<br/>final = max(heuristic, 0.45·heuristic + 0.55·ml)"]
+    Fusion --> Severity["Severity Banding<br/>safe ≤20 · low ≤40 · medium ≤60 · high ≤80 · critical ≤100"]
+
+    Severity --> XAI{"LLM keys<br/>healthy?"}
+    XAI -->|Yes| LLMXAI["XAI Explanation<br/>(Groq → Gemini → OpenRouter chain,<br/>MITRE ATT&CK mapping)"]
+    XAI -->|All providers down| RuleXAI["Deterministic Rule-Based<br/>explanation fallback"]
+    LLMXAI --> Persist
+    RuleXAI --> Persist
+
+    Persist["Persist: Event → ScanResult → Alert<br/>+ RecommendedActions"] --> AutoSOAR{"Auto-enforcement<br/>eligible?"}
+
+    AutoSOAR -->|"critical severity AND<br/>≥2 engines corroborate"| Enforce["SOAR Enforcement<br/>quarantine · block sender · notify"]
+    AutoSOAR -->|"low/medium or<br/>insufficient corroboration"| Review["Recommend-only<br/>(review_recommended)"]
+
+    Enforce --> Realtime["Supabase Realtime broadcast<br/>→ LIVE Quarantine Queue (<3 s)"]
+    Review --> Realtime
+```
+
+> **Why monotonic fusion?** ML can raise but never lower a heuristic score. A transparent high-confidence heuristic verdict (e.g. an IP-hosted credential-harvesting URL) can never be overruled by a model's false negative, while genuine ML strength lifts weak heuristic scores. See [THREAT_DETECTION_ENGINES.md](THREAT_DETECTION_ENGINES.md).
+
+### End-to-End Request Lifecycle (Real-Time Gmail Vector)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant G as Gmail
+    participant PS as Cloud Pub/Sub
+    participant WH as Thin Webhook<br/>(FastAPI :8000)
+    participant R as Redis / Arq
+    participant GW as gmail-worker
+    participant EW as email-worker
+    participant DB as PostgreSQL (RLS)
+    participant SR as Supabase Realtime
+    participant UI as SOC Quarantine Queue
+
+    G->>PS: New message delivered (historyId)
+    PS->>WH: POST /api/v1/webhooks/gmail (push)
+    WH->>WH: Validate envelope · deterministic job_id<br/>gmail_sync:{user}:{history_id}
+    WH->>R: Enqueue (token-bucket gated, <50 ms ack)
+    WH-->>PS: HTTP 200 accepted
+    R->>GW: Pop gmail_sync job
+    GW->>G: users.history.list (delta since checkpoint)
+    G-->>GW: messagesAdded IDs
+    GW->>DB: Row-locked checkpoint update (SELECT FOR UPDATE)
+    GW->>R: Enqueue email_fetch:{user}:{message_id}
+    R->>EW: Pop email_fetch job
+    EW->>G: Fetch raw MIME (metadata-only attachments)
+    EW->>EW: Normalize · heuristics · XGBoost ML<br/>monotonic blend · XAI explanation
+    EW->>DB: ScanResult + processed_emails + Alert
+    EW->>SR: Broadcast email_analyzed
+    SR->>UI: Realtime push → LIVE pill, highlight animation
+    Note over EW,DB: If classification=phishing or risk≥0.7:<br/>auto-SOAR quarantine + sender block
+```
+
+### Job Lifecycle State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued : deterministic job_id enqueued
+    queued --> running : worker pops job
+    running --> completed : success
+    running --> failed : transient error<br/>(retry_count < max_retries)
+    running --> dead_letter : auth error / poison payload<br/>(immediate, 0 retries)
+    failed --> queued : next_retry_at reached<br/>backoff 5s·30s·2m·10m·30m<br/>(±10% jitter on rate limits)
+    failed --> dead_letter : retries exhausted (max 5)
+    dead_letter --> queued : admin manual retry (DLQ dashboard)
+    dead_letter --> deleted : admin soft-delete (audited)
+    completed --> [*]
+    deleted --> [*]
+```
+
+> The PostgreSQL `job_queue` table is the durable authority behind this state machine; Redis/Arq provides low-latency dispatch. Full mechanics in [WORKER_ARCHITECTURE.md](WORKER_ARCHITECTURE.md).
+
 ---
 
 ## 🚀 Quick Start Guide
 
 CYBERGUARD supports three execution environments depending on your infrastructure requirements.
+
+### Which Path Should I Take?
+
+```mermaid
+flowchart TD
+    Start(["New environment"]) --> HaveCreds{"Have Supabase +<br/>Google Cloud credentials?"}
+    HaveCreds -->|No| Demo["Condition C — Demo/Mock Mode<br/>SQLite + in-browser mock adapters<br/>zero external infrastructure"]
+    HaveCreds -->|Yes| LocalOnly{"Docker available?"}
+    LocalOnly -->|Yes| Docker["Condition A — Docker Compose All-in-One<br/>7-container stack, one command"]
+    LocalOnly -->|No| Hybrid["Condition B — Hybrid Deployment<br/>Supabase cloud + local Redis + 5 terminals"]
+
+    Docker --> Verify["Verify: docker compose ps<br/>/health · /metrics · /docs · /dlq"]
+    Hybrid --> Verify
+    Demo --> VerifyDemo["Verify: amber DEMO MODE badge<br/>local threat analysis works"]
+```
 
 ### Condition A: Docker Compose All-in-One (Recommended)
 
@@ -330,6 +493,53 @@ CYBERGUARD features an asynchronous, event-driven streaming ingestion pipeline f
 * **Observability & Prometheus Metrics (`/metrics`)**: Production-grade Prometheus instrumentation exposing event counters, worker job histograms, queue depth gauges, and DLQ counters.
 * **DLQ Operations Dashboard (`/dlq`)**: Administrator-restricted console providing KPI analytics, payload inspection, single-click retry re-enqueueing, and soft-delete capabilities.
 
+### Deployment Architecture (Docker Compose)
+
+How the 9 containers of the all-in-one stack relate — including which ports are public versus localhost-only:
+
+```mermaid
+flowchart TB
+    User(["Browser / SOC Analyst"])
+
+    subgraph DockerNetwork["Docker Network (cyberguard-prod-net)"]
+        FE["frontend<br/>nginx :80 (public)<br/>SPA + /api/* reverse proxy"]
+        API["api :8000<br/>FastAPI + auto-migrations<br/>(alembic upgrade head)"]
+        GW["gmail-worker<br/>(Arq, I/O-bound)"]
+        EW["email-worker<br/>(Arq, ML compute)"]
+        SW["scheduler-worker<br/>(cron, watch renewal + reconciliation)"]
+        PG[("postgres :5432<br/>postgres:16-alpine")]
+        RD[("redis :6379<br/>redis:7-alpine requirepass")]
+        PGA["pgadmin :5050<br/>(ssh tunnel only)"]
+        RI["redisinsight :5540<br/>(ssh tunnel only)"]
+    end
+
+    Ext["Supabase Cloud<br/>Auth · Realtime · Storage"]
+    GCP["Google Cloud<br/>Gmail API · Pub/Sub"]
+    LLM["LLM Providers<br/>Groq / Gemini / OpenRouter"]
+
+    User -->|":80 — the only public port"| FE
+    FE -->|"/ → static SPA"| User
+    FE -->|"/api/* → proxy (120 s timeout)"| API
+    API --> PG
+    API --> RD
+    GW --> RD
+    EW --> RD
+    SW --> RD
+    GW --> PG
+    EW --> PG
+    SW --> PG
+    API -.->|OAuth tokens / PubSub push / XAI| GCP
+    API -.->|Supabase Auth verification| Ext
+    EW -.->|XAI explanations| LLM
+    PG -.->|CDC publication| Ext
+
+    style FE fill:#1a1a2e,stroke:#ef4444,color:#fafafa
+    style PG fill:#0f2027,stroke:#38b2ac,color:#fafafa
+    style RD fill:#0f2027,stroke:#dc382d,color:#fafafa
+```
+
+> On EC2 production (`docker-compose.prod.yml`) every port except nginx :80 is bound to `127.0.0.1`; pgAdmin and RedisInsight are reachable only through an SSH tunnel. See [EC2_DEPLOY.md](EC2_DEPLOY.md) and [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md).
+
 ---
 
 ## ⚙️ Environment Configuration Reference
@@ -356,7 +566,7 @@ CYBERGUARD features an asynchronous, event-driven streaming ingestion pipeline f
 | `OPENROUTER_MAX_KEYS` | `10` | Maximum keys loaded into active rotation pool |
 | `OPENROUTER_KEY_COOLDOWN_SECONDS` | `60` | Cooldown period for rate-limited keys (HTTP 429) |
 | `OPENROUTER_HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Interval to probe and re-release recovered keys |
-| `OPENROUTER_MODEL` | `meta-llama/llama-3.1-8b-instruct:free` | Primary LLM model for XAI threat explanations |
+| `OPENROUTER_MODEL` | `liquid/lfm-2.5-2.6b:free` | Primary LLM model for XAI threat explanations |
 
 ### Frontend (`frontend/.env`)
 
@@ -373,10 +583,10 @@ CYBERGUARD features an asynchronous, event-driven streaming ingestion pipeline f
 
 ```
 ├── backend/
-│   ├── alembic/           # 13 versioned migrations (0001 baseline to 0013 rt models)
+│   ├── alembic/           # 7 versioned migrations (0001 consolidated baseline → 0013 rt models)
 │   ├── app/
-│   │   ├── ai/            # OpenRouter client, distributed key rotator & prompts
-│   │   ├── api/           # 18 FastAPI route modules (auth, analysis, orgs, dlq, webhooks)
+│   │   ├── ai/            # OpenRouter/Groq/Gemini client, distributed key rotator & prompts
+│   │   ├── api/           # 26 registered FastAPI route modules (auth, analysis, orgs, dlq, webhooks)
 │   │   ├── core/          # Security, crypto, retry policies, metrics & structured logging
 │   │   ├── db/            # SQLAlchemy 2.0 async engine, models & admin sessionmaker
 │   │   ├── schemas/       # Strict Pydantic v2 schemas for all payloads

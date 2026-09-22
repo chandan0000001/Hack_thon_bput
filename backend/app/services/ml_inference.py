@@ -122,6 +122,7 @@ def email_model_artifact() -> str:
 
 
 URL_V3_ARTIFACTS = {
+    "v4": "url_xgb_v4.pkl",
     "v3.1": "url_xgb_v3.1.pkl",
     "v3": "url_xgb_v3.pkl",
 }
@@ -135,13 +136,13 @@ def url_model_version() -> str:
         with (models_dir() / "calibration.json").open(encoding="utf-8") as fh:
             calibration = json.load(fh)
         version = str(calibration.get("url_model_version", "v2"))
-        return version if version in ("v1", "v2") or version.startswith("v3") else "v2"
+        return version if version in ("v1", "v2") or version.startswith(("v3", "v4")) else "v2"
     except Exception:
         try:
             from app.core.calibration import get_calibration
 
             version = str(get_calibration().get("url_model_version", "v2"))
-            return version if version in ("v1", "v2") or version.startswith("v3") else "v2"
+            return version if version in ("v1", "v2") or version.startswith(("v3", "v4")) else "v2"
         except Exception:
             return "v2"
 
@@ -568,7 +569,9 @@ def predict_url(url: str) -> float | None:
         return None
     try:
         model, artifact = bundle
-        ver = "v3" if "v3" in artifact else ("v2" if "v2" in artifact else "v1")
+        # v4 reuses the v3 19-feature schema (same module, FEATURE_COLUMNS_V3).
+        ver = "v3" if ("v3" in artifact or "v4" in artifact) \
+            else ("v2" if "v2" in artifact else "v1")
         features = extract_url_features(url, version=ver).reshape(1, -1)
         return float(model.predict_proba(features)[0][1])
     except Exception as exc:

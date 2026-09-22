@@ -108,6 +108,22 @@ worker_jobs_total: Counter = _get_or_create(
 )
 
 
+# 11. Total Firecrawl live scrapes attempted (success / http_error / rate_limited / error)
+firecrawl_scrapes_total: Counter = _get_or_create(
+    Counter,
+    "firecrawl_scrapes_total",
+    "Total Firecrawl scrape attempts by status",
+    labelnames=("status",),
+)
+
+# 12. Total Firecrawl Redis cache hits (scrape served without an outbound call)
+firecrawl_cache_hits_total: Counter = _get_or_create(
+    Counter,
+    "firecrawl_cache_hits_total",
+    "Total Firecrawl scrape cache hits",
+)
+
+
 def init_metrics() -> None:
     """Initialize default metric series so all metric names appear in scrapers immediately."""
     try:
@@ -127,6 +143,11 @@ def init_metrics() -> None:
         processed_emails_total.labels(classification="suspicious")
         for w in ("gmail-worker", "email-worker", "scheduler-worker"):
             worker_jobs_total.labels(worker_name=w, job_type="default", status="success")
+        firecrawl_scrapes_total.labels(status="success")
+        firecrawl_scrapes_total.labels(status="http_error")
+        firecrawl_scrapes_total.labels(status="rate_limited")
+        firecrawl_scrapes_total.labels(status="error")
+        firecrawl_cache_hits_total.inc(0)
     except Exception:
         pass
 

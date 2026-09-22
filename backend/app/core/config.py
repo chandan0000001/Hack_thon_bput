@@ -192,6 +192,17 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.0-flash"
     GEMINI_FALLBACK_MODELS: str = "gemini-2.0-flash,gemini-1.5-flash"
 
+    # --- Firecrawl live page intelligence (optional URL enrichment) ---
+    # Missing key => live enrichment cleanly disabled; the URL pipeline runs
+    # heuristics-only (see app/services/firecrawl_client.py).
+    FIRECRAWL_API_KEY: str = ""
+    FIRECRAWL_BASE_URL: str = "https://api.firecrawl.dev"
+    FIRECRAWL_ENABLED: bool = True
+    FIRECRAWL_TIMEOUT_SECONDS: int = 10
+    FIRECRAWL_CACHE_TTL_SECONDS: int = 3600
+    FIRECRAWL_MAX_CONCURRENCY: int = 4
+    FIRECRAWL_SKIP_INTERNAL_URLS: bool = True
+
     ML_ENABLED: bool = True
     ML_MODELS_DIR: str = "ml/models"
 
@@ -207,6 +218,8 @@ class Settings(BaseSettings):
             self.GROQ_API_KEYS = ""
             self.GEMINI_API_KEY = ""
             self.GEMINI_API_KEYS = ""
+            # Live page scraping is external side-effecting: disabled in TEST_MODE.
+            self.FIRECRAWL_API_KEY = ""
         return self
     @property
     def async_database_url(self) -> str:

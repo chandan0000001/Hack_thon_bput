@@ -1083,6 +1083,28 @@ async def run_tests():
 
     await run_gmail_full_clear_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 45. Firecrawl live page intelligence (client + domain intelligence,
+    #     offline pytest suites via httpx.MockTransport / in-memory cache)
+    # -----------------------------------------------------------------------
+    print("\n[Suite 45] Firecrawl Live Page Intelligence (firecrawl_client + domain_intelligence)")
+    backend_root = Path(__file__).resolve().parents[1]
+    pytest_proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "pytest",
+        "tests/test_firecrawl_client.py",
+        "tests/test_domain_intelligence.py",
+        "-q",
+        cwd=str(backend_root),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    pytest_stdout, _ = await pytest_proc.communicate()
+    print(pytest_stdout.decode("utf-8", errors="replace"))
+    runner.assert_true(
+        pytest_proc.returncode == 0,
+        "Firecrawl client + domain intelligence pytest suites passed",
+    )
+
     return runner.report()
 
 

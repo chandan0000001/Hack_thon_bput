@@ -43,6 +43,77 @@ Written in simple, plain English with copy-pasteable commands and step-by-step i
 
 ---
 
+## 🗺️ Integration Architecture (Visual Overview)
+
+The setup below wires together three independent integrations: **OAuth 2.0** (mailbox access), **Cloud Pub/Sub** (push notifications), and the **Redis/Arq pipeline** (processing). Each diagram shows one.
+
+### 1. OAuth 2.0 Mailbox Connection Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as You (Browser)
+    participant FE as CyberGuard UI<br/>/email-connectors
+    participant API as FastAPI Backend
+    participant G as Google OAuth 2.0
+
+    U->>FE: Click "Connect Gmail Mailbox"
+    FE->>API: POST /api/v1/connectors/gmail/authorize
+    API->>API: Create single-use state row<br/>(connector_oauth_states, TTL 600 s)
+    API-->>U: Redirect to Google consent screen
+    U->>G: Sign in + approve scopes<br/>(gmail.modify · gmail.settings.basic)
+    G->>API: GET /connectors/gmail/callback?code=...&state=...
+    API->>API: Atomic state consumption<br/>(single-use, service-role helper)
+    API->>G: Exchange code → access/refresh tokens
+    API->>API: Encrypt tokens (Fernet, CONNECTOR_TOKEN_KEY)<br/>store in email_connector_accounts
+    API-->>U: Redirect to /email-connectors<br/>(green "Connected" badge)
+    Note over API: Plaintext tokens never leave the backend.<br/>The OAuth callback carries only a safe status — never a bearer token.
+```
+
+### 2. Pub/Sub Permission Chain (Who May Publish)
+
+```mermaid
+flowchart LR
+    Mail["Gmail mailbox<br/>new message"] -->|"Gmail push service<br/>gmail-api-push@system.gserviceaccount.com"| IAM{"Is that service account<br/>granted roles/pubsub.publisher<br/>on YOUR topic?"}
+    IAM -->|"No — default state"| Dropped["❌ Notification silently never published<br/>(most common setup failure)"]
+    IAM -->|"Yes — Step 3 of this guide"| Topic["Pub/Sub topic<br/>cyberguard-gmail"]
+    Topic --> Sub["Push subscription<br/>cyberguard-gmail-sub"]
+    Sub -->|"HTTPS POST + verification token"| WH["CyberGuard webhook<br/>/api/v1/webhooks/gmail"]
+    WH -->|"HTTP 200 <50 ms"| Sub
+
+    style Dropped fill:#3b1a1a,stroke:#ef4444,color:#fafafa
+```
+
+### 3. End-to-End Component Interaction
+
+```mermaid
+flowchart TB
+    subgraph Google["Google Cloud"]
+        GM["Gmail API<br/>history.list · watch · modify"]
+        PS["Cloud Pub/Sub"]
+    end
+
+    subgraph CG["CyberGuard"]
+        WH["Thin Webhook (<50 ms)"]
+        Q[("Redis / Arq")]
+        GW["gmail-worker"]
+        EW["email-worker"]
+        SW["scheduler-worker"]
+        DB[("PostgreSQL + RLS")]
+        SOAR["SOAR Enforcement<br/>(quarantine + sender block)"]
+        UI["SOC Dashboard<br/>/quarantine · LIVE pill"]
+    end
+
+    GM -->|push on delivery| PS --> WH --> Q
+    Q --> GW -->|delta discovery| GM
+    GW --> Q --> EW -->|fetch + ML analysis| GM
+    EW --> DB -->|realtime CDC| UI
+    EW -->|"threat verdict"| SOAR -->|label move + filter| GM
+    SW -->|"renew watch 4× daily<br/>reconcile 2× hourly"| GM
+```
+
+---
+
 ## 📋 What You Need (Prerequisites)
 
 Before you begin, ensure you have:
@@ -110,6 +181,33 @@ CyberGuard connects to Gmail using standard OAuth 2.0 so you can safely grant pe
    - `http://127.0.0.1:8000/api/v1/connectors/gmail/callback`
 6. Click **Create**.
 7. A dialog will appear with your **Client ID** and **Client Secret**. Copy both values — you will need them in your `.env` file!
+
+#### Why a dedicated OAuth client (permission boundaries)
+
+CyberGuard deliberately uses **two separate Google/Supabase identities** with
+non-overlapping purposes — a design decision recorded in
+[DECISIONS.md](DECISIONS.md):
+
+```mermaid
+flowchart TB
+    subgraph Login["Login Identity (Supabase Auth Google IdP)"]
+        L["Purpose: prove who you are<br/>Scope: your CyberGuard account session<br/>Token custody: browser (Supabase JS client)"]
+    end
+
+    subgraph Mailbox["Mailbox Identity (CyberGuard's own OAuth client)"]
+        M["Purpose: read + act on your mailbox<br/>Scope: gmail.modify · gmail.settings.basic<br/>Token custody: backend Fernet vault only"]
+    end
+
+    L -.->|"never interchangeable"| M
+```
+
+The requested Gmail scopes map directly to enforcement capabilities:
+
+| Scope | Grants | Used For |
+|---|---|---|
+| `gmail.modify` | Read messages, add/remove labels (incl. INBOX) | Scanning, `CYBERGUARD-Quarantine` moves, releases |
+| `gmail.settings.basic` | Manage basic mail settings | Creating sender-block filter rules |
+| `openid` / `userinfo.email` / `userinfo.profile` | Identity | Matching the mailbox to your CyberGuard account |
 
 ---
 

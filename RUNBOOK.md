@@ -5,6 +5,28 @@ of the database — healthy, empty, freshly-wiped, or wrong-role. It reflects
 the **from-scratch baseline migration** (`alembic/versions/0001_cyberguard_baseline.py`)
 and the self-healing bootstrap in `app/db/session.py` + `alembic/env.py`.
 
+## Table of Contents
+
+| § | Section | Purpose |
+|---|---|---|
+| 0 | The mental model | Two DB roles, three schema layers, key facts |
+| 1 | Normal start | Day-to-day startup (backend + frontend) |
+| 2 | First-time setup | Fresh clone → running stack |
+| 3 | Schema was deleted / wiped | The RLS/schema recovery incident |
+| 4 | Full reset from scratch | Drop everything, rebuild |
+| 5 | Local-only mode without Supabase | SQLite local mode |
+| 6 | Demo / mock mode | Frontend-only hackathon mode |
+| 7 | Tests / evaluation harness | pytest + offline mode |
+| 8 | Retraining the URL model | v3 / v3.1 pipelines |
+| 9 | Troubleshooting quick reference | Symptom → cause → action table + decision tree |
+| 10 | Real-Time Pipeline Startup | Conditions A/B/C for the RT stack |
+| 11 | Database Reset | Clean-slate procedure with verification |
+| 12 | Real-Time Pipeline Verification | End-to-end health checks |
+| 13 | Test Metrics & Suite Verification Summary | 30-suite harness results |
+| 14 | Incident Response Workflow | Detection → triage → containment → closure flowcharts |
+| 15 | Escalation Procedure | Severity-based escalation paths |
+| 16 | Monitoring Architecture | Health, metrics, logs, and alert routing overview |
+
 ---
 
 ## 0. The mental model (read this once)
@@ -34,6 +56,54 @@ Key facts you will need:
 Health check: `curl http://127.0.0.1:8000/api/v1/health` →
 `{"status":"ok","database_connected":true,...}`.
 (`supabase_connected:false` refers to Storage and does not block the API.)
+
+### Startup Decision Tree
+
+Which startup path applies to your current situation:
+
+```mermaid
+flowchart TD
+    Start(["Need to start CYBERGUARD"]) --> Fresh{"Fresh clone?"}
+    Fresh -->|Yes| FirstTime["§2 First-time setup<br/>uv sync · .env · alembic upgrade head"]
+    Fresh -->|No| Healthy{"curl /api/v1/health<br/>database_connected = true?"}
+    Healthy -->|Yes| Normal["§1 Normal start<br/>uvicorn + npm run dev"]
+    Healthy -->|No| Diagnose{"Error in startup log?"}
+    Diagnose -->|"relation does not exist"| SchemaWiped["§3 Schema wiped<br/>alembic upgrade head"]
+    Diagnose -->|"permission denied"| RoleIssue["Wrong DB role<br/>check DATABASE_URL vs MIGRATION_DATABASE_URL"]
+    Diagnose -->|"connection refused"| DBDown["§9 Troubleshooting<br/>Supabase paused / Postgres down"]
+    SchemaWiped --> Normal
+    RoleIssue --> Normal
+    DBDown --> Normal
+
+    style Normal fill:#052e16,stroke:#22c55e,color:#fafafa
+    style SchemaWiped fill:#3b1a1a,stroke:#ef4444,color:#fafafa
+```
+
+### Database Role & Access Model
+
+```mermaid
+flowchart LR
+    subgraph Roles["Two Database Roles"]
+        APP["cyberguard_api<br/>NOBYPASSRLS · no CREATE<br/>app runtime (uvicorn/workers)"]
+        ADMIN["postgres<br/>MIGRATION_DATABASE_URL<br/>alembic + admin helpers"]
+    end
+
+    subgraph Layers["Three Schema Layers"]
+        L1["1 · App init_db()<br/>best-effort CREATE SCHEMA<br/>+ create_all + seeds"]
+        L2["2 · Alembic migrations<br/>schema + tables + RLS + grants"]
+        L3["3 · Supabase platform<br/>Auth JWTs · Storage"]
+    end
+
+    APP --> L1
+    ADMIN --> L2
+    L3 -.->|Supabase Auth only| APP
+
+    style APP fill:#26120e,stroke:#ef4444,color:#fafafa
+    style ADMIN fill:#0e2618,stroke:#22c55e,color:#fafafa
+```
+
+> **Rule of thumb:** the app can heal *tables* by itself; only alembic can heal
+> *schema + RLS*. If the schema was wiped, run alembic (section 3).
 
 ---
 
@@ -202,6 +272,37 @@ gracefully when an artifact is missing.
 ---
 
 ## 9. Troubleshooting quick reference
+
+### Symptom Decision Tree
+
+Work top-to-bottom: the first matching branch names the row in the table below
+that resolves the symptom.
+
+```mermaid
+flowchart TD
+    Problem(["Something is broken"]) --> What{"What is failing?"}
+
+    What -->|API down / 5xx| Health{"GET /api/v1/health"}
+    Health -->|database_connected false| S1["DB down / URL wrong / schema missing<br/>→ follow §3"]
+    Health -->|ok but CORS errors| S2["Frontend blank / CORS<br/>→ backend not on VITE_API_BASE_URL;<br/>check CORS_ORIGINS"]
+
+    What -->|queries return 0 rows| RLS{"Count query empty<br/>but data exists?"}
+    RLS -->|yes, as app role| S3["RLS deny-all without app.user_id GUC<br/>→ expected behaviour;<br/>verify with postgres role"]
+
+    What -->|workers idle| Redis{"Redis connected?"}
+    Redis -->|ConnectionError| S4["Redis daemon offline<br/>→ docker compose up -d redis<br/>or redis-server --daemonize yes"]
+    Redis -->|"Could not transition job"| S5["Concurrent push delivery / retry<br/>→ expected safe idempotent skip"]
+
+    What -->|no live email flow| Gmail{"Webhook / watch healthy?"}
+    Gmail -->|HTTP 400 webhook| S6["Invalid Pub/Sub push payload<br/>→ validate base64 message.data"]
+    Gmail -->|401 in worker log| S7["GmailAuthError → dead_letter (0 retries)<br/>→ prompt user to reconnect<br/>in Email Connectors"]
+    Gmail -->|amber POLLING pill| S8["Supabase Realtime websocket down<br/>→ normal 60 s polling fallback"]
+
+    What -->|metrics empty| S9["/metrics returns empty values<br/>→ no telemetry since start;<br/>trigger webhook curl or test suite"]
+
+    style S1 fill:#3b1a1a,stroke:#ef4444,color:#fafafa
+    style S7 fill:#3b1a1a,stroke:#ef4444,color:#fafafa
+```
 
 | Symptom | Cause | Action |
 |---|---|---|
@@ -445,3 +546,147 @@ CYBERGUARD maintains a comprehensive 30-suite test harness executed via `uv run 
 | **Enterprise Organization Plane** | Suites 17–22 | Salted organization multi-tenancy (ORG-1), Splunk-style live log analytics (ORG-2), server-to-server mail connectors (ORG-3), notification groups (ORG-4), and realtime policy tightening (ORG-5). | 166 / 166 | 100% Green |
 | **Real-Time Ingestion & Observability** | Suites 23–30 | Real-time models (RT-2), Pub/Sub push webhook (RT-3), sync worker (RT-4), fetch worker (RT-5), analysis worker (RT-6), realtime subscriptions (RT-7), watch renewal & reconciliation crons (RT-8), observability & Prometheus metrics (RT-9), and DLQ ops dashboard (RT-10). | 139 / 139 | 100% Green |
 | **Total Comprehensive Platform** | **Suites 1–30** | **Complete end-to-end platform validation** | **703 / 703** | **100% Green** |
+
+---
+
+## 14. Incident Response Workflow
+
+When CYBERGUARD raises a critical alert, the SOAR automation and the human
+analyst operate on the same incident object. The flowcharts below describe the
+two halves of that workflow and how they hand off.
+
+### Automated Response Flow (SOAR)
+
+```mermaid
+flowchart TB
+    Alert(["Critical alert raised"]) --> Trust{"Sender on<br/>trusted list?"}
+    Trust -->|Yes| RecommendOnly["Recommend-only<br/>+ trust annotation<br/>(skipped_trusted_sender)"]
+    Trust -->|No| AutoQ{"Connector settings<br/>auto_quarantine enabled?"}
+    AutoQ -->|No| RecommendOnly
+    AutoQ -->|Yes| Corrob{"Corroboration gate:<br/>critical severity AND<br/>≥2 engines scored high/critical?"}
+    Corrob -->|No| ReviewRec["provider_operation_status =<br/>review_recommended"]
+    Corrob -->|Yes| Provider["Provider contract check<br/>(capabilities: supports_quarantine,<br/>supports_sender_rules)"]
+    Provider --> Quarantine["Quarantine message<br/>(Gmail label CYBERGUARD-Quarantine,<br/>INBOX removed)"]
+    Quarantine --> Block["Critical/high:<br/>create Gmail sender filter<br/>+ BlockedSender row"]
+    Block --> Ledger["Dual-write ledger:<br/>security_events + audit_logs<br/>(actor: user | system | scheduler)"]
+    Ledger --> Expiry["5-min expiry scheduler:<br/>auto-release after<br/>quarantine_expiry_hours (default 24)"]
+
+    style Quarantine fill:#3b1a1a,stroke:#ef4444,color:#fafafa
+    style RecommendOnly fill:#26200a,stroke:#eab308,color:#fafafa
+```
+
+### Analyst Triage Flow (Human Half)
+
+```mermaid
+flowchart TB
+    Trigger(["Alert / quarantined item appears<br/>(realtime LIVE push or polling)"]) --> Inspect["Inspect: risk score, indicators,<br/>XAI explanation, MITRE techniques,<br/>quarantine review timeline"]
+    Inspect --> Verdict{"Analyst verdict"}
+    Verdict -->|True positive| Contain["Contain: keep quarantined,<br/>block sender, link to Incident,<br/>escalate to critical"]
+    Verdict -->|False positive| Release["Release to INBOX<br/>(+ optional Trust & Restore:<br/>sender joins trusted list,<br/>future mail recommend-only)"]
+    Verdict -->|Needs more signal| Investigate["Open /alert detail:<br/>run additional analysis modules<br/>(phishing, URL, impersonation,<br/>deepfake, ATO, network)"]
+    Investigate --> Verdict
+    Contain --> Close["Incident lifecycle:<br/>open → investigating → contained → closed<br/>(every transition audited)"]
+    Release --> Feedback["Feedback loop:<br/>release records security_history event<br/>+ tune trusted senders / policies"]
+
+    style Contain fill:#3b1a1a,stroke:#ef4444,color:#fafafa
+    style Release fill:#052e16,stroke:#22c55e,color:#fafafa
+```
+
+Incident status transitions are validated server-side
+(`open → investigating → contained → closed`) and every escalation, assignment,
+and manual action is written to `audit_logs` with actor attribution.
+
+---
+
+## 15. Escalation Procedure
+
+Escalation is driven by severity bands (risk score 0–100) and the enforcement
+policy's notification routing (`notify_soc_on_critical/high`,
+`notify_user_on_medium`):
+
+```mermaid
+flowchart TB
+    Event(["Detection event"]) --> Band{"Severity band"}
+    Band -->|"critical (81–100)"| SOC["Notify SOC immediately<br/>(notification group: admin minimum)<br/>+ auto-enforcement eligible"]
+    Band -->|"high (61–80)"| SOC2["Notify SOC<br/>+ auto-enforcement eligible"]
+    Band -->|"medium (41–60)"| User["Notify user<br/>(notification_email only —<br/>connected mailboxes are never used)<br/>+ flag_for_review"]
+    Band -->|"low / safe (0–40)"| Log["Log only<br/>(security_events + audit trail)"]
+
+    SOC --> OnCall{"Acknowledged<br/>within SLA?"}
+    OnCall -->|No| Escalate["Escalate: org notification groups<br/>(admin → analyst → viewer routing<br/>by event-type min_role)"]
+    OnCall -->|Yes| Work["Assign Incident · track to closure"]
+    Escalate --> Work
+
+    style SOC fill:#3b1a1a,stroke:#ef4444,color:#fafafa
+    style Escalate fill:#3b1a1a,stroke:#f87171,color:#fafafa
+```
+
+Organization notification routing (ORG-4) resolves recipients by role group:
+each event type declares a **minimum role** — `admin` events reach admins only,
+`analyst` events reach analysts + admins, and `viewer` events reach everyone.
+Defaults: `server_down` / `mail_server_down` / `critical_log` → analyst;
+`impersonation` (brand-sensitive) → admin only.
+
+---
+
+## 16. Monitoring Architecture
+
+CYBERGUARD's observability spans four planes. The `/metrics` endpoint exports
+Prometheus counters, histograms, and gauges; structured JSON logs with
+correlation IDs bind distributed worker traces together; the DLQ dashboard
+surfaces dead-letter backlog; and the frontend's LIVE/POLLING pill reports
+realtime channel health.
+
+```mermaid
+flowchart TB
+    subgraph Emit["Telemetry Emitters"]
+        API["FastAPI API<br/>(webhook, analysis, DLQ)"]
+        GW["gmail-worker"]
+        EW["email-worker"]
+        SW["scheduler-worker"]
+    end
+
+    subgraph Observe["Observability Plane"]
+        PROM["Prometheus /metrics<br/>10 metric families:<br/>events · jobs · durations · queue depth · DLQ"]
+        LOG["Structured JSON logs<br/>correlation_id · job_id · user_id<br/>+ sensitive-data redaction<br/>(ya29.* · 1//* · bodies · attachments)"]
+        DLQ["DLQ Dashboard /dlq<br/>KPIs · retry history · manual ops"]
+        PILL["Frontend status pill<br/>LIVE (green) / POLLING (amber)"]
+    end
+
+    subgraph Consumers["Downstream Consumers"]
+        Scrape["Prometheus scrape<br/>(15 s interval)"]
+        Loki["Loki / ELK / Datadog<br/>log aggregation"]
+        Grafana["Grafana dashboards<br/>+ alert rules"]
+        SOCUI["SOC UI: DLQ page,<br/>Audit Logs, Security History"]
+    end
+
+    API --> PROM
+    GW --> PROM
+    EW --> PROM
+    SW --> PROM
+    API --> LOG
+    GW --> LOG
+    EW --> LOG
+    SW --> LOG
+    PROM --> Scrape --> Grafana
+    LOG --> Loki --> Grafana
+    DLQ --> SOCUI
+    PILL --> SOCUI
+```
+
+### Health Verification Checklist
+
+| Plane | Command / Surface | Healthy Signal |
+|---|---|---|
+| Liveness | `curl http://127.0.0.1:8000/api/v1/health` | `{"status":"ok",...}` |
+| Readiness (DB + Redis) | `curl http://127.0.0.1:8000/api/v1/ready` | HTTP 200, both dependencies pass |
+| Metrics | `curl -s :8000/metrics \| grep gmail_events` | Counter lines present and increasing |
+| Queue depth | `queue_depth{queue_name=...}` gauge | Near-zero in steady state |
+| DLQ backlog | `GET /api/v1/dlq/stats` | `total_dead_letter` stable / trending down |
+| Realtime | Quarantine page status pill | Pulsing green `LIVE` (amber `POLLING` = degraded but fresh) |
+| Workers | `docker compose logs -f email-worker` | Job completions, no repeated `dead_letter` transitions |
+
+Alert rule recommendations: page on sustained `dead_letter_jobs_total` growth,
+`queue_depth` above the worker drain rate for >10 minutes, and
+`gmail_api_errors_total{error_type="rate_limit"}` spikes (quota exhaustion).
+Full metric catalog: [MONITORING_OBSERVABILITY.md](MONITORING_OBSERVABILITY.md).
