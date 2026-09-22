@@ -174,6 +174,8 @@ def upgrade() -> None:
     for table, policies in (("projects", project_policies), ("project_api_keys", key_policies)):
         if not _has_table(bind, table):
             continue
+        bind.execute(text(f"DROP POLICY IF EXISTS {table}_app_all ON {SCHEMA}.{table}"))
+        bind.execute(text(f"DROP POLICY IF EXISTS {table}_app_select ON {SCHEMA}.{table}"))
         for ddl in policies:
             policy_name = ddl.split("POLICY ")[1].split(" ON ")[0]
             bind.execute(text(f"DROP POLICY IF EXISTS {policy_name} ON {SCHEMA}.{table}"))
