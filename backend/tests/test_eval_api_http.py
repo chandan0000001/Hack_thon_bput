@@ -63,6 +63,15 @@ async def test_eval_http_analysis_endpoints(request, client, eval_report):
         assert "severity" in data
         ok += 1
 
+    # Verify long URL (> 255 chars) does not violate DB varchar(255) constraint
+    long_test_url = "https://example.com/login?token=" + "a" * 300
+    r_long = await timed("/api/v1/analysis/url", {"url": long_test_url})
+    total += 1
+    assert r_long.status_code == 200, f"long url analysis failed: {r_long.status_code} {r_long.text[:200]}"
+    data_long = r_long.json()
+    assert len(data_long["title"]) <= 255
+    ok += 1
+
     for row in auths[: n // 6]:
         r = await timed("/api/v1/analysis/account-takeover", {"events": row["payload"]})
         total += 1

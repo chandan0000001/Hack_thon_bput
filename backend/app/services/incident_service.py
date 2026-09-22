@@ -28,14 +28,17 @@ async def create_incident(
     created_by: str,
 ) -> Incident:
     """Create an incident, link alerts, add a timeline entry, and audit it."""
+    clean_title = str(title).strip()
+    if len(clean_title) > 255:
+        clean_title = clean_title[:251] + "..."
     incident = Incident(
         id=str(uuid.uuid4()),
         organization_id=tenant.organization_id,
         owner_user_id=tenant.owner_user_id,
-        title=title,
-        severity=severity,
+        title=clean_title,
+        severity=str(severity)[:32],
         status="open",
-        created_by=created_by,
+        created_by=str(created_by)[:64] if created_by else None,
     )
     db.add(incident)
     await db.flush()

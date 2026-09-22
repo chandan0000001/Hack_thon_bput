@@ -114,11 +114,11 @@ async def _create_analysis_event(
         organization_id=tenant.organization_id,
         project_id=tenant.project_id,
         owner_user_id=tenant.owner_user_id,
-        event_type=event_type,
-        source=source,
+        event_type=str(event_type)[:64],
+        source=str(source)[:64],
         raw_data=raw_data,
         status="analyzing",
-        created_by=created_by,
+        created_by=str(created_by)[:64] if created_by else None,
     )
     db.add(event)
     await db.commit()

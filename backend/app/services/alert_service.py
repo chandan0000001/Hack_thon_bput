@@ -55,8 +55,12 @@ async def create_alert(
 ) -> Alert:
     """Persist an alert and its recommended actions, and update the associated event."""
     alert_id = str(uuid.uuid4())
-    title = raw_data.get("subject") or raw_data.get("url") or f"{module.replace('_', ' ').title()} threat detected"
+    raw_title = raw_data.get("subject") or raw_data.get("url") or f"{module.replace('_', ' ').title()} threat detected"
+    raw_title = str(raw_title).strip()
+    title = (raw_title[:251] + "...") if len(raw_title) > 255 else raw_title
     threat_type = raw_data.get("threat_type") or MODULE_DEFAULT_THREAT_TYPES.get(module, module)
+    if threat_type:
+        threat_type = str(threat_type)[:64]
     explanation = str(llm_output.get("explanation", ""))
     mitre = llm_output.get("mitre_techniques") or []
 
@@ -72,6 +76,10 @@ async def create_alert(
         except Exception:  # noqa: BLE001 - stamping is best-effort
             organization_id = None
 
+    target_user = str(raw_data["target_user"])[:255] if raw_data.get("target_user") else None
+    target_service = str(raw_data["target_service"])[:255] if raw_data.get("target_service") else None
+    source_ip = str(raw_data["source_ip"])[:64] if raw_data.get("source_ip") else None
+
     # ORG-REDESIGN: carry the tenant's project scope onto the alert so
     # project dashboards aggregate the right rows.
     alert = Alert(
@@ -81,19 +89,19 @@ async def create_alert(
         owner_user_id=tenant.owner_user_id,
         event_id=event_id,
         title=title,
-        module=module,
+        module=str(module)[:64],
         threat_type=threat_type,
-        severity=severity,
+        severity=str(severity)[:32],
         risk_score=score,
         status="new",
-        summary=explanation[:250] if explanation else title,
+        summary=explanation[:250] if explanation else title[:250],
         indicators=indicators,
         explanation=explanation,
         mitre=mitre,
-        target_user=raw_data.get("target_user"),
-        target_service=raw_data.get("target_service"),
-        source_ip=raw_data.get("source_ip"),
-        created_by=created_by,
+        target_user=target_user,
+        target_service=target_service,
+        source_ip=source_ip,
+        created_by=str(created_by)[:64] if created_by else None,
     )
     db.add(alert)
     await db.flush()
