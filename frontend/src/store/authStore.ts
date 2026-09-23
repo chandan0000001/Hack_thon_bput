@@ -34,7 +34,7 @@ interface AuthState {
   activeProject: Project | null;
 
   login: (email: string, password: string) => Promise<void>;
-  loginWithOAuth: (provider: 'google' | 'github') => Promise<void>;
+  loginWithOAuth: (provider: 'google' | 'github', mode?: 'personal' | 'org') => Promise<void>;
   signUp: (
     fullName: string,
     email: string,
@@ -170,11 +170,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (error) throw new Error(error.message);
   },
 
-  loginWithOAuth: async (provider: 'google' | 'github') => {
+  loginWithOAuth: async (provider: 'google' | 'github', mode?: 'personal' | 'org') => {
+    const selectedMode = mode || 'personal';
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.setItem('cyberguard_oauth_mode', selectedMode);
+      }
+    } catch {
+      // ignore
+    }
+    const redirectUrl = selectedMode === 'org'
+      ? `${window.location.origin}/login?mode=org`
+      : `${window.location.origin}/login`;
     const { error } = await getSupabase().auth.signInWithOAuth({
       provider,
       options: {
-        redirectTo: `${window.location.origin}/org/entry`,
+        redirectTo: redirectUrl,
       },
     });
     if (error) {

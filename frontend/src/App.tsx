@@ -36,7 +36,6 @@ import AccountTakeover from './pages/AccountTakeover';
 import NetworkThreats from './pages/NetworkThreats';
 
 // Org window modules
-import OrgEntry from './pages/OrgEntry';
 import OrgSelector from './pages/OrgSelector';
 import ProjectSelector from './pages/ProjectSelector';
 import { useAuthStore } from './store/authStore';
@@ -49,7 +48,7 @@ function WorkspaceGuard({ children }: { path?: string; children: React.ReactNode
 }
 
 /**
- * Org route guard: redirects unauthenticated users to /org/entry.
+ * Org route guard: redirects unauthenticated users to /login?mode=org.
  */
 function OrgGuard({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -64,7 +63,7 @@ function OrgGuard({ children }: { children: React.ReactNode }) {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/org/entry" replace />;
+    return <Navigate to="/login?mode=org" replace />;
   }
   return <>{children}</>;
 }
@@ -77,7 +76,7 @@ export default function App() {
         <Route path="/reset-password" element={<ResetPassword />} />
 
         {/* Org window routes */}
-        <Route path="/org/entry" element={<OrgEntry />} />
+        <Route path="/org/entry" element={<Navigate to="/login?mode=org" replace />} />
         <Route
           path="/org/select"
           element={

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
-import { ChevronDown, LogOut, Radio, Shield, User } from 'lucide-react';
+import { Link, useLocation } from 'react-router-dom';
+import { Building2, ChevronDown, LogOut, Radio, Shield, User } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useUiStore } from '../../store/uiStore';
 
@@ -115,6 +115,14 @@ export default function Topbar() {
                 </div>
               </div>
               <div className="my-1 border-t border-zinc-800" />
+              <Link
+                to="/org/select"
+                onClick={() => setMenuOpen(false)}
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-red-400 transition"
+              >
+                <Building2 className="h-3.5 w-3.5 text-zinc-400" />
+                Organizations
+              </Link>
               <button
                 onClick={() => {
                   setMenuOpen(false);
