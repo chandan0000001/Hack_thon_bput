@@ -214,13 +214,8 @@ export default function Login() {
           setStep('org-name');
         }
       } else {
-        // Personal mode: check if authenticated user is org-type
-        const currentUser = useAuthStore.getState().user;
-        if (currentUser?.account_type === 'org') {
-          navigate('/org/select', { replace: true });
-        } else {
-          navigate('/dashboard', { replace: true });
-        }
+        // Personal mode: ALWAYS land on dashboard
+        navigate('/dashboard', { replace: true });
       }
     } catch (err: any) {
       if (

@@ -159,10 +159,10 @@ describe('ACCOUNT-REALM-FIX Test Suite (6 Checks)', () => {
       );
     }
 
-    // Verify ProtectedRoute guards personal routes against org accounts
+    // Verify ProtectedRoute guards personal routes against unauthenticated access
     const protectedRouteSrc = fs.readFileSync(protectedRoutePath, 'utf8');
-    assert.match(protectedRouteSrc, /user\?\.account_type === 'org'/);
-    assert.match(protectedRouteSrc, /Navigate to="\/org\/select"/);
+    assert.match(protectedRouteSrc, /!isAuthenticated/);
+    assert.match(protectedRouteSrc, /Navigate to="\/login"/);
   });
 
   // Check 6: org_routes_render_org_chips (mock Topbar on /org/select or /org/projects)

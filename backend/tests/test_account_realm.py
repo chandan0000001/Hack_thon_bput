@@ -136,8 +136,8 @@ async def test_03_invite_sets_org_account_type():
 
 
 @pytest.mark.asyncio
-async def test_04_signin_personal_with_org_account_rejected_403(async_client):
-    """4. signin_personal_with_org_account_rejected_403: org account signing in personal mode returns 403 mismatch."""
+async def test_04_signin_dual_mode_same_account_allowed(async_client):
+    """4. signin_dual_mode_same_account_allowed: same account can sign in using personal mode or org mode."""
     test_id = str(uuid.uuid4())
     test_email = f"alice_org_{test_id[:8]}@example.com"
 
@@ -153,24 +153,31 @@ async def test_04_signin_personal_with_org_account_rejected_403(async_client):
         db.add(user)
         await db.commit()
 
-    # Explicit mode=personal
-    resp = await async_client.post(
-        "/api/v1/auth/signin",
-        json={"identifier": test_email, "password": "AnyPassword123!", "mode": "personal"},
-    )
-    assert resp.status_code == 403
-    data = resp.json()
-    assert data["error"] == "account_type_mismatch"
-    assert data["hint"] == "use_org_mode"
-    assert "organization account" in data["message"]
+    sb_res = _make_mock_sb_response(test_id, test_email)
+    with patch("app.core.security._get_anon_client") as mock_get_client:
+        mock_client = MagicMock()
+        mock_client.auth.sign_in_with_password.return_value = sb_res
+        mock_get_client.return_value = mock_client
 
-    # Omitted mode (defaults to personal)
-    resp2 = await async_client.post(
-        "/api/v1/auth/signin",
-        json={"identifier": test_email, "password": "AnyPassword123!"},
-    )
-    assert resp2.status_code == 403
-    assert resp2.json()["error"] == "account_type_mismatch"
+        # Mode=personal signin succeeds
+        resp_personal = await async_client.post(
+            "/api/v1/auth/signin",
+            json={"identifier": test_email, "password": "ValidPassword123!", "mode": "personal"},
+        )
+        assert resp_personal.status_code == 200, resp_personal.text
+        data_personal = resp_personal.json()
+        assert data_personal["user"]["email"] == test_email
+        assert "access_token" in data_personal
+
+        # Mode=org signin also succeeds for same account
+        resp_org = await async_client.post(
+            "/api/v1/auth/signin",
+            json={"identifier": test_email, "password": "ValidPassword123!", "mode": "org"},
+        )
+        assert resp_org.status_code == 200, resp_org.text
+        data_org = resp_org.json()
+        assert data_org["user"]["email"] == test_email
+        assert "access_token" in data_org
 
 
 @pytest.mark.asyncio
@@ -244,8 +251,8 @@ async def test_06_signin_org_with_personal_account_allowed(async_client):
 
 
 @pytest.mark.asyncio
-async def test_07_oauth_callback_personal_with_org_rejected(async_client):
-    """7. oauth_callback_personal_with_org_rejected: OAuth callback rejects org account in personal mode."""
+async def test_07_oauth_callback_dual_mode_same_account(async_client):
+    """7. oauth_callback_dual_mode_same_account: OAuth callback routes seamlessly for the same account."""
     test_id = str(uuid.uuid4())
     test_email = f"dan_org_{test_id[:8]}@example.com"
 
@@ -261,22 +268,31 @@ async def test_07_oauth_callback_personal_with_org_rejected(async_client):
         db.add(user)
         await db.commit()
 
-    # GET redirect test
-    resp_get = await async_client.get(
+    # GET redirect test for personal mode -> /dashboard
+    resp_get_personal = await async_client.get(
         f"/api/v1/auth/callback?email={test_email}&mode=personal",
         follow_redirects=False,
     )
-    assert resp_get.status_code in (302, 303, 307)
-    location = resp_get.headers.get("location", "")
-    assert "/login?mode=personal&error=account_type_mismatch" in location
+    assert resp_get_personal.status_code in (302, 303, 307)
+    location_personal = resp_get_personal.headers.get("location", "")
+    assert "/dashboard" in location_personal
+
+    # GET redirect test for org mode -> /org/select
+    resp_get_org = await async_client.get(
+        f"/api/v1/auth/callback?email={test_email}&mode=org",
+        follow_redirects=False,
+    )
+    assert resp_get_org.status_code in (302, 303, 307)
+    location_org = resp_get_org.headers.get("location", "")
+    assert "/org/select" in location_org
 
     # POST API test
     resp_post = await async_client.post(
         "/api/v1/auth/callback",
         json={"email": test_email, "mode": "personal"},
     )
-    assert resp_post.status_code == 403
-    assert resp_post.json()["error"] == "account_type_mismatch"
+    assert resp_post.status_code == 200
+    assert resp_post.json()["mode"] == "personal"
 
 
 @pytest.mark.asyncio

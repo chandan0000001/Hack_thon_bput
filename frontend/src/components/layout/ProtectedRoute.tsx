@@ -22,10 +22,5 @@ export default function ProtectedRoute({ children }: { children: ReactNode }) {
     return <Navigate to="/login" replace />;
   }
 
-  // F4: Org accounts are restricted to the organization window
-  if (user?.account_type === 'org') {
-    return <Navigate to="/org/select" replace />;
-  }
-
   return <>{children}</>;
 }
