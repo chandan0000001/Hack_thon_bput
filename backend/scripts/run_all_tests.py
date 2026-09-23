@@ -447,6 +447,13 @@ async def run_tests():
     await run_org_auth_fix_tests(runner)
 
     # -----------------------------------------------------------------------
+    # 47. ORG-IDENTITY-FIX — Single Identity, Atomic Signup, and Graceful 409 UX
+    # -----------------------------------------------------------------------
+    from test_org_identity import run_org_identity_tests
+
+    await run_org_identity_tests(runner)
+
+    # -----------------------------------------------------------------------
     # 22. RT-1 — Real-time Pipeline Infrastructure (Redis, Arq, Docker, workers)
     # -----------------------------------------------------------------------
     print("\n[Suite 22] RT-1 — Real-time Pipeline Infrastructure")

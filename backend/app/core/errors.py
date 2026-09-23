@@ -55,6 +55,16 @@ class ConflictError(AppError):
         super().__init__(message, code="conflict", status_code=status.HTTP_409_CONFLICT)
 
 
+class EmailExistsError(AppError):
+    def __init__(
+        self,
+        message: str = "An account with this email already exists.",
+        hint: str = "sign_in",
+    ):
+        super().__init__(message, code="email_exists", status_code=status.HTTP_409_CONFLICT)
+        self.hint = hint
+
+
 class ExternalServiceError(AppError):
     def __init__(self, service: str, message: str):
         super().__init__(
@@ -132,6 +142,8 @@ def register_error_handlers(app: FastAPI) -> None:
             "error": exc.code,
             "message": exc.message,
         }
+        if hasattr(exc, "hint") and getattr(exc, "hint") is not None:
+            content["hint"] = exc.hint
         if exc.details is not None:
             content["details"] = jsonable_encoder(exc.details)
         return JSONResponse(status_code=exc.status_code, content=content)

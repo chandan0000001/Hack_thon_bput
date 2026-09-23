@@ -570,6 +570,36 @@ are deliberate extensions, not omissions — each one lists the reason it exists
      Periodic client-side polling loops (`setInterval`) create unnecessary server load, database query spikes, and stale UI counters. In ORG-REBUILD, `cyberguard.org_events` is published to the `supabase_realtime` publication. Frontend telemetry hooks perform a single HTTP seed fetch on mount (`/counters/initial`) and maintain live state strictly through Postgres change events (INSERT increments totals and severity counts; UPDATE decrements pending review).
   5. **Why Personal Workspace Remains 100% Isolated:**
      Personal workspaces (`is_personal=True`, `isOrg=False`) and their routes (`/phishing`, `/url-analysis`, `/impersonation`, `/deepfake`, `/mailbox/*`) remain completely untouched. Core detection algorithms are consumed as read-only dependencies, guaranteeing zero regression for personal workflows.
+- **2026-09-23 — ORG-IDENTITY-FIX: Single-identity contract, atomic org signup, graceful 409 UX, and invite reconciliation.**
+  1. **Single-Identity Contract (one email = one `User` row forever):**
+     Users in CyberGuard possess a single underlying account identity identified by their email address. There are no separate "personal users" and "org users" — personal workspaces (`is_personal=True`) and organization memberships (`OrgMember`) are workspaces and permission scopes attached to that single user identity. The `cyberguard.users` table enforces email uniqueness via unique index `ix_cyberguard_users_email` on `cyberguard.users (email) WHERE email IS NOT NULL`. A user may seamlessly operate a personal inbox while holding membership roles across multiple organizations.
+  2. **409 Conflict Contract Table:**
+     Every registration entry point enforces idempotent single identity and returns structured 409 JSON responses instead of throwing database integrity crashes:
+
+     | Endpoint | Condition | HTTP Status | Error Code (`error`) | Hint (`hint`) | UI Banner Message & Action |
+     |---|---|---|---|---|---|
+     | `POST /api/v1/auth/register` (or `/signup`) | Existing active user email | 409 Conflict | `email_exists` | `sign_in` | "An account with this email already exists." → `[Sign in instead]` button switches tab to Sign In. |
+     | `POST /api/v1/auth/register` (or `/signup`) | Existing invited stub email | 409 Conflict | `email_exists` | `check_invite` | "You have a pending organization invitation! Check your email or sign in to accept." → `[Sign in]` button. |
+     | `POST /api/v1/auth/register-org` | Existing user email (personal or org) | 409 Conflict | `email_exists` | `sign_in_then_create_org` | "This email already has an account. Sign in to create or join an organization." → `[Sign in]` button. |
+     | `POST /api/v1/orgs` | Unauthenticated / No JWT | 401 Unauthorized | `unauthorized` | — | Redirects to login; org creation is strictly authenticated. |
+     | `POST /api/v1/orgs` | Authenticated user | 201 Created | — | — | Creates new `OrgOrganization` + `OrgMember(admin)` on the existing `User` row (zero duplicate users created). |
+
+  3. **Atomic Org Signup (`POST /api/v1/auth/register-org`):**
+     Creating an organization from the landing/auth page is executed in a single atomic database transaction:
+     - Step 1: Pre-checks email duplicate. If taken, raises `EmailExistsError(hint="sign_in_then_create_org")`.
+     - Step 2: Creates the Supabase auth user / local `User` record with `status='active'`.
+     - Step 3: Generates a URL-safe organization slug and creates `OrgOrganization`.
+     - Step 4: Creates `OrgMember` with `role='admin'`.
+     - Step 5: Creates default `OrgProject` (named "Default Project", slug `default`).
+     - Step 6: Generates access/refresh JWT tokens, attaches `active_organization_id`, and returns the authenticated session. The frontend immediately hydrates `authStore` and navigates directly to `/org/:id/dashboard`, landing cleanly in the org context.
+
+  4. **Invited Stub Reconciliation Sequence (step-by-step):**
+     When an organization administrator invites an email address that does not yet have an account:
+     - **Step 1 (Pre-creation):** `precreate_user_for_invite(email)` inserts a stub `User` record with a deterministic dummy password, `status='invited'`, and a generated UUID. If an account already exists (active or invited), it reuses that existing `user_id`.
+     - **Step 2 (Membership Attachment):** The invite flow attaches an `OrgMember` record linking `org_id` and the stub `user_id`.
+     - **Step 3 (First Login / Supabase Auth Completion):** When the invited user registers or logs in via Supabase Auth (e.g. Magic Link, OAuth, or setting a password), Supabase assigns a new Supabase `user_id`.
+     - **Step 4 (Reconciliation at `get_current_user`):** The backend authentication dependency looks up any stub row where `email == token.email` and `status == 'invited'`.
+     - **Step 5 (Claim & Re-point):** In `claim_invited_stub()`, all `cyberguard.org_members` referencing the stub's old UUID are re-pointed to the new authenticated Supabase UUID. The stub `User` record is then deleted or updated to the new UUID with `status='active'`, atomically transferring all pending memberships without orphaned records or foreign key conflicts.
 
 ---
 

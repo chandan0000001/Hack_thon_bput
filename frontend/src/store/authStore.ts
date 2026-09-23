@@ -44,6 +44,12 @@ interface AuthState {
     password: string,
     username: string,
   ) => Promise<{ confirmationPending: boolean }>;
+  registerOrg: (
+    email: string,
+    password: string,
+    orgName: string,
+    name?: string,
+  ) => Promise<{ confirmationPending: boolean; organization?: any }>;
   requestPasswordReset: (email: string) => Promise<void>;
   completePasswordReset: (newPassword: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -56,6 +62,9 @@ interface AuthState {
   setAccessToken: (token: string | null) => void;
   can: (permission: Permission) => boolean;
 }
+
+import { AuthApiError } from '../components/common/authError';
+export { AuthApiError };
 
 function toUser(supabaseUser: {
   id: string;
@@ -130,7 +139,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
       const detail = errBody.detail || errBody.message || 'Signup failed';
-      throw new Error(typeof detail === 'string' ? detail : 'Signup failed');
+      throw new AuthApiError(
+        typeof detail === 'string' ? detail : 'Signup failed',
+        res.status,
+        errBody.error,
+        errBody.hint
+      );
     }
     const auth = await res.json();
 
@@ -154,6 +168,58 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     });
     await get().fetchUserContext();
     return { confirmationPending: false };
+  },
+
+  registerOrg: async (email, password, orgName, name) => {
+    const res = await fetch(`${BASE_URL}/auth/register-org`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, org_name: orgName, name: name || undefined }),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const detail = errBody.detail || errBody.message || 'Organization registration failed';
+      throw new AuthApiError(
+        typeof detail === 'string' ? detail : 'Organization registration failed',
+        res.status,
+        errBody.error,
+        errBody.hint
+      );
+    }
+    const data = await res.json();
+
+    if (data.confirmation_pending || !data.session) {
+      return { confirmationPending: true, organization: data.organization };
+    }
+
+    await getSupabase().auth.setSession({
+      access_token: data.session.access_token,
+      refresh_token: data.session.refresh_token,
+    });
+    const usr = toUser(data.user);
+    const org = data.organization;
+    const project = data.project;
+    if (org?.id) {
+      localStorage.setItem(ACTIVE_ORG_KEY, org.id);
+    }
+    if (project?.id) {
+      localStorage.setItem(ACTIVE_PROJECT_KEY, project.id);
+    }
+    set({
+      user: usr,
+      accessToken: data.session.access_token,
+      isAuthenticated: true,
+      hydrated: true,
+      fullName: usr.name,
+      orgEnabled: true,
+      organizations: data.memberships || [org],
+      activeOrganization: org || null,
+      activeOrganizationId: org?.id ?? null,
+      activeProject: project || null,
+      activeProjectId: project?.id ?? null,
+      role: 'admin',
+    });
+    return { confirmationPending: false, organization: org };
   },
 
   requestPasswordReset: async (email) => {

@@ -168,13 +168,13 @@ async def get_current_user(
     user_query = await db.execute(select(User).where(User.id == user_id))
     user = user_query.scalar_one_or_none()
     if user is None and email:
-        from app.db.admin import find_user_by_email
+        from app.db.admin import claim_invited_stub, find_user_by_email
 
         admin_info = await find_user_by_email(email)
         if admin_info:
-            user_id = admin_info["id"]
-            current_user_id.set(user_id)
-            await set_session_user(db, user_id)
+            stub_id = admin_info["id"]
+            if stub_id != user_id:
+                await claim_invited_stub(old_user_id=stub_id, new_user_id=user_id)
             user_query = await db.execute(select(User).where(User.id == user_id))
             user = user_query.scalar_one_or_none()
         else:
@@ -190,11 +190,20 @@ async def get_current_user(
             username=username,
             account_type="user",
             full_name=full_name,
+            status="active",
             is_single_user=True,
         )
         db.add(user)
-        await db.commit()
-        await db.refresh(user)
+        try:
+            await db.commit()
+            await db.refresh(user)
+        except IntegrityError:
+            await db.rollback()
+            user_query = await db.execute(select(User).where(User.id == user_id))
+            user = user_query.scalar_one_or_none()
+            if user is None and email:
+                user_query = await db.execute(select(User).where(User.email == email))
+                user = user_query.scalar_one_or_none()
     else:
         if not user.email and email:
             user.email = email
@@ -203,6 +212,8 @@ async def get_current_user(
         if not user.username and email:
             # Pre-phase rows created before usernames existed.
             user.username = await _generate_unique_username(db, email, user.id)
+        if getattr(user, "status", None) == "invited":
+            user.status = "active"
         user.is_single_user = True
         await db.commit()
 

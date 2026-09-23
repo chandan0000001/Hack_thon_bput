@@ -6,9 +6,11 @@ enforced and resolved server-side. Organization endpoints are frozen behind
 """
 
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,17 +18,26 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
-from app.core.errors import ConflictError, PermissionDeniedError, ValidationError
+from app.core.errors import ConflictError, EmailExistsError, PermissionDeniedError, UnauthorizedError, ValidationError
 from app.core.security import (
     USERNAME_PATTERN,
     CurrentUser,
     TenantContext,
+    _generate_unique_username,
     get_current_user,
     get_tenant_context,
     require_org_enabled,
 )
-from app.db.admin import is_username_taken, resolve_email_for_identifier
-from app.db.models import Organization, OrganizationMember, Project, User
+from app.db.admin import find_user_by_email, is_username_taken, resolve_email_for_identifier
+from app.db.models import (
+    Organization,
+    OrganizationMember,
+    OrgMember,
+    OrgOrganization,
+    OrgProject,
+    Project,
+    User,
+)
 from app.db.session import current_user_id, get_db, set_session_user
 
 logger = logging.getLogger("cyberguard.auth")
@@ -43,8 +54,18 @@ class SwitchOrgRequest(BaseModel):
 class SignupRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=8, max_length=128)
-    username: str = Field(min_length=3, max_length=32)
+    username: Optional[str] = Field(default=None, max_length=32)
+    name: Optional[str] = Field(default=None, max_length=255)
     full_name: Optional[str] = Field(default=None, max_length=255)
+
+
+class RegisterOrgRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+    org_name: str = Field(min_length=2, max_length=120)
+    name: Optional[str] = Field(default=None, max_length=255)
+    full_name: Optional[str] = Field(default=None, max_length=255)
+    username: Optional[str] = Field(default=None, max_length=32)
 
 
 class SigninRequest(BaseModel):
@@ -71,18 +92,39 @@ async def username_available(username: str) -> dict[str, Any]:
     return {"available": not taken, "reason": "taken" if taken else None}
 
 
-@router.post("/signup")
+@router.post("/register", status_code=status.HTTP_201_CREATED)
+@router.post("/signup", status_code=status.HTTP_200_OK)
 async def signup(
     payload: SignupRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Create a Supabase auth user and the project user row with a unique username."""
-    username = payload.username.strip().lower()
-    if not USERNAME_PATTERN.match(username):
-        raise ValidationError("Username must be 3-32 chars: lowercase letters, digits, '_' or '.'")
+    email_clean = payload.email.strip().lower()
 
-    if await is_username_taken(username):
-        raise ConflictError("Username is already taken")
+    # Pre-check email existence in local DB
+    target_user = await find_user_by_email(email_clean)
+    if target_user:
+        if target_user.get("status") == "invited":
+            raise EmailExistsError(
+                message="An account with this email already exists.",
+                hint="check_invite",
+            )
+        raise EmailExistsError(
+            message="An account with this email already exists.",
+            hint="sign_in",
+        )
+
+    raw_user = (payload.username or "").strip().lower()
+    if raw_user:
+        if not USERNAME_PATTERN.match(raw_user):
+            raise ValidationError("Username must be 3-32 chars: lowercase letters, digits, '_' or '.'")
+        if await is_username_taken(raw_user):
+            raise ConflictError("Username is already taken")
+        username = raw_user
+    else:
+        username = await _generate_unique_username(db, email_clean, "usr")
+
+    full_name = payload.name or payload.full_name
 
     # Create the Supabase auth identity first (project row needs its id).
     from app.core.security import _get_anon_client
@@ -90,15 +132,20 @@ async def signup(
     try:
         result = _get_anon_client().auth.sign_up(
             {
-                "email": payload.email.strip().lower(),
+                "email": email_clean,
                 "password": payload.password,
-                "options": {"data": {"full_name": payload.full_name, "username": username}},
+                "options": {"data": {"full_name": full_name, "username": username}},
             }
         )
     except Exception as exc:
         message = str(exc)
         if "already" in message.lower() and ("registered" in message.lower() or "exists" in message.lower()):
-            raise ConflictError("An account with this email already exists")
+            target_user = await find_user_by_email(email_clean)
+            hint = "check_invite" if (target_user and target_user.get("status") == "invited") else "sign_in"
+            raise EmailExistsError(
+                message="An account with this email already exists.",
+                hint=hint,
+            )
         logger.warning("Supabase signup failed: %s", message)
         raise PermissionDeniedError("Signup failed: " + message)
 
@@ -106,16 +153,19 @@ async def signup(
     if sb_user is None:
         raise PermissionDeniedError("Signup failed: no user returned")
     if getattr(result, "session", None) is None and getattr(sb_user, "email_confirmed_at", None) is not None:
-        # Email already confirmed by a prior identity; treat as duplicate email.
-        raise ConflictError("An account with this email already exists")
+        target_user = await find_user_by_email(email_clean)
+        hint = "check_invite" if (target_user and target_user.get("status") == "invited") else "sign_in"
+        raise EmailExistsError(
+            message="An account with this email already exists.",
+            hint=hint,
+        )
 
     auth_id = str(sb_user.id)
-    email = getattr(sb_user, "email", None) or payload.email.strip().lower()
-    full_name = payload.full_name
+    email = getattr(sb_user, "email", None) or email_clean
 
     # Publish identity for the RLS GUC so the insert satisfies users policies
-    # (id = current_setting('app.user_id')).
     current_user_id.set(auth_id)
+    await set_session_user(db, auth_id)
 
     user = User(
         id=auth_id,
@@ -123,20 +173,34 @@ async def signup(
         username=username,
         account_type="user",
         full_name=full_name,
+        status="active",
         is_single_user=True,
     )
     db.add(user)
     try:
         await db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await db.rollback()
+        err_msg = str(exc).lower()
+        if "email" in err_msg or "ix_cyberguard_users_email" in err_msg:
+            target_user = await find_user_by_email(email)
+            hint = "check_invite" if (target_user and target_user.get("status") == "invited") else "sign_in"
+            raise EmailExistsError(
+                message="An account with this email already exists.",
+                hint=hint,
+            )
         raise ConflictError("Username is already taken")
     await db.refresh(user)
 
     session = getattr(result, "session", None)
     return {
         "confirmation_pending": session is None,
-        "user": {"id": user.id, "email": user.email, "username": user.username},
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "username": user.username,
+            "status": getattr(user, "status", "active"),
+        },
         "session": None
         if session is None
         else {
@@ -145,6 +209,178 @@ async def signup(
             "expires_in": session.expires_in,
             "token_type": session.token_type,
         },
+        "access_token": session.access_token if session else None,
+        "refresh_token": session.refresh_token if session else None,
+    }
+
+
+@router.post("/register-org", status_code=status.HTTP_201_CREATED)
+async def register_org(
+    payload: RegisterOrgRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Atomically create user, organization, admin membership, and default project."""
+    email_clean = payload.email.strip().lower()
+
+    # Pre-check email existence in local DB
+    target_user = await find_user_by_email(email_clean)
+    if target_user:
+        raise EmailExistsError(
+            message="An account with this email already exists.",
+            hint="sign_in_then_create_org",
+        )
+
+    org_name = payload.org_name.strip()
+    if len(org_name) < 2:
+        raise ValidationError("Organization name must be at least 2 characters.")
+
+    raw_user = (payload.username or "").strip().lower()
+    if raw_user:
+        if not USERNAME_PATTERN.match(raw_user):
+            raise ValidationError("Username must be 3-32 chars: lowercase letters, digits, '_' or '.'")
+        if await is_username_taken(raw_user):
+            raise ConflictError("Username is already taken")
+        username = raw_user
+    else:
+        username = await _generate_unique_username(db, email_clean, "org")
+
+    full_name = payload.name or payload.full_name or org_name
+
+    from app.core.security import _get_anon_client
+
+    try:
+        result = _get_anon_client().auth.sign_up(
+            {
+                "email": email_clean,
+                "password": payload.password,
+                "options": {"data": {"full_name": full_name, "username": username, "org_name": org_name}},
+            }
+        )
+    except Exception as exc:
+        message = str(exc)
+        if "already" in message.lower() and ("registered" in message.lower() or "exists" in message.lower()):
+            raise EmailExistsError(
+                message="An account with this email already exists.",
+                hint="sign_in_then_create_org",
+            )
+        logger.warning("Supabase signup failed in register-org: %s", message)
+        raise PermissionDeniedError("Registration failed: " + message)
+
+    sb_user = getattr(result, "user", None)
+    if sb_user is None:
+        raise PermissionDeniedError("Registration failed: no user returned")
+    if getattr(result, "session", None) is None and getattr(sb_user, "email_confirmed_at", None) is not None:
+        raise EmailExistsError(
+            message="An account with this email already exists.",
+            hint="sign_in_then_create_org",
+        )
+
+    auth_id = str(sb_user.id)
+    email = getattr(sb_user, "email", None) or email_clean
+
+    current_user_id.set(auth_id)
+    await set_session_user(db, auth_id)
+
+    org_id = str(uuid.uuid4())
+    member_id = str(uuid.uuid4())
+    project_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    user = User(
+        id=auth_id,
+        email=email,
+        username=username,
+        account_type="user",
+        full_name=full_name,
+        status="active",
+        is_single_user=False,
+        active_organization_id=org_id,
+        active_project_id=project_id,
+        created_at=now,
+    )
+    db.add(user)
+
+    org = OrgOrganization(
+        id=org_id,
+        name=org_name,
+        owner_id=auth_id,
+        status="active",
+        created_at=now,
+    )
+    db.add(org)
+
+    member = OrgMember(
+        id=member_id,
+        organization_id=org_id,
+        user_id=auth_id,
+        role="admin",
+        joined_at=now,
+    )
+    db.add(member)
+
+    project = OrgProject(
+        id=project_id,
+        organization_id=org_id,
+        name="Default Project",
+        slug="default",
+        status="active",
+        created_at=now,
+    )
+    db.add(project)
+
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        err_msg = str(exc).lower()
+        if "email" in err_msg or "ix_cyberguard_users_email" in err_msg:
+            raise EmailExistsError(
+                message="An account with this email already exists.",
+                hint="sign_in_then_create_org",
+            )
+        raise ConflictError("Username is already taken")
+
+    session = getattr(result, "session", None)
+    return {
+        "confirmation_pending": session is None,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "username": user.username,
+            "full_name": user.full_name,
+            "status": user.status,
+            "active_organization_id": user.active_organization_id,
+            "active_project_id": user.active_project_id,
+        },
+        "organization": {
+            "id": org.id,
+            "name": org.name,
+            "role": "admin",
+        },
+        "project": {
+            "id": project.id,
+            "name": project.name,
+            "slug": project.slug,
+        },
+        "memberships": [
+            {
+                "id": org.id,
+                "organization_id": org.id,
+                "name": org.name,
+                "role": "admin",
+                "joined_at": member.joined_at.isoformat(),
+            }
+        ],
+        "session": None
+        if session is None
+        else {
+            "access_token": session.access_token,
+            "refresh_token": session.refresh_token,
+            "expires_in": session.expires_in,
+            "token_type": session.token_type,
+        },
+        "access_token": session.access_token if session else None,
+        "refresh_token": session.refresh_token if session else None,
     }
 
 

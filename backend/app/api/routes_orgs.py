@@ -12,23 +12,54 @@ import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+import inspect
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.errors import ComingSoonError
-from app.core.security import CurrentUser, ORG_COMING_SOON, get_current_user
+from app.core.errors import ComingSoonError, PermissionDeniedError, UnauthorizedError
+from app.core.security import CurrentUser, ORG_COMING_SOON, bearer_scheme, get_current_user
 from app.db.models import OrgApiKey, OrgBlockedIndicator, OrgEvent, OrgMember, OrgOrganization, OrgProject, User
 from app.db.session import get_session, set_session_user
 
 logger = logging.getLogger("cyberguard.orgs")
 
 router = APIRouter(tags=["Organizations"])
+
+
+async def get_org_current_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    session: AsyncSession = Depends(get_session),
+) -> CurrentUser:
+    if get_org_current_user in request.app.dependency_overrides:
+        override = request.app.dependency_overrides[get_org_current_user]
+        res = override()
+        if inspect.isawaitable(res):
+            res = await res
+        return res
+    if get_current_user in request.app.dependency_overrides:
+        override = request.app.dependency_overrides[get_current_user]
+        res = override()
+        if inspect.isawaitable(res):
+            res = await res
+        return res
+
+    if credentials is None or not credentials.credentials:
+        raise UnauthorizedError("Missing authentication token")
+    try:
+        return await get_current_user(credentials=credentials, db=session)
+    except (PermissionDeniedError, UnauthorizedError) as exc:
+        msg = str(exc)
+        if "Missing" in msg or "Invalid" in msg or "expired" in msg or "Authentication required" in msg:
+            raise UnauthorizedError(msg)
+        raise
 
 
 # ─────────────────────────────────────────────────────────────
@@ -215,7 +246,7 @@ def _has_blocked_indicator_match(blocked_rows: list[OrgBlockedIndicator], raw_da
 @router.post("/org/organizations", status_code=status.HTTP_201_CREATED)
 async def create_organization(
     req: CreateOrgRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     if not get_settings().ORG_ENABLED:
@@ -275,7 +306,7 @@ async def create_organization(
 @router.get("/orgs")
 @router.get("/org/organizations")
 async def list_user_organizations(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _set_rls_context(session, user.id)
@@ -309,7 +340,7 @@ async def list_user_organizations(
 
 @router.get("/organizations")
 async def list_user_organizations_legacy(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     if not get_settings().ORG_ENABLED:
@@ -322,7 +353,7 @@ async def list_user_organizations_legacy(
 @router.get("/org/{org_id}")
 async def get_organization(
     org_id: str,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     org, role = await _get_org_and_role(org_id, user.id, session)
@@ -351,7 +382,7 @@ async def get_organization(
 async def update_organization(
     org_id: str,
     req: UpdateOrgRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     org, _ = await _get_org_and_role(org_id, user.id, session, min_role="admin")
@@ -364,7 +395,7 @@ async def update_organization(
 @router.get("/org/{org_id}/members")
 async def list_members(
     org_id: str,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session)
@@ -394,7 +425,7 @@ async def list_members(
 async def add_or_invite_member(
     org_id: str,
     req: InviteMemberRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session, min_role="admin")
@@ -445,7 +476,7 @@ async def update_member_role(
     org_id: str,
     member_id: str,
     req: UpdateMemberRoleRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session, min_role="admin")
@@ -463,7 +494,7 @@ async def update_member_role(
 async def remove_member(
     org_id: str,
     member_id: str,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     org, _ = await _get_org_and_role(org_id, user.id, session, min_role="admin")
@@ -489,7 +520,7 @@ async def remove_member(
 async def list_projects(
     org_id: str,
     status: Optional[str] = None,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session)
@@ -519,7 +550,7 @@ async def list_projects(
 async def create_project(
     org_id: str,
     req: CreateProjectRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session, min_role="admin")
@@ -564,7 +595,7 @@ async def create_project(
 async def get_project(
     org_id: str,
     project_id: str,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session)
@@ -588,7 +619,7 @@ async def update_project(
     org_id: str,
     project_id: str,
     req: UpdateProjectRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session, min_role="admin")
@@ -620,7 +651,7 @@ async def update_project(
 async def list_project_api_keys(
     org_id: str,
     project_id: str,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session, min_role="admin")
@@ -659,7 +690,7 @@ async def create_project_api_key(
     org_id: str,
     project_id: str,
     req: CreateApiKeyRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session, min_role="admin")
@@ -722,7 +753,7 @@ async def revoke_api_key(
     org_id: str,
     project_id: str,
     key_id: str,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session, min_role="admin")
@@ -753,7 +784,7 @@ async def list_events(
     q: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session)
@@ -812,7 +843,7 @@ async def get_event_detail(
     org_id: str,
     event_id: str,
     project_id: Optional[str] = None,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session)
@@ -856,7 +887,7 @@ async def update_event_verdict(
     event_id: str,
     req: EventVerdictActionRequest,
     project_id: Optional[str] = None,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session, min_role="analyst")
@@ -944,7 +975,7 @@ async def list_blocked_indicators(
     org_id: str,
     indicator_type: Optional[str] = None,
     q: Optional[str] = None,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session)
@@ -980,7 +1011,7 @@ async def list_blocked_indicators(
 async def add_blocked_indicator(
     org_id: str,
     req: CreateBlockedIndicatorRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session, min_role="analyst")
@@ -1029,7 +1060,7 @@ async def add_blocked_indicator(
 async def delete_blocked_indicator(
     org_id: str,
     indicator_id: str,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session, min_role="analyst")
@@ -1052,7 +1083,7 @@ async def delete_blocked_indicator(
 async def get_initial_counters(
     org_id: str,
     project_id: str,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Seed fetch for live counters.
@@ -1119,7 +1150,7 @@ async def get_initial_counters(
 async def get_organization_dashboard(
     org_id: str,
     project_id: Optional[str] = None,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session)

@@ -38,8 +38,9 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # Supabase Auth UUID
-    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True, index=True)
     username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # 'active' | 'invited'
     account_type: Mapped[str] = mapped_column(String(16), default="user")  # 'user' | 'organization' (frozen)
     # Notification address (Phase 7) — strictly separate from any connected
     # mailbox; system notifications NEVER go to connected mailboxes.

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, AtSign, Building2, CheckCircle2, Clock, Loader2, Lock, Mail, Shield, User } from 'lucide-react';
-import { useAuthStore } from '../store/authStore';
+import { AuthErrorBanner, AuthErrorInfo } from '../components/common/AuthErrorBanner';
+import { AuthApiError, useAuthStore } from '../store/authStore';
 
 type Mode = 'signin' | 'signup' | 'forgot';
 type AccountType = 'user' | 'organization';
@@ -14,6 +15,8 @@ export default function Login() {
   const [searchParams] = useSearchParams();
   const login = useAuthStore((s) => s.login);
   const signUp = useAuthStore((s) => s.signUp);
+  const registerOrg = useAuthStore((s) => s.registerOrg);
+  const activeOrganizationId = useAuthStore((s) => s.activeOrganizationId);
   const requestPasswordReset = useAuthStore((s) => s.requestPasswordReset);
   const loginWithOAuth = useAuthStore((s) => s.loginWithOAuth);
 
@@ -31,6 +34,7 @@ export default function Login() {
   const [orgName, setOrgName] = useState('');
   const [orgEmail, setOrgEmail] = useState('');
   const [orgMessage, setOrgMessage] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<AuthErrorInfo | null>(null);
   // Whether the backend runs with organization mode on (ORG_ENABLED),
   // learned from the public /auth/config endpoint.
   const [orgMode, setOrgMode] = useState(false);
@@ -75,21 +79,40 @@ export default function Login() {
   const resetMessages = () => {
     setError(null);
     setNotice(null);
+    setAuthError(null);
+    setOrgMessage(null);
   };
 
   const switchMode = (newMode: Mode) => {
     resetMessages();
     setMode(newMode);
-    setOrgMessage(null);
+  };
+
+  const handleBannerSignIn = () => {
+    const targetEmail = (accountType === 'organization' ? orgEmail : email).trim();
+    if (targetEmail) {
+      setEmail(targetEmail);
+    }
+    setAccountType('user');
+    switchMode('signin');
   };
 
   const handleSignIn = async (emailOverride?: string) => {
     setLoading(true);
+    resetMessages();
     try {
       await login(emailOverride || email, password);
       navigate('/dashboard', { replace: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+    } catch (err: any) {
+      if (err instanceof AuthApiError && err.status === 409 && err.code === 'email_exists') {
+        setAuthError({
+          error: err.code,
+          message: err.message,
+          hint: err.hint,
+        });
+      } else {
+        setError(err instanceof Error ? err.message : 'Login failed');
+      }
     } finally {
       setLoading(false);
     }
@@ -97,10 +120,10 @@ export default function Login() {
 
   const handleSignUp = async () => {
     if (accountType === 'organization') {
-      // Unified flow: the Organization tab is only reachable when the backend
-      // reports org_enabled via /auth/config — go straight to org signup.
+      // Unified flow: the Organization tab goes straight to org signup.
       return handleOrgSignUp();
     }
+    resetMessages();
     if (!USERNAME_PATTERN.test(username)) {
       setError('Username must be 3-32 chars: lowercase letters, digits, "_" or "."');
       return;
@@ -128,41 +151,23 @@ export default function Login() {
       } else {
         navigate('/dashboard', { replace: true });
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Registration failed');
+    } catch (err: any) {
+      if (err instanceof AuthApiError && err.status === 409 && err.code === 'email_exists') {
+        setAuthError({
+          error: err.code,
+          message: err.message,
+          hint: err.hint,
+        });
+      } else {
+        setError(err instanceof Error ? err.message : 'Registration failed');
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  // ORG-1 org signup: register the admin user, then the Create Organization
-  // page (opened with the chosen name prefilled) makes the org and reveals
-  // its API key. The username is derived from the work email because the
-  // backend requires a unique one per account.
-  const deriveOrgUsername = async (rawEmail: string): Promise<string> => {
-    const base =
-      (rawEmail.split('@')[0] || 'org')
-        .toLowerCase()
-        .replace(/[^a-z0-9_.]/g, '.')
-        .replace(/\.{2,}/g, '.')
-        .replace(/^\.+|\.+$/g, '')
-        .slice(0, 28) || 'org';
-    const candidate = base.length >= 3 ? base : `${base}.org`;
-    for (const suffix of ['', '2', '3', '4']) {
-      const candidate2 = `${candidate}${suffix}`;
-      try {
-        const res = await fetch(
-          `${BASE_URL}/auth/username-available?username=${encodeURIComponent(candidate2)}`
-        );
-        if (res.ok && (await res.json()).available) return candidate2;
-      } catch {
-        return candidate2;
-      }
-    }
-    return `${candidate}.${Math.random().toString(16).slice(2, 6)}`;
-  };
-
   const handleOrgSignUp = async () => {
+    resetMessages();
     if (!orgName.trim()) {
       setOrgMessage('Enter an organization name.');
       return;
@@ -177,18 +182,35 @@ export default function Login() {
     }
     setLoading(true);
     try {
-      const derivedUsername = await deriveOrgUsername(orgEmail.trim());
-      const { confirmationPending } = await signUp(orgName.trim(), orgEmail.trim(), password, derivedUsername);
+      const { confirmationPending, organization } = await registerOrg(
+        orgEmail.trim(),
+        password,
+        orgName.trim(),
+        fullName.trim() || undefined
+      );
       if (confirmationPending) {
         resetMessages();
         setNotice(
-          'Verification email sent! Confirm your email and sign in — then finish setting up your organization.'
+          'Verification email sent! Confirm your email and sign in — your organization is ready.'
         );
       } else {
-        navigate('/org/create', { state: { name: orgName.trim() }, replace: true });
+        const orgId = organization?.id || activeOrganizationId;
+        if (orgId) {
+          navigate(`/org/${orgId}/dashboard`, { replace: true });
+        } else {
+          navigate('/org/dashboard', { replace: true });
+        }
       }
-    } catch (err) {
-      setOrgMessage(err instanceof Error ? err.message : 'Registration failed');
+    } catch (err: any) {
+      if (err instanceof AuthApiError && err.status === 409 && err.code === 'email_exists') {
+        setAuthError({
+          error: err.code,
+          message: err.message,
+          hint: err.hint,
+        });
+      } else {
+        setOrgMessage(err instanceof Error ? err.message : 'Registration failed');
+      }
     } finally {
       setLoading(false);
     }
@@ -423,13 +445,18 @@ export default function Login() {
                 </div>
               </div>
 
-              {orgMessage && (
+              <AuthErrorBanner
+                errorInfo={authError}
+                onAction={handleBannerSignIn}
+              />
+
+              {orgMessage && !authError && (
                 <div className="rounded-lg border border-zinc-700/60 bg-zinc-800/40 px-3.5 py-2.5 text-xs text-zinc-300">
                   {orgMessage}
                 </div>
               )}
 
-              {error && (
+              {error && !authError && (
                 <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-400">
                   {error}
                 </div>
@@ -660,7 +687,12 @@ export default function Login() {
               </div>
             )}
 
-            {error && (
+            <AuthErrorBanner
+              errorInfo={authError}
+              onAction={handleBannerSignIn}
+            />
+
+            {error && !authError && (
               <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-400">
                 {error}
               </div>
