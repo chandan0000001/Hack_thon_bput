@@ -343,9 +343,12 @@ redis-server --daemonize yes
 cp backend/.env.example backend/.env
 # Supply your DATABASE_URL, MIGRATION_DATABASE_URL, SUPABASE_*, and OPENROUTER_* keys
 
-# 3. Upgrade database schema to head:
+# 3. Database Setup & Schema Provisioning:
+# To provision a fresh database: `alembic upgrade head` (runs squashed baseline 0102 directly).
 cd backend
 uv run alembic upgrade head
+# Note: On a fresh database, Alembic detects an unprovisioned state and runs 0102_squash_baseline directly,
+# creating all 32 tables, indexes, RLS policies, and functions via pure static DDL. On existing DBs, 0102 is an idempotent no-op.
 
 # 4. Terminal 1 — API Server (FastAPI):
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
@@ -583,7 +586,7 @@ flowchart TB
 
 ```
 ├── backend/
-│   ├── alembic/           # 7 versioned migrations (0001 consolidated baseline → 0013 rt models)
+│   ├── alembic/           # Versioned migrations (0001–0101 historical chain + 0102 squashed baseline)
 │   ├── app/
 │   │   ├── ai/            # OpenRouter/Groq/Gemini client, distributed key rotator & prompts
 │   │   ├── api/           # 26 registered FastAPI route modules (auth, analysis, orgs, dlq, webhooks)

@@ -27,8 +27,15 @@ if config.config_file_name is not None:
 # Migrations run with the service/postgres role (MIGRATION_DATABASE_URL) so
 # they can create schemas and manage RLS policies, bypassing row-level
 # security. Falls back to DATABASE_URL (e.g. SQLite for local checks).
-_settings = get_settings()
-_migration_url = (_settings.MIGRATION_DATABASE_URL or _settings.DATABASE_URL).strip()
+import os
+
+_env_url = os.environ.get("MIGRATION_DATABASE_URL") or os.environ.get("DATABASE_URL")
+if _env_url and _env_url.strip():
+    _migration_url = _env_url.strip()
+else:
+    _settings = get_settings()
+    _migration_url = (_settings.MIGRATION_DATABASE_URL or _settings.DATABASE_URL).strip()
+
 if _migration_url.startswith("postgres://"):
     _migration_url = _migration_url.replace("postgres://", "postgresql+asyncpg://", 1)
 elif _migration_url.startswith("postgresql://") and not _migration_url.startswith("postgresql+asyncpg://"):
@@ -89,8 +96,36 @@ def do_run_migrations(connection: Connection) -> None:
         compare_type=True,
     )
 
+    # Fresh DB Optimization: If cyberguard has no tables and we are upgrading to 0102_squash_baseline,
+    # skip the deprecated historical 0001-0101 migrations and jump straight to 0102 squashed baseline.
+    mig_ctx = context.get_context()
+    orig_migrations_fn = getattr(mig_ctx, "_migrations_fn", None)
+    if orig_migrations_fn is not None:
+        def wrapped_migrations_fn(heads, mc):
+            table_count = connection.execute(
+                text("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'cyberguard'")
+            ).scalar() or 0
+            steps = list(orig_migrations_fn(heads, mc))
+            squash_step = next(
+                (
+                    s for s in steps
+                    if getattr(s, "is_upgrade", False)
+                    and getattr(getattr(s, "revision", None), "revision", None) == "0102_squash_baseline"
+                ),
+                None,
+            )
+            if table_count <= 10 and squash_step is not None:
+                logger.info("Fresh database detected (tables=%d): applying 0102_squash_baseline directly", table_count)
+                yield squash_step
+            else:
+                for step in steps:
+                    yield step
+
+        mig_ctx._migrations_fn = wrapped_migrations_fn
+
     with context.begin_transaction():
         context.run_migrations()
+    connection.commit()
 
 
 async def run_async_migrations() -> None:

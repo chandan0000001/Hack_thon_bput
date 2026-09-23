@@ -601,6 +601,22 @@ are deliberate extensions, not omissions — each one lists the reason it exists
      - **Step 4 (Reconciliation at `get_current_user`):** The backend authentication dependency looks up any stub row where `email == token.email` and `status == 'invited'`.
      - **Step 5 (Claim & Re-point):** In `claim_invited_stub()`, all `cyberguard.org_members` referencing the stub's old UUID are re-pointed to the new authenticated Supabase UUID. The stub `User` record is then deleted or updated to the new UUID with `status='active'`, atomically transferring all pending memberships without orphaned records or foreign key conflicts.
 
+- **2026-09-23 — MIGRATION-FRESH-DB-FIX: Squashed baseline migration (0102_squash_baseline) for fresh database provisioning.**
+  1. **Context & Problem Statement:**
+     Historical migrations (`0001`, `0008`, `0010`, `0011`) contained dynamic imports (`from app.db.base import Base`, `Base.metadata.create_all(...)`) and references to legacy organization models (e.g. `cyberguard.organizations`, `organization_members`, `organization_api_keys`). During the organization teardown and rebuild (migration `0100_drop_legacy_org_tables`), these legacy models were completely removed from `app.db.models`. As a consequence, running `alembic upgrade head` from a fresh, empty database failed at historical migration `0008` with `UndefinedTableError: relation "cyberguard.organizations" does not exist`, because `Base.metadata.create_all` no longer created the deleted legacy tables that `0008` attempted to alter.
+  2. **Decision: Pure Static DDL Squashed Baseline (0102):**
+     We introduced `0102_squash_baseline.py` at the head of the migration chain, accompanied by an Alembic environment hook in `alembic/env.py`:
+     - **Pure Static DDL:** `0102_squash_baseline.py` contains zero ORM imports (`no Base.metadata`, no `app.db.models`). All 32 current tables, 95 indexes, security functions (`cyberguard.org_member_role`, `cyberguard.validate_org_api_key`), row-level security (RLS) enablement and policies, role grants, and `supabase_realtime` publication memberships are defined purely via static raw SQL.
+     - **Fresh DB Detection & Fast Path:** When `alembic upgrade head` is invoked on an unprovisioned database (table count in `cyberguard` schema <= 10), `env.py` skips the broken historical migration chain (`0001`–`0101`) and applies `0102_squash_baseline` directly, stamping `0102_squash_baseline` in `alembic_version`.
+     - **Existing DB Idempotency:** If `0102_squash_baseline` runs against an existing provisioned database (table count > 10), its entry guard detects the existing schema and immediately returns as a no-op, preserving all production data, migrations, and audit logs.
+     - **Clean Cascade Downgrade:** `alembic downgrade -1` cleanly issues `DROP SCHEMA IF EXISTS cyberguard CASCADE`, providing deterministic teardown for scratch testing and local development.
+  3. **Why Not Squash 0001–0101 In-Place:**
+     Squashing or deleting migrations `0001` through `0101` would destroy the immutable revision history of the codebase and invalidate `alembic_version` pointers in existing development and staging databases. Preserving the linear chain (`0001` → `0102`) ensures that existing databases can cleanly track version history without manual database tampering or version table resets.
+  4. **Consequences:**
+     - Fresh database setup is now 100% reliable and instantaneous via `alembic upgrade head`.
+     - CI/CD pipelines, container spins, and new developer onboarding require zero manual seed scripts or scratch dumps.
+     - The database schema is fully documented and version-controlled as pure static DDL, completely decoupling migrations from transient ORM model states.
+
 ---
 
 

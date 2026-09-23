@@ -1050,6 +1050,13 @@ async def run_tests():
         "Firecrawl client + domain intelligence pytest suites passed",
     )
 
+    # -----------------------------------------------------------------------
+    # 48. MIGRATION-FRESH-DB-FIX — Squashed Baseline & Fresh DB Provisioning
+    # -----------------------------------------------------------------------
+    print("\n[Suite 48] MIGRATION-FRESH-DB-FIX — Squashed Baseline & Fresh DB Provisioning")
+    from scripts.test_migration_fresh_db import run_migration_fresh_db_tests
+    await run_migration_fresh_db_tests(runner)
+
     return runner.report()
 
 
