@@ -23,7 +23,7 @@ from supabase import Client, create_client
 from app.core.config import get_settings
 from app.core.errors import ComingSoonError, NotFoundError, PermissionDeniedError
 from app.db.models import OrgMember, OrgOrganization, User
-from app.db.session import current_user_id, get_db
+from app.db.session import current_user_id, get_db, set_session_user
 
 logger = logging.getLogger("cyberguard.security")
 
@@ -162,13 +162,24 @@ async def get_current_user(
     # happen before any SQL runs on the request's session (the session was
     # acquired before this dependency executed).
     current_user_id.set(user_id)
+    await set_session_user(db, user_id)
 
     # Upsert user in database: check by ID or email
     user_query = await db.execute(select(User).where(User.id == user_id))
     user = user_query.scalar_one_or_none()
     if user is None and email:
-        email_query = await db.execute(select(User).where(User.email == email))
-        user = email_query.scalar_one_or_none()
+        from app.db.admin import find_user_by_email
+
+        admin_info = await find_user_by_email(email)
+        if admin_info:
+            user_id = admin_info["id"]
+            current_user_id.set(user_id)
+            await set_session_user(db, user_id)
+            user_query = await db.execute(select(User).where(User.id == user_id))
+            user = user_query.scalar_one_or_none()
+        else:
+            email_query = await db.execute(select(User).where(User.email == email))
+            user = email_query.scalar_one_or_none()
 
     if user is None:
         # OAuth / first-login JIT row: auto-generate a unique username.
@@ -194,6 +205,9 @@ async def get_current_user(
             user.username = await _generate_unique_username(db, email, user.id)
         user.is_single_user = True
         await db.commit()
+
+    current_user_id.set(user.id)
+    await set_session_user(db, user.id)
 
     return CurrentUser(
         id=user.id,
@@ -228,6 +242,8 @@ async def get_tenant_context(
     With ``ORG_ENABLED=False`` (default) every request resolves to the user's
     personal workspace; organization resolution is frozen until the Orgs Phase.
     """
+    await set_session_user(db, user.id)
+
     if not get_settings().ORG_ENABLED:
         return await _personal_tenant(user)
 
@@ -235,63 +251,71 @@ async def get_tenant_context(
 
     # 1. If a specific organization was requested
     if target_org_id:
+        # Check membership directly via OrgMember
+        mem_query = await db.execute(
+            select(OrgMember, OrgOrganization)
+            .join(OrgOrganization, OrgMember.organization_id == OrgOrganization.id)
+            .where(
+                OrgMember.organization_id == target_org_id,
+                OrgMember.user_id == user.id,
+            )
+        )
+        row = mem_query.first()
+        if row is not None:
+            member, organization = row
+            return TenantContext(
+                user_id=user.id,
+                user_email=user.email,
+                owner_user_id=organization.owner_id,
+                organization_id=organization.id,
+                organization_name=organization.name,
+                role=member.role,
+                is_single_user=False,
+            )
+
+        # Check if owner
         org_query = await db.execute(select(OrgOrganization).where(OrgOrganization.id == target_org_id))
         organization = org_query.scalar_one_or_none()
         if organization is None:
             raise NotFoundError("Organization", target_org_id)
-
-        # Check membership
-        member_query = await db.execute(
-            select(OrgMember).where(
-                and_(
-                    OrgMember.organization_id == target_org_id,
-                    OrgMember.user_id == user.id,
-                )
-            )
-        )
-        member = member_query.scalar_one_or_none()
-        if member is None and organization.owner_id != user.id:
+        if organization.owner_id != user.id:
             raise PermissionDeniedError("You are not a member of this organization")
 
-        role = member.role if member else "admin"
         return TenantContext(
             user_id=user.id,
             user_email=user.email,
             owner_user_id=organization.owner_id,
             organization_id=organization.id,
             organization_name=organization.name,
-            role=role,
+            role="admin",
             is_single_user=False,
         )
 
     # 2. Look for user's active organization
-    user_db_query = await db.execute(select(User).where(User.id == user.id))
-    user_db = user_db_query.scalar_one()
+    user_db_query = await db.execute(select(User.active_organization_id).where(User.id == user.id))
+    active_org_id = user_db_query.scalar_one_or_none()
 
-    if user_db.active_organization_id:
-        org_query = await db.execute(select(OrgOrganization).where(OrgOrganization.id == user_db.active_organization_id))
-        organization = org_query.scalar_one_or_none()
-        if organization:
-            member_query = await db.execute(
-                select(OrgMember).where(
-                    and_(
-                        OrgMember.organization_id == organization.id,
-                        OrgMember.user_id == user.id,
-                    )
-                )
+    if active_org_id:
+        mem_query = await db.execute(
+            select(OrgMember, OrgOrganization)
+            .join(OrgOrganization, OrgMember.organization_id == OrgOrganization.id)
+            .where(
+                OrgMember.organization_id == active_org_id,
+                OrgMember.user_id == user.id,
             )
-            member = member_query.scalar_one_or_none()
-            if member or organization.owner_id == user.id:
-                role = member.role if member else "admin"
-                return TenantContext(
-                    user_id=user.id,
-                    user_email=user.email,
-                    owner_user_id=organization.owner_id,
-                    organization_id=organization.id,
-                    organization_name=organization.name,
-                    role=role,
-                    is_single_user=False,
-                )
+        )
+        row = mem_query.first()
+        if row is not None:
+            member, organization = row
+            return TenantContext(
+                user_id=user.id,
+                user_email=user.email,
+                owner_user_id=organization.owner_id,
+                organization_id=organization.id,
+                organization_name=organization.name,
+                role=member.role,
+                is_single_user=False,
+            )
 
     # 3. Fallback to personal workspace (no organization row is created; org
     # tables stay frozen until the Orgs Phase).

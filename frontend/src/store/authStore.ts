@@ -206,16 +206,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!token) return;
 
     try {
-      const res = await fetch(`${BASE_URL}/auth/me`, {
+      let res = await fetch(`${BASE_URL}/auth/me`, {
         headers: {
           Authorization: `Bearer ${token}`,
           ...(get().activeOrganizationId ? { 'X-Organization-Id': get().activeOrganizationId! } : {}),
         },
       });
+      if ((res.status === 403 || res.status === 404) && get().activeOrganizationId) {
+        // Stale organization header: clear it and retry in personal workspace mode
+        localStorage.removeItem(ACTIVE_ORG_KEY);
+        set({ activeOrganizationId: null, activeOrganization: null });
+        res = await fetch(`${BASE_URL}/auth/me`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+      }
       if (res.ok) {
         const data = await res.json();
         const orgEnabled = Boolean(data.org_enabled);
-        const orgs: Organization[] = orgEnabled ? data.organizations || [] : [];
+        const orgs: Organization[] = orgEnabled ? data.organizations || data.memberships || [] : [];
         const storedOrgId = localStorage.getItem(ACTIVE_ORG_KEY);
         const active = orgEnabled
           ? orgs.find((o) => o.id === storedOrgId) || (data.active_organization as Organization | null)
@@ -252,7 +262,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         });
         if (active?.id) {
           localStorage.setItem(ACTIVE_ORG_KEY, active.id);
-        } else if (!orgEnabled) {
+        } else {
           localStorage.removeItem(ACTIVE_ORG_KEY);
         }
       }

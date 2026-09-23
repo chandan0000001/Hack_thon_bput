@@ -440,6 +440,13 @@ async def run_tests():
     await run_org_rebuild_tests(runner)
 
     # -----------------------------------------------------------------------
+    # 46. ORG-AUTH-FIX — Organization Auth, Membership Hydration, & RLS Fixes
+    # -----------------------------------------------------------------------
+    from test_org_auth_fix import run_org_auth_fix_tests
+
+    await run_org_auth_fix_tests(runner)
+
+    # -----------------------------------------------------------------------
     # 22. RT-1 — Real-time Pipeline Infrastructure (Redis, Arq, Docker, workers)
     # -----------------------------------------------------------------------
     print("\n[Suite 22] RT-1 — Real-time Pipeline Infrastructure")

@@ -24,7 +24,7 @@ from app.core.config import get_settings
 from app.core.errors import ComingSoonError
 from app.core.security import CurrentUser, ORG_COMING_SOON, get_current_user
 from app.db.models import OrgApiKey, OrgBlockedIndicator, OrgEvent, OrgMember, OrgOrganization, OrgProject, User
-from app.db.session import get_session
+from app.db.session import get_session, set_session_user
 
 logger = logging.getLogger("cyberguard.orgs")
 
@@ -91,13 +91,7 @@ def _slugify(name: str) -> str:
 
 
 async def _set_rls_context(session: AsyncSession, user_id: str) -> None:
-    try:
-        await session.execute(
-            text("SELECT set_config('app.user_id', :uid, true)"),
-            {"uid": str(user_id)},
-        )
-    except Exception as exc:
-        logger.debug("Failed to set app.user_id RLS context: %s", exc)
+    await set_session_user(session, user_id)
 
 
 async def _get_org_and_role(
@@ -259,12 +253,19 @@ async def create_organization(
     )
     session.add(default_proj)
 
+    # Sync active_organization_id if user exists
+    user_row = await session.get(User, user.id)
+    if user_row:
+        user_row.active_organization_id = org_id
+
     await session.commit()
 
     return {
         "id": org.id,
         "name": org.name,
+        "slug": org.slug,
         "owner_id": org.owner_id,
+        "role": "admin",
         "status": org.status,
         "created_at": org.created_at.isoformat(),
         "default_project_id": default_proj.id,
@@ -297,6 +298,7 @@ async def list_user_organizations(
         orgs.append({
             "id": org.id,
             "name": org.name,
+            "slug": org.slug,
             "owner_id": org.owner_id,
             "status": org.status,
             "role": effective_role,
@@ -398,24 +400,20 @@ async def add_or_invite_member(
     await _get_org_and_role(org_id, user.id, session, min_role="admin")
     email = req.email.strip().lower()
 
-    # Find or stub user
-    u_stmt = select(User).where(User.email == email)
-    target_user = (await session.execute(u_stmt)).scalar_one_or_none()
-    if not target_user:
-        target_user = User(
-            id=str(uuid.uuid4()),
-            email=email,
-            full_name=email.split("@")[0],
-            account_type="user",
-            is_single_user=False,
-        )
-        session.add(target_user)
-        await session.flush()
+    # Find or stub user via service-role (bypasses RLS on users table)
+    from app.db.admin import find_user_by_email, precreate_user_for_invite
+
+    target_user_info = await find_user_by_email(email)
+    if not target_user_info:
+        target_user_info = await precreate_user_for_invite(email)
+
+    target_user_id = target_user_info["id"]
+    target_user_email = target_user_info["email"]
 
     # Check if already member
     m_stmt = select(OrgMember).where(
         OrgMember.organization_id == org_id,
-        OrgMember.user_id == target_user.id,
+        OrgMember.user_id == target_user_id,
     )
     existing = (await session.execute(m_stmt)).scalar_one_or_none()
     if existing:
@@ -424,7 +422,7 @@ async def add_or_invite_member(
     member = OrgMember(
         id=str(uuid.uuid4()),
         organization_id=org_id,
-        user_id=target_user.id,
+        user_id=target_user_id,
         role=req.role,
         joined_at=datetime.now(timezone.utc),
     )
@@ -435,7 +433,7 @@ async def add_or_invite_member(
         "id": member.id,
         "organization_id": member.organization_id,
         "user_id": member.user_id,
-        "email": target_user.email,
+        "email": target_user_email,
         "role": member.role,
         "joined_at": member.joined_at.isoformat(),
     }

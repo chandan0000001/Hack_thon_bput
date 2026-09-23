@@ -27,7 +27,7 @@ from app.core.security import (
 )
 from app.db.admin import is_username_taken, resolve_email_for_identifier
 from app.db.models import Organization, OrganizationMember, Project, User
-from app.db.session import current_user_id, get_db
+from app.db.session import current_user_id, get_db, set_session_user
 
 logger = logging.getLogger("cyberguard.auth")
 
@@ -191,30 +191,30 @@ async def read_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Return profile details, active workspace, and organization memberships."""
-    orgs_list = []
+    await set_session_user(db, user.id)
+    memberships_list = []
     personal_org_id = None
 
     if get_settings().ORG_ENABLED:
-        # Organization features are frozen by default; membership queries only
-        # run in org mode so personal requests never depend on org rows.
+        # Organization memberships derived directly from org_members + org_organizations
         query = (
-            select(User)
-            .options(selectinload(User.memberships).selectinload(OrganizationMember.organization))
-            .where(User.id == user.id)
+            select(OrganizationMember, Organization)
+            .join(Organization, OrganizationMember.organization_id == Organization.id)
+            .where(OrganizationMember.user_id == user.id)
+            .order_by(Organization.created_at.asc())
         )
         res = await db.execute(query)
-        user_db = res.scalar_one()
-        for m in user_db.memberships:
-            org = m.organization
+        for member, org in res.all():
             if org.is_personal:
                 personal_org_id = org.id
-            orgs_list.append(
+            memberships_list.append(
                 {
                     "id": org.id,
                     "name": org.name,
                     "slug": org.slug,
                     "is_personal": org.is_personal,
-                    "role": m.role,
+                    "role": member.role,
+                    "status": org.status,
                 }
             )
 
@@ -222,12 +222,12 @@ async def read_current_user(
     # Topbar switcher hydrates without an extra request.
     active_project = None
     if get_settings().ORG_ENABLED and tenant.organization_id is not None:
-        res_user = await db.execute(select(User).where(User.id == user.id))
-        user_row = res_user.scalar_one()
-        if user_row.active_project_id:
+        user_res = await db.execute(select(User.active_project_id).where(User.id == user.id))
+        active_proj_id = user_res.scalar_one_or_none()
+        if active_proj_id:
             res_proj = await db.execute(
                 select(Project).where(
-                    Project.id == user_row.active_project_id,
+                    Project.id == active_proj_id,
                     Project.organization_id == tenant.organization_id,
                     Project.status == "active",
                 )
@@ -256,7 +256,8 @@ async def read_current_user(
         },
         "active_project": active_project,
         "personal_organization_id": personal_org_id,
-        "organizations": orgs_list,
+        "memberships": memberships_list,
+        "organizations": memberships_list,
     }
 
 
@@ -276,10 +277,12 @@ async def update_notification_email(
     if email and ("@" not in email or "." not in email.split("@")[-1]):
         raise ValidationError("notification_email must be a valid email address")
 
+    await set_session_user(db, user.id)
     user_query = await db.execute(select(User).where(User.id == user.id))
-    user_db = user_query.scalar_one()
-    user_db.notification_email = email
-    await db.commit()
+    user_db = user_query.scalar_one_or_none()
+    if user_db:
+        user_db.notification_email = email
+        await db.commit()
     return {
         "notification_email": email,
         "message": "Notification email updated." if email else "Notification email cleared.",
@@ -293,6 +296,7 @@ async def switch_organization(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Switch user's default active organization."""
+    await set_session_user(db, user.id)
     # Verify user is a member of the target organization
     member_query = await db.execute(
         select(OrganizationMember).where(
@@ -309,9 +313,10 @@ async def switch_organization(
             raise PermissionDeniedError("You are not a member of this organization")
 
     user_query = await db.execute(select(User).where(User.id == user.id))
-    user_db = user_query.scalar_one()
-    user_db.active_organization_id = payload.organization_id
-    await db.commit()
+    user_db = user_query.scalar_one_or_none()
+    if user_db:
+        user_db.active_organization_id = payload.organization_id
+        await db.commit()
 
     # ORG-WIRE: pipeline stamping caches this resolution per owner.
     from app.services.org_context import invalidate as invalidate_org_cache
@@ -337,12 +342,14 @@ async def switch_project(
     active; ``project_id: null`` clears the selection. The frontend also
     stores the value client-side and stamps ``X-Project-Id`` on requests —
     this endpoint makes the selection survive reloads and devices."""
+    await set_session_user(db, user.id)
     user_query = await db.execute(select(User).where(User.id == user.id))
-    user_db = user_query.scalar_one()
+    user_db = user_query.scalar_one_or_none()
 
     if payload.project_id is None:
-        user_db.active_project_id = None
-        await db.commit()
+        if user_db:
+            user_db.active_project_id = None
+            await db.commit()
         return {"message": "Active project cleared", "active_project_id": None}
 
     res = await db.execute(
@@ -370,8 +377,9 @@ async def switch_project(
         if org is None or org.owner_id != user.id:
             raise PermissionDeniedError("You are not a member of this project's organization")
 
-    user_db.active_project_id = project.id
-    await db.commit()
+    if user_db:
+        user_db.active_project_id = project.id
+        await db.commit()
     return {
         "message": "Active project updated",
         "active_project_id": project.id,

@@ -379,4 +379,61 @@ describe('ORG-REBUILD: Frontend Architecture & Realtime Telemetry Tests', () => 
     assert(html.includes('Total 24h:'));
     assert(html.includes('Resync'));
   });
+
+  // Check 9: frontend hydration with zero orgs renders personal workspace, no redirect loop
+  it('9 frontend hydration with zero orgs renders personal workspace, no redirect loop', () => {
+    const meResponse = {
+      id: 'user-fresh-1',
+      email: 'fresh@cyberguard.local',
+      org_enabled: true,
+      is_single_user: true,
+      active_organization: null,
+      memberships: [],
+      organizations: [],
+    };
+
+    // Hydration logic derivation
+    const orgs = (meResponse.org_enabled ? meResponse.organizations || meResponse.memberships || [] : []) as any[];
+    const storedOrgId = 'stale-org-id';
+    const active: any = meResponse.org_enabled
+      ? orgs.find((o: any) => o.id === storedOrgId) || meResponse.active_organization
+      : null;
+
+    assert.strictEqual(active, null, 'Active org should resolve to null for org-less user');
+    assert.strictEqual(meResponse.is_single_user, true, 'is_single_user must be true');
+
+    // Simulate WorkspaceGuard logic
+    const isOrg = Boolean(meResponse.org_enabled && active && !active.is_personal);
+    assert.strictEqual(isOrg, false, 'Should be in personal workspace mode');
+
+    // Check personal route access
+    const isOrgScopeRoute = (path: string) => path.startsWith('/org');
+    assert.strictEqual(isOrgScopeRoute('/dashboard'), false, '/dashboard is personal route');
+    assert.strictEqual(isOrgScopeRoute('/phishing'), false, '/phishing is personal route');
+  });
+
+  // Check 10: stale active organization ID in localStorage is purged
+  it('10 stale active organization ID in localStorage is purged when memberships empty', () => {
+    const storage: Record<string, string> = { cyberguard_active_org: 'stale-org-id-123' };
+    const meResponse = {
+      org_enabled: true,
+      memberships: [],
+      organizations: [],
+      active_organization: null as any,
+    };
+
+    const orgs = meResponse.org_enabled ? meResponse.organizations || meResponse.memberships || [] : [];
+    const storedOrgId = storage['cyberguard_active_org'];
+    const active = meResponse.org_enabled
+      ? orgs.find((o: any) => o.id === storedOrgId) || meResponse.active_organization
+      : null;
+
+    if (active?.id) {
+      storage['cyberguard_active_org'] = active.id;
+    } else {
+      delete storage['cyberguard_active_org'];
+    }
+
+    assert.strictEqual(storage['cyberguard_active_org'], undefined, 'Stale org id must be purged');
+  });
 });

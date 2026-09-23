@@ -70,6 +70,21 @@ def _apply_request_gucs(session: Session, transaction, connection) -> None:
     )
 
 
+async def set_session_user(session: AsyncSession, user_id: Optional[str]) -> None:
+    """Explicitly stamp app.user_id / request.role onto the active async session connection."""
+    uid = user_id or ""
+    current_user_id.set(user_id)
+    try:
+        bind = session.sync_session.bind or engine
+        if bind and getattr(bind.dialect, "name", "") == "postgresql":
+            await session.execute(
+                text("SELECT set_config('app.user_id', :uid, false), set_config('request.role', :role, false)"),
+                {"uid": uid, "role": "authenticated" if uid else ""},
+            )
+    except Exception:
+        pass
+
+
 async_session_maker = async_sessionmaker(
     engine,
     class_=AsyncSession,

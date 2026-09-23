@@ -18,7 +18,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import OrgBlockedIndicator, OrgEvent, OrgProject
-from app.db.session import get_session
+from app.db.session import get_session, set_session_user
 
 logger = logging.getLogger("cyberguard.gateway")
 
@@ -106,10 +106,7 @@ async def project_gateway(
         raise HTTPException(status_code=401, detail="Invalid or inactive API key")
 
     # Set app.user_id for RLS context across subsequent queries
-    await session.execute(
-        text("SELECT set_config('app.user_id', :uid, true)"),
-        {"uid": str(key_row["owner_user_id"])},
-    )
+    await set_session_user(session, str(key_row["owner_user_id"]))
 
     # Update last_used_at
     await session.execute(
@@ -189,10 +186,7 @@ async def project_gateway(
         acted_at = None
 
     # Satisfy RLS for the insert
-    await session.execute(
-        text("SELECT set_config('app.user_id', :uid, true)"),
-        {"uid": str(key_row["owner_user_id"])},
-    )
+    await set_session_user(session, str(key_row["owner_user_id"]))
 
     event = OrgEvent(
         id=str(uuid.uuid4()),
