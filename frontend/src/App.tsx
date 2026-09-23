@@ -5,13 +5,10 @@ import RoleGuard from './components/layout/RoleGuard';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import ResetPassword from './pages/ResetPassword';
-import ComingSoon from './pages/ComingSoon';
 import EmailConnectors from './pages/EmailConnectors';
 import BlockedSenders from './pages/BlockedSenders';
 import SecurityHistory from './pages/SecurityHistory';
 import NotificationLog from './pages/NotificationLog';
-import { isOrgScopeRoute } from './nav';
-import { useAuthStore } from './store/authStore';
 import Dashboard from './pages/Dashboard';
 import ApprovalQueue from './pages/ApprovalQueue';
 import QuarantineQueue from './pages/QuarantineQueue';
@@ -37,23 +34,10 @@ import LogAnalysis from './pages/LogAnalysis';
 import AccountTakeover from './pages/AccountTakeover';
 import NetworkThreats from './pages/NetworkThreats';
 
-// ORG-REBUILD pages
-import OrgDashboard from './pages/OrgDashboard';
-import OrgProjectSettings from './pages/OrgProjectSettings';
-import OrgEventsList from './pages/OrgEventsList';
-import OrgEventReview from './pages/OrgEventReview';
-
 /**
- * Workspace-scoped route guard: org-scope routes render ComingSoon placeholder
- * in personal workspaces.
+ * Workspace guard: pass-through for personal workspace.
  */
-function WorkspaceGuard({ path, children }: { path: string; children: React.ReactNode }) {
-  const activeOrganization = useAuthStore((s) => s.activeOrganization);
-  const orgEnabled = useAuthStore((s) => s.orgEnabled);
-  const isOrg = Boolean(orgEnabled && activeOrganization && !activeOrganization.is_personal);
-  if (isOrgScopeRoute(path) && !isOrg) {
-    return <ComingSoon message="This module is part of the Organization workspace." />;
-  }
+function WorkspaceGuard({ children }: { path?: string; children: React.ReactNode }) {
   return <>{children}</>;
 }
 
@@ -173,71 +157,10 @@ export default function App() {
             }
           />
 
-          {/* ORG-REBUILD: Level 1 Org Monitoring */}
-          <Route
-            path="/org/dashboard"
-            element={
-              <WorkspaceGuard path="/org/dashboard">
-                <OrgDashboard />
-              </WorkspaceGuard>
-            }
-          />
-          <Route
-            path="/org/:orgId/dashboard"
-            element={
-              <WorkspaceGuard path="/org/dashboard">
-                <OrgDashboard />
-              </WorkspaceGuard>
-            }
-          />
-
-          {/* ORG-REBUILD: Events & Review */}
-          <Route
-            path="/org/events"
-            element={
-              <WorkspaceGuard path="/org/events">
-                <OrgEventsList />
-              </WorkspaceGuard>
-            }
-          />
-          <Route
-            path="/org/:orgId/events"
-            element={
-              <WorkspaceGuard path="/org/events">
-                <OrgEventsList />
-              </WorkspaceGuard>
-            }
-          />
-          <Route
-            path="/org/:orgId/projects/:pid/events/:eid"
-            element={<OrgEventReview />}
-          />
-
-          {/* ORG-REBUILD: Project Settings (API Keys, Blocked Indicators, Members, Gateway Access) */}
-          <Route
-            path="/org/settings"
-            element={
-              <WorkspaceGuard path="/org/settings">
-                <OrgProjectSettings />
-              </WorkspaceGuard>
-            }
-          />
-          <Route
-            path="/org/:orgId/settings"
-            element={
-              <WorkspaceGuard path="/org/settings">
-                <OrgProjectSettings />
-              </WorkspaceGuard>
-            }
-          />
-          <Route
-            path="/org/:orgId/projects/:projectId/settings"
-            element={
-              <WorkspaceGuard path="/org/settings">
-                <OrgProjectSettings />
-              </WorkspaceGuard>
-            }
-          />
+          {/* Org UI teardown: catch-all redirects for old org paths → /dashboard */}
+          <Route path="/org" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/org/*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/organization" element={<Navigate to="/dashboard" replace />} />
 
           {/* System */}
           <Route

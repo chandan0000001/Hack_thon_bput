@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, AtSign, Building2, CheckCircle2, Clock, Loader2, Lock, Mail, Shield, User } from 'lucide-react';
+import { ArrowLeft, AtSign, CheckCircle2, Loader2, Lock, Mail, Shield, User } from 'lucide-react';
 import { AuthErrorBanner, AuthErrorInfo } from '../components/common/AuthErrorBanner';
 import { AuthApiError, useAuthStore } from '../store/authStore';
 
 type Mode = 'signin' | 'signup' | 'forgot';
-type AccountType = 'user' | 'organization';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 const USERNAME_PATTERN = /^[a-z0-9_.]{3,32}$/;
@@ -15,8 +14,6 @@ export default function Login() {
   const [searchParams] = useSearchParams();
   const login = useAuthStore((s) => s.login);
   const signUp = useAuthStore((s) => s.signUp);
-  const registerOrg = useAuthStore((s) => s.registerOrg);
-  const activeOrganizationId = useAuthStore((s) => s.activeOrganizationId);
   const requestPasswordReset = useAuthStore((s) => s.requestPasswordReset);
   const loginWithOAuth = useAuthStore((s) => s.loginWithOAuth);
 
@@ -28,32 +25,17 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [accountType, setAccountType] = useState<AccountType>('user');
   const [username, setUsername] = useState('');
   const [usernameStatus, setUsernameStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'invalid'>('idle');
-  const [orgName, setOrgName] = useState('');
-  const [orgEmail, setOrgEmail] = useState('');
-  const [orgMessage, setOrgMessage] = useState<string | null>(null);
   const [authError, setAuthError] = useState<AuthErrorInfo | null>(null);
-  // Whether the backend runs with organization mode on (ORG_ENABLED),
-  // learned from the public /auth/config endpoint.
-  const [orgMode, setOrgMode] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<'google' | 'github' | null>(null);
 
-  // Public bootstrap config: organization mode flag (no token required).
-  useEffect(() => {
-    fetch(`${BASE_URL}/auth/config`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => setOrgMode(Boolean(data?.org_enabled)))
-      .catch(() => setOrgMode(false));
-  }, []);
-
   // Live username availability check (debounced, real backend only).
   useEffect(() => {
-    if (mode !== 'signup' || accountType !== 'user') return;
+    if (mode !== 'signup') return;
     if (!username) {
       setUsernameStatus('idle');
       return;
@@ -74,13 +56,12 @@ export default function Login() {
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [username, mode, accountType]);
+  }, [username, mode]);
 
   const resetMessages = () => {
     setError(null);
     setNotice(null);
     setAuthError(null);
-    setOrgMessage(null);
   };
 
   const switchMode = (newMode: Mode) => {
@@ -89,11 +70,6 @@ export default function Login() {
   };
 
   const handleBannerSignIn = () => {
-    const targetEmail = (accountType === 'organization' ? orgEmail : email).trim();
-    if (targetEmail) {
-      setEmail(targetEmail);
-    }
-    setAccountType('user');
     switchMode('signin');
   };
 
@@ -119,10 +95,6 @@ export default function Login() {
   };
 
   const handleSignUp = async () => {
-    if (accountType === 'organization') {
-      // Unified flow: the Organization tab goes straight to org signup.
-      return handleOrgSignUp();
-    }
     resetMessages();
     if (!USERNAME_PATTERN.test(username)) {
       setError('Username must be 3-32 chars: lowercase letters, digits, "_" or "."');
@@ -166,56 +138,6 @@ export default function Login() {
     }
   };
 
-  const handleOrgSignUp = async () => {
-    resetMessages();
-    if (!orgName.trim()) {
-      setOrgMessage('Enter an organization name.');
-      return;
-    }
-    if (!orgEmail.trim()) {
-      setOrgMessage('Enter your work email.');
-      return;
-    }
-    if (password.length < 8) {
-      setOrgMessage('Password must be at least 8 characters long.');
-      return;
-    }
-    setLoading(true);
-    try {
-      const { confirmationPending, organization } = await registerOrg(
-        orgEmail.trim(),
-        password,
-        orgName.trim(),
-        fullName.trim() || undefined
-      );
-      if (confirmationPending) {
-        resetMessages();
-        setNotice(
-          'Verification email sent! Confirm your email and sign in — your organization is ready.'
-        );
-      } else {
-        const orgId = organization?.id || activeOrganizationId;
-        if (orgId) {
-          navigate(`/org/${orgId}/dashboard`, { replace: true });
-        } else {
-          navigate('/org/dashboard', { replace: true });
-        }
-      }
-    } catch (err: any) {
-      if (err instanceof AuthApiError && err.status === 409 && err.code === 'email_exists') {
-        setAuthError({
-          error: err.code,
-          message: err.message,
-          hint: err.hint,
-        });
-      } else {
-        setOrgMessage(err instanceof Error ? err.message : 'Registration failed');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleForgot = async () => {
     if (!email) {
       setError('Please enter your email address');
@@ -236,10 +158,6 @@ export default function Login() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     resetMessages();
-    if (accountType === 'organization') {
-      if (mode === 'signin') return handleSignIn(orgEmail.trim() || undefined);
-      return handleOrgSignUp();
-    }
     if (mode === 'signin') return handleSignIn();
     if (mode === 'signup') return handleSignUp();
     return handleForgot();
@@ -320,176 +238,11 @@ export default function Login() {
           </div>
 
           {/* Mode status badge */}
-          
-            <div className="mb-5 flex items-center justify-between rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs">
-              <span className="font-mono text-[11px] font-bold text-red-400">ENTERPRISE SOC MODE</span>
-              <span className="text-[10px] text-zinc-400">Supabase Auth Connected</span>
-            </div>
-          
+          <div className="mb-5 flex items-center justify-between rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs">
+            <span className="font-mono text-[11px] font-bold text-red-400">ENTERPRISE SOC MODE</span>
+            <span className="text-[10px] text-zinc-400">Supabase Auth Connected</span>
+          </div>
 
-          {/* Account type selector (frozen organization accounts) */}
-          {mode !== 'forgot' && (
-            <div className="mb-4 flex rounded-lg bg-zinc-950 p-1 border border-zinc-800">
-              <button
-                type="button"
-                onClick={() => {
-                  setAccountType('user');
-                  setOrgMessage(null);
-                }}
-                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-semibold transition ${
-                  accountType === 'user' ? 'bg-red-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <User className="h-3.5 w-3.5" /> User
-              </button>
-              {orgMode && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAccountType('organization');
-                    setError(null);
-                    setNotice(null);
-                  }}
-                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-semibold transition ${
-                    accountType === 'organization' ? 'bg-zinc-700 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  <Building2 className="h-3.5 w-3.5" /> Organization
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* Organization workspace panel (unified flow) */}
-          {accountType === 'organization' && mode !== 'forgot' ? (
-            <form
-              onSubmit={handleSubmit}
-              className="space-y-4"
-            >
-              <div className="flex items-start gap-2 rounded-lg border border-zinc-700/60 bg-zinc-800/40 p-3">
-                <Clock className="h-4 w-4 flex-shrink-0 text-zinc-400 mt-0.5" />
-                <div>
-                  <p className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-300">
-                    Organization accounts
-                  </p>
-                  <p className="mt-0.5 text-[11px] text-zinc-400">
-                    {mode === 'signin'
-                      ? 'Sign in with your work email to reach your organization workspace.'
-                      : 'Register an admin account for your team — you will create the workspace with role-based access (admin, analyst, viewer) right after.'}
-                  </p>
-                </div>
-              </div>
-
-              {mode === 'signup' && (
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-zinc-500">
-                    Organization Name
-                  </label>
-                  <div className="relative">
-                    <Building2 className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" />
-                    <input
-                      type="text"
-                      disabled={!orgMode}
-                      value={orgName}
-                      onChange={(e) => setOrgName(e.target.value)}
-                      className={`w-full rounded-lg border border-zinc-800 bg-zinc-950 py-2.5 pl-10 pr-3 text-sm outline-none placeholder-zinc-600 ${
-                        orgMode
-                          ? 'text-zinc-100 focus:border-red-500/60 focus:ring-1 focus:ring-red-500/40'
-                          : 'cursor-not-allowed text-zinc-500'
-                      }`}
-                      placeholder="Acme Security Team"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-zinc-500">
-                  Work Email
-                </label>
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" />
-                  <input
-                    type="email"
-                    disabled={!orgMode}
-                    value={orgEmail}
-                    onChange={(e) => setOrgEmail(e.target.value)}
-                    className={`w-full rounded-lg border border-zinc-800 bg-zinc-950 py-2.5 pl-10 pr-3 text-sm outline-none placeholder-zinc-600 ${
-                      orgMode
-                        ? 'text-zinc-100 focus:border-red-500/60 focus:ring-1 focus:ring-red-500/40'
-                        : 'cursor-not-allowed text-zinc-500'
-                    }`}
-                    placeholder="soc@acme.com"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-zinc-500">
-                  Password
-                </label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" />
-                  <input
-                    type="password"
-                    disabled={!orgMode}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className={`w-full rounded-lg border border-zinc-800 bg-zinc-950 py-2.5 pl-10 pr-3 text-sm outline-none placeholder-zinc-600 ${
-                      orgMode
-                        ? 'text-zinc-100 focus:border-red-500/60 focus:ring-1 focus:ring-red-500/40'
-                        : 'cursor-not-allowed text-zinc-500'
-                    }`}
-                    placeholder="••••••••"
-                  />
-                </div>
-              </div>
-
-              <AuthErrorBanner
-                errorInfo={authError}
-                onAction={handleBannerSignIn}
-              />
-
-              {orgMessage && !authError && (
-                <div className="rounded-lg border border-zinc-700/60 bg-zinc-800/40 px-3.5 py-2.5 text-xs text-zinc-300">
-                  {orgMessage}
-                </div>
-              )}
-
-              {error && !authError && (
-                <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-400">
-                  {error}
-                </div>
-              )}
-
-              {notice && (
-                <div className="flex items-start gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-300">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0 text-emerald-400" />
-                  <span>{notice}</span>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={loading}
-                className={`flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-bold text-white transition disabled:opacity-60 ${
-                  orgMode ? 'bg-red-600 shadow-lg shadow-red-600/20 hover:bg-red-500' : 'bg-zinc-700 hover:bg-zinc-600'
-                }`}
-              >
-                {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-                {orgMode
-                  ? loading
-                    ? mode === 'signin'
-                      ? 'Signing in...'
-                      : 'Creating account...'
-                    : mode === 'signin'
-                      ? 'Sign In to Workspace'
-                      : 'Create Organization Account'
-                  : 'Join Waitlist'}
-              </button>
-            </form>
-          ) : (
-          <>
           {/* OAuth Buttons (shown for signin & signup) */}
           {mode !== 'forgot' && (
             <>
@@ -707,8 +460,6 @@ export default function Login() {
               {loading ? 'Processing...' : submitLabel}
             </button>
           </form>
-          </>
-          )}
 
           {mode === 'forgot' && (
             <div className="mt-4 text-center">

@@ -20,10 +20,8 @@ function linkClass(isActive: boolean, collapsed: boolean) {
 export default function Sidebar() {
   const collapsed = useUiStore((s) => s.sidebarCollapsed);
   const setAssistantOpen = useUiStore((s) => s.setAssistantOpen);
-  const activeOrganization = useAuthStore((s) => s.activeOrganization);
-  const orgEnabled = useAuthStore((s) => s.orgEnabled);
   const can = useAuthStore((s) => s.can);
-  const isOrgWorkspace = Boolean(orgEnabled && activeOrganization && !activeOrganization.is_personal);
+  const isOrgWorkspace = false;
   const isAdmin = can('admin');
   const liveEmailCount = useRealtimeEmailStore((s) => s.liveCount);
 

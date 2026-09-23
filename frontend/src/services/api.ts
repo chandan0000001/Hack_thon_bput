@@ -406,9 +406,6 @@ export async function removeOrganizationMember(orgId: string, targetUserId: stri
   });
 }
 
-export async function switchOrganization(orgId: string): Promise<void> {
-  await useAuthStore.getState().switchOrganization(orgId);
-}
 
 // ---------------------------------------------------------------------------
 // Email Connectors (Phase 1-2: Gmail only)

@@ -1,7 +1,5 @@
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Building2, Clock } from 'lucide-react';
-import { useAuthStore } from '../store/authStore';
-
 /**
  * Placeholder for frozen organization features (Phase -1).
  * Rendered when ORG_ENABLED=false server-side; reactivates with the Orgs Phase.
@@ -13,7 +11,7 @@ export default function ComingSoon({
   title?: string;
   message?: string;
 }) {
-  const orgEnabled = useAuthStore((s) => s.orgEnabled);
+  const orgEnabled = false;
 
   // Feature-frozen mode (no explicit message): hide when orgs activate.
   // Workspace-guard mode (explicit message): always render the notice.

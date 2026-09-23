@@ -1,0 +1,128 @@
+{
+  "v1_personal_walkthrough": {
+    "dashboard": {
+      "path": "/dashboard",
+      "ariaSnapshot": "- main:\n  - heading \"Security Operations Center\" [level=2]\n  - paragraph: Real-time threat monitoring, detection and response overview. Auto-refreshes every 30 seconds.\n  - text: Events Analyzed 0\n  - img\n  - img\n  - text: +12% vs last week Threats Detected 0\n  - img\n  - img\n  - text: +8% vs last week Phishing Attempts 0\n  - img\n  - img\n  - text: +15% vs last week Impersonation Attempts 0\n  - img\n  - img\n  - text: stable vs last week Suspected Deepfakes 0\n  - img\n  - img\n  - text: +5% vs last week Account Takeover Attempts 0\n  - img\n  - img\n  - text: \"-3% vs last week\"\n  - heading \"Risk Distribution\" [level=3]\n  - text: Alerts by severity band\n  - img\n  - text: safe (0) low (0) medium (0) high (0) critical (0)\n  - heading \"Threat Categories\" [level=3]\n  - text: Alert count per module\n  - img: phishing url impersonation deepfake account_takeover network api_abuse 0 1 2 3 4\n  - heading \"Attack Timeline — Last 24 Hours\" [level=3]\n  - text: Events analyzed vs threats detected\n  - img: 17:00 21:00 01:00 05:00 09:00 13:00 0 1 2 3 4\n  - heading \"Incident Summary\" [level=3]\n  - text: open 0 investigating 0 contained 0 closed 0\n  - heading \"Top Targeted Users\" [level=3]\n  - paragraph: No targeted users recorded\n  - heading \"Top Targeted Services\" [level=3]\n  - paragraph: No targeted services recorded\n  - heading \"Recent Alerts\" [level=3]\n  - text: No recent alerts",
+      "title": "CYBERGUARD - SOC Command Dashboard"
+    },
+    "phishing": {
+      "path": "/phishing",
+      "ariaSnapshot": "- main:\n  - heading \"AI-Powered Phishing Detection\" [level=2]\n  - paragraph: Analyze emails for phishing, social engineering and credential harvesting using heuristic indicators.\n  - img\n  - heading \"Email Content\" [level=3]\n  - text: Sender Address\n  - textbox \"sender@example-domain.com\"\n  - text: Subject\n  - textbox \"Email subject line\"\n  - text: Email Body\n  - textbox \"Paste the full email body here...\"\n  - button \"Advanced — supply raw message headers optional\":\n    - img\n    - text: Advanced — supply raw message headers optional\n  - button \"Load Benign Sample\"\n  - button \"Load Phishing Sample\"\n  - button \"Benign + Attachment\"\n  - button \"Phishing + Attachment\"\n  - button \"Attach file from system\":\n    - img\n    - text: Attach file from system\n  - button \"Analyze Email\":\n    - img\n    - text: Analyze Email",
+      "title": "CYBERGUARD - SOC Command Dashboard"
+    },
+    "quarantine": {
+      "path": "/quarantine",
+      "ariaSnapshot": "- main:\n  - heading \"Quarantine Queue\" [level=2]\n  - paragraph: Messages quarantined at Gmail by auto-enforcement. Release returns them to the inbox; delete trashes or permanently removes them per your connector settings.\n  - text: LIVE\n  - heading \"Quarantined messages (0 active)\" [level=2]\n  - button \"Refresh\":\n    - img\n    - text: Refresh\n  - text: Nothing quarantined yet. Run a mailbox scan from Email Connectors — high and critical verdicts are quarantined automatically when auto-enforcement is on.",
+      "title": "CYBERGUARD - SOC Command Dashboard"
+    },
+    "security_history": {
+      "path": "/security-history",
+      "ariaSnapshot": "- main:\n  - heading \"Security History\" [level=2]\n  - paragraph: Permanent record of real security events and provider operations — scan verdicts, quarantines, sender-rule lifecycle, and manual reviews.\n  - text: Event\n  - combobox:\n    - option \"All events\" [selected]\n    - option \"scan verdict\"\n    - option \"quarantine\"\n    - option \"release\"\n    - option \"keep\"\n    - option \"delete\"\n    - option \"sender block\"\n    - option \"sender release\"\n    - option \"sender expiry\"\n    - option \"connector connect\"\n    - option \"connector disconnect\"\n    - option \"connector test\"\n  - text: Actor\n  - combobox:\n    - option \"All actors\" [selected]\n    - option \"System\"\n    - option \"User\"\n    - option \"Scheduler\"\n  - text: Severity\n  - combobox:\n    - option \"All\" [selected]\n    - option \"critical\"\n    - option \"high\"\n    - option \"medium\"\n    - option \"low\"\n    - option \"safe\"\n  - text: Sender\n  - textbox \"search sender…\"\n  - text: From\n  - textbox\n  - text: To\n  - textbox\n  - button \"Refresh\":\n    - img\n    - text: Refresh\n  - heading \"Events (0 total)\" [level=2]\n  - button \"Prev\" [disabled]\n  - text: page 1\n  - button \"Next\" [disabled]\n  - text: No security events recorded yet.",
+      "title": "CYBERGUARD - SOC Command Dashboard"
+    },
+    "settings": {
+      "path": "/settings",
+      "ariaSnapshot": "- main:\n  - heading \"Settings\" [level=2]\n  - paragraph: Profile, environment and detection reference configuration.\n  - img\n  - heading \"Email Notifications\" [level=3]\n  - paragraph: Register the address that receives CYBERGUARD security alerts (quarantines, sender blocks, releases). This is separate from any connected mailbox — system notifications are never sent to your Gmail account.\n  - textbox \"alerts@yourdomain.com\"\n  - button \"Save\":\n    - img\n    - text: Save\n  - img\n  - heading \"Profile\" [level=3]\n  - text: Name Test User Email testuser@cyberguard.local Role admin\n  - img\n  - heading \"Backend Connection\" [level=3]\n  - text: Live backend connected\n  - paragraph: Supabase Auth + FastAPI at the URL below\n  - img\n  - text: Backend URL\n  - textbox [disabled]: http://localhost:8000/api/v1\n  - paragraph:\n    - img\n    - text: All data is served by the live backend\n  - img\n  - heading \"Risk Threshold Reference\" [level=3]\n  - paragraph: \"Severity ramp (monochrome theme): Safe #e4e4e7 · Low #71717a · Medium #f87171 · High #dc2626 · Critical #ef4444 (pulsing ring).\"\n  - table:\n    - rowgroup:\n      - row \"Severity Score Range Color Description\":\n        - columnheader \"Severity\"\n        - columnheader \"Score Range\"\n        - columnheader \"Color\"\n        - columnheader \"Description\"\n    - rowgroup:\n      - row \"safe 0–20 Benign activity; no action required. Monitor-only logging.\":\n        - cell \"safe\"\n        - cell \"0–20\"\n        - cell\n        - cell \"Benign activity; no action required. Monitor-only logging.\"\n      - row \"low 21–40 Minor anomalies worth tracking; no immediate response.\":\n        - cell \"low\"\n        - cell \"21–40\"\n        - cell\n        - cell \"Minor anomalies worth tracking; no immediate response.\"\n      - row \"medium 41–60 Suspicious patterns detected; investigate and correlate.\":\n        - cell \"medium\"\n        - cell \"41–60\"\n        - cell\n        - cell \"Suspicious patterns detected; investigate and correlate.\"\n      - row \"high 61–80 Likely malicious activity; begin response playbook.\":\n        - cell \"high\"\n        - cell \"61–80\"\n        - cell\n        - cell \"Likely malicious activity; begin response playbook.\"\n      - row \"critical 81–100 Confirmed-style threat signature; immediate containment.\":\n        - cell \"critical\"\n        - cell \"81–100\"\n        - cell\n        - cell \"Confirmed-style threat signature; immediate containment.\"\n  - img\n  - heading \"About CYBERGUARD\" [level=3]\n  - paragraph: \"Version: 1.0.0\"\n  - paragraph: \"Tech stack: Vite, React 18, TypeScript (strict), Tailwind CSS, react-router-dom v6, Recharts, lucide-react, Zustand\"\n  - paragraph: \"Detection: All threat analysis runs on the live backend (heuristic + ML blend with XAI explanations).\"\n  - paragraph: \"Data: All alerts, incidents and logs come from the connected backend. No simulated data is used.\"",
+      "title": "CYBERGUARD - SOC Command Dashboard"
+    }
+  },
+  "v2_org_route_redirects": [
+    {
+      "testedPath": "/org",
+      "finalUrl": "http://localhost:5173/dashboard",
+      "redirectedToDashboard": true
+    },
+    {
+      "testedPath": "/org/dashboard",
+      "finalUrl": "http://localhost:5173/dashboard",
+      "redirectedToDashboard": true
+    },
+    {
+      "testedPath": "/org/events",
+      "finalUrl": "http://localhost:5173/dashboard",
+      "redirectedToDashboard": true
+    },
+    {
+      "testedPath": "/org/settings",
+      "finalUrl": "http://localhost:5173/dashboard",
+      "redirectedToDashboard": true
+    },
+    {
+      "testedPath": "/org/d307d90f-8873-4928-a7a7-e25a03fc48e1/dashboard",
+      "finalUrl": "http://localhost:5173/dashboard",
+      "redirectedToDashboard": true
+    },
+    {
+      "testedPath": "/org/d307d90f-8873-4928-a7a7-e25a03fc48e1/events",
+      "finalUrl": "http://localhost:5173/dashboard",
+      "redirectedToDashboard": true
+    },
+    {
+      "testedPath": "/org/d307d90f-8873-4928-a7a7-e25a03fc48e1/settings",
+      "finalUrl": "http://localhost:5173/dashboard",
+      "redirectedToDashboard": true
+    },
+    {
+      "testedPath": "/org/d307d90f-8873-4928-a7a7-e25a03fc48e1/projects/proj-1/settings",
+      "finalUrl": "http://localhost:5173/dashboard",
+      "redirectedToDashboard": true
+    },
+    {
+      "testedPath": "/org/d307d90f-8873-4928-a7a7-e25a03fc48e1/projects/proj-1/events/evt-1",
+      "finalUrl": "http://localhost:5173/dashboard",
+      "redirectedToDashboard": true
+    },
+    {
+      "testedPath": "/organization",
+      "finalUrl": "http://localhost:5173/dashboard",
+      "redirectedToDashboard": true
+    }
+  ],
+  "v3_login_verification": {
+    "orgTabPresent": false,
+    "googleFlowPresent": true,
+    "githubFlowPresent": true,
+    "signinAria": "- link \"Back to Overview\":\n  - /url: /\n  - img\n  - text: Back to Overview\n- img\n- heading \"CYBERGUARD\" [level=1]\n- paragraph: AI-Powered Cyber Threat & SOAR Command Center\n- button \"Sign In\"\n- button \"Register\"\n- button \"Reset\"\n- text: ENTERPRISE SOC MODE Supabase Auth Connected\n- button \"Continue with Google\":\n  - img\n  - text: Continue with Google\n- button \"Continue with GitHub\":\n  - img\n  - text: Continue with GitHub\n- text: OR CONTINUE WITH EMAIL Email or Username\n- img\n- textbox \"you@company.com or alex.mercer\"\n- text: Password\n- button \"Forgot password?\"\n- img\n- textbox \"••••••••\"\n- button \"Sign In to Workspace\"\n- paragraph: CyberGuard SOC Platform • End-to-End Encrypted Sessions • Multi-Tenant RBAC",
+    "registerUsernamePresent": true,
+    "registerFullNamePresent": true,
+    "registerOrgNamePresent": false,
+    "registerAria": "- link \"Back to Overview\":\n  - /url: /\n  - img\n  - text: Back to Overview\n- img\n- heading \"CYBERGUARD\" [level=1]\n- paragraph: AI-Powered Cyber Threat & SOAR Command Center\n- button \"Sign In\"\n- button \"Register\"\n- button \"Reset\"\n- text: ENTERPRISE SOC MODE Supabase Auth Connected\n- button \"Continue with Google\":\n  - img\n  - text: Continue with Google\n- button \"Continue with GitHub\":\n  - img\n  - text: Continue with GitHub\n- text: OR CONTINUE WITH EMAIL Username\n- img\n- textbox \"alex.mercer\"\n- text: Full Name\n- img\n- textbox \"Alex Mercer\"\n- text: Email Address\n- img\n- textbox \"analyst@yourcompany.com\"\n- text: Password\n- img\n- textbox \"••••••••\"\n- text: Confirm Password\n- img\n- textbox \"••••••••\"\n- button \"Create Account\"\n- paragraph: CyberGuard SOC Platform • End-to-End Encrypted Sessions • Multi-Tenant RBAC"
+  },
+  "v4_layout_verification": {
+    "topbarAria": "- banner:\n  - heading \"Security Operations Center\" [level=1]\n  - text: CLOUD SOC\n  - button \"Live Alerts\"\n  - button \"Test User\":\n    - img\n    - text: Test User\n    - img",
+    "hasOrgSwitcher": false,
+    "hasProjectSelector": false,
+    "sidebarAria": "- complementary:\n  - img\n  - text: CYBERGUARD SOC Command Center\n  - navigation:\n    - paragraph: Analyze\n    - link \"Dashboard\":\n      - /url: /dashboard\n      - img\n      - text: Dashboard\n    - link \"Phishing Analysis\":\n      - /url: /phishing\n      - img\n      - text: Phishing Analysis\n    - link \"URL Analysis\":\n      - /url: /url-analysis\n      - img\n      - text: URL Analysis\n    - link \"Impersonation\":\n      - /url: /impersonation\n      - img\n      - text: Impersonation\n    - link \"Deepfake Detection\":\n      - /url: /deepfake\n      - img\n      - text: Deepfake Detection\n    - link \"Log Analysis\":\n      - /url: /log-analysis\n      - img\n      - text: Log Analysis\n    - paragraph: Email Security\n    - link \"Email Connectors\":\n      - /url: /email-connectors\n      - img\n      - text: Email Connectors\n    - link \"Quarantine Queue\":\n      - /url: /quarantine\n      - img\n      - text: Quarantine Queue\n    - link \"Blocked Senders\":\n      - /url: /blocked-senders\n      - img\n      - text: Blocked Senders\n    - paragraph: History & Audit\n    - link \"Security History\":\n      - /url: /security-history\n      - img\n      - text: Security History\n    - link \"Notification Log\":\n      - /url: /notification-log\n      - img\n      - text: Notification Log\n    - paragraph: System\n    - link \"Dead Letter Queue\":\n      - /url: /dlq\n      - img\n      - text: Dead Letter Queue\n    - link \"Settings\":\n      - /url: /settings\n      - img\n      - text: Settings\n  - button \"SOC Assistant\":\n    - img\n    - text: SOC Assistant\n  - button \"Collapse Sidebar\":\n    - img\n    - text: Collapse Sidebar",
+    "hasOrgSection": false,
+    "policiesUrl": "http://localhost:5173/policies",
+    "policiesAria": "- main:\n  - heading \"Policy Management\" [level=2]\n  - paragraph: Configure enforcement thresholds, actions and auto-execution per severity band. Only one policy is active at a time.\n  - img\n  - heading \"No enforcement policies configured\" [level=3]\n  - paragraph: Policies are seeded automatically when an organization is created."
+  },
+  "consoleErrors": [],
+  "diffsVsBefore": {
+    "dashboard": {
+      "identical": true,
+      "beforeLength": 1377,
+      "afterLength": 1377
+    },
+    "phishing": {
+      "identical": true,
+      "beforeLength": 821,
+      "afterLength": 821
+    },
+    "quarantine": {
+      "identical": true,
+      "beforeLength": 508,
+      "afterLength": 508
+    },
+    "security_history": {
+      "identical": true,
+      "beforeLength": 1184,
+      "afterLength": 1184
+    },
+    "settings": {
+      "identical": true,
+      "beforeLength": 2848,
+      "afterLength": 2848
+    }
+  }
+}
