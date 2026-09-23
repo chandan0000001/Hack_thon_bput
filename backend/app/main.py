@@ -34,13 +34,8 @@ from app.api import (
     routes_notifications,
     routes_incidents,
     routes_integrations,
-    routes_organizations,
+    routes_public_gateway,
     routes_orgs,
-    routes_org_dashboard,
-    routes_org_logs,
-    routes_org_mail,
-    routes_org_streams,
-    routes_org_notifications,
     routes_policies,
     routes_response,
 )
@@ -121,14 +116,8 @@ app.include_router(routes_health.router)
 app.include_router(routes_health.router, prefix=settings.API_V1_PREFIX)
 app.include_router(routes_notifications.router, prefix=settings.API_V1_PREFIX)
 app.include_router(routes_auth.router, prefix=settings.API_V1_PREFIX)
-app.include_router(routes_organizations.router, prefix=settings.API_V1_PREFIX)
+app.include_router(routes_public_gateway.router, prefix=settings.API_V1_PREFIX)
 app.include_router(routes_orgs.router, prefix=settings.API_V1_PREFIX)
-app.include_router(routes_orgs.gateway_router, prefix=settings.API_V1_PREFIX)
-app.include_router(routes_org_dashboard.router, prefix=settings.API_V1_PREFIX)
-app.include_router(routes_org_logs.router, prefix=settings.API_V1_PREFIX)
-app.include_router(routes_org_mail.router, prefix=settings.API_V1_PREFIX)
-app.include_router(routes_org_streams.router, prefix=settings.API_V1_PREFIX)
-app.include_router(routes_org_notifications.router, prefix=settings.API_V1_PREFIX)
 app.include_router(routes_db.router, prefix=settings.API_V1_PREFIX)
 app.include_router(routes_events.router, prefix=settings.API_V1_PREFIX)
 app.include_router(routes_analysis.router, prefix=settings.API_V1_PREFIX)

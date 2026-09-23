@@ -96,6 +96,10 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
+# Alias for dependency injection
+get_session = get_db
+
+
 DEFAULT_RESPONSE_CATALOG = [
     {
         "action": "Block suspicious URL",
@@ -288,11 +292,13 @@ async def _ensure_schema_if_privileged(schema: str) -> None:
                     END IF;
                 END $$;
             """))
-            for tbl in ("org_log_events", "alerts"):
+            for tbl in ("org_events", "alerts"):
                 await conn.execute(text(f"""
                     DO $$
                     BEGIN
-                        ALTER PUBLICATION supabase_realtime ADD TABLE "{schema}".{tbl};
+                        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = '{schema}' AND tablename = '{tbl}') THEN
+                            ALTER PUBLICATION supabase_realtime ADD TABLE "{schema}".{tbl};
+                        END IF;
                     EXCEPTION WHEN duplicate_object THEN
                         NULL;
                     END $$;
@@ -303,14 +309,14 @@ async def _ensure_schema_if_privileged(schema: str) -> None:
                 await conn.execute(text(f"""
                     DO $$
                     BEGIN
-                        IF NOT EXISTS (
-                            SELECT 1 FROM pg_policies WHERE schemaname = '{schema}' AND policyname = 'org_log_events_realtime_select'
+                        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = '{schema}' AND tablename = 'org_events') AND NOT EXISTS (
+                            SELECT 1 FROM pg_policies WHERE schemaname = '{schema}' AND policyname = 'org_events_realtime_select'
                         ) THEN
-                            CREATE POLICY org_log_events_realtime_select ON "{schema}".org_log_events
+                            CREATE POLICY org_events_realtime_select ON "{schema}".org_events
                             FOR SELECT TO authenticated
                             USING (
                                 cyberguard.org_member_role(
-                                    org_log_events.organization_id,
+                                    org_events.organization_id,
                                     auth.uid()::text
                                 ) IS NOT NULL
                             );

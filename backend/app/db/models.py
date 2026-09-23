@@ -52,330 +52,149 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
 
     # Relationships
-    memberships: Mapped[list["OrganizationMember"]] = relationship(
-        "OrganizationMember", back_populates="user", cascade="all, delete-orphan"
+    memberships: Mapped[list["OrgMember"]] = relationship(
+        "OrgMember", back_populates="user", cascade="all, delete-orphan"
     )
-    owned_organizations: Mapped[list["Organization"]] = relationship(
-        "Organization", back_populates="owner", foreign_keys="Organization.owner_id"
+    owned_organizations: Mapped[list["OrgOrganization"]] = relationship(
+        "OrgOrganization", back_populates="owner", foreign_keys="OrgOrganization.owner_id"
     )
 
 
-class Organization(Base):
-    __tablename__ = "organizations"
+class OrgOrganization(Base):
+    __tablename__ = "org_organizations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    # Salted unique name ("Acme Corp-2"); ``display_name`` keeps the original.
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    display_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    slug: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
-    is_personal: Mapped[bool] = mapped_column(Boolean, default=False)  # True for single-user workspaces
-    # Org creator (superuser/admin); also the RLS owner anchor for org rows.
-    owner_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    # active | suspended
-    status: Mapped[str] = mapped_column(String(16), default="active")
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
 
-    # Relationships
     owner: Mapped["User"] = relationship("User", back_populates="owned_organizations", foreign_keys=[owner_id])
-    members: Mapped[list["OrganizationMember"]] = relationship(
-        "OrganizationMember", back_populates="organization", cascade="all, delete-orphan"
-    )
-    events: Mapped[list["Event"]] = relationship("Event", back_populates="organization", cascade="all, delete-orphan")
-    alerts: Mapped[list["Alert"]] = relationship("Alert", back_populates="organization", cascade="all, delete-orphan")
-    incidents: Mapped[list["Incident"]] = relationship(
-        "Incident", back_populates="organization", cascade="all, delete-orphan"
-    )
-    executions: Mapped[list["ResponseExecution"]] = relationship(
-        "ResponseExecution", back_populates="organization", cascade="all, delete-orphan"
-    )
-    enforcement_policies: Mapped[list["EnforcementPolicy"]] = relationship(
-        "EnforcementPolicy", back_populates="organization", cascade="all, delete-orphan"
-    )
-    action_executions: Mapped[list["ActionExecution"]] = relationship(
-        "ActionExecution", back_populates="organization", cascade="all, delete-orphan"
-    )
-    audit_logs: Mapped[list["AuditLog"]] = relationship(
-        "AuditLog", back_populates="organization", cascade="all, delete-orphan"
-    )
+    members: Mapped[list["OrgMember"]] = relationship("OrgMember", back_populates="organization", cascade="all, delete-orphan")
+    projects: Mapped[list["OrgProject"]] = relationship("OrgProject", back_populates="organization", cascade="all, delete-orphan")
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.pop("slug", None)
+        kwargs.pop("is_personal", None)
+        super().__init__(**kwargs)
+
+    @property
+    def is_personal(self) -> bool:
+        return self.name == "Personal Workspace"
+
+    @property
+    def slug(self) -> str:
+        import re
+        return re.sub(r"[^a-z0-9]+", "-", self.name.lower()).strip("-")
 
 
-class OrganizationMember(Base):
-    __tablename__ = "organization_members"
-    __table_args__ = (UniqueConstraint("organization_id", "user_id", name="uq_org_user"),)
+class OrgMember(Base):
+    __tablename__ = "org_members"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "user_id", name="uq_org_members_org_user"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     organization_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36), ForeignKey("org_organizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    user_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    role: Mapped[str] = mapped_column(String(32), default="analyst")  # 'admin', 'analyst', 'viewer'
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # admin | analyst | viewer
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
 
-    # Relationships
-    organization: Mapped["Organization"] = relationship("Organization", back_populates="members")
-    user: Mapped["User"] = relationship("User", back_populates="memberships")
+    organization: Mapped["OrgOrganization"] = relationship("OrgOrganization", back_populates="members")
+    user: Mapped["User"] = relationship("User", back_populates="memberships", foreign_keys=[user_id])
 
 
-class OrganizationAPIKey(Base):
-    """Server-to-server API key for the org-scoped gateway (ORG-1).
-
-    Only the SHA-256 hash is stored; the plaintext key is returned exactly
-    once by the create endpoint and never persisted. ``key_prefix`` (first 16
-    chars) is kept for display/identification in the settings UI.
-    """
-
-    __tablename__ = "organization_api_keys"
+class OrgProject(Base):
+    __tablename__ = "org_projects"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "slug", name="uq_org_projects_org_slug"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     organization_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    name: Mapped[str] = mapped_column(String(120), nullable=False)  # "Production Key", "Staging Key"
-    key_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
-    key_prefix: Mapped[str] = mapped_column(String(32), nullable=False)  # "cg_live_abc12345"
-    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)  # NULL = never
-    # active | revoked
-    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
-    created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
-
-
-class OrgLogEvent(Base):
-    """Splunk-style ingested log event with detector analysis (ORG-2).
-
-    Fed exclusively by the org gateway (``POST /org/{org_id}/logs/ingest``
-    and the legacy ``action=ingest_log``) — never manual user input. The
-    log type is auto-detected from payload shape (auth | network | app) and
-    the matching detector runs before the row is stored.
-    """
-
-    __tablename__ = "org_log_events"
-
-    # ORG-REDESIGN: which project produced this row (project gateway / active
-    # project). Nullable — personal-mode and legacy rows have it NULL.
-    project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    # auth | network | app — auto-detected by app.services.org_log_analyzer
-    log_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
-    raw_data: Mapped[dict[str, Any]] = mapped_column(PortableJSON, default=dict)
-    # Structured detector output: {risk_score, severity, indicators, summary, ...}
-    analysis_result: Mapped[dict[str, Any]] = mapped_column(PortableJSON, default=dict)
-    severity: Mapped[str] = mapped_column(String(16), default="safe", index=True)
-    # Manual analyst decision (block_ip, revoke_session, escalate_incident, mark_safe)
-    manual_action_taken: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    acted_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    acted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # api-key context
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
-
-
-class OrgNotificationEmail(Base):
-    """Registered notification recipient for an organization (ORG-4).
-
-    Org-level: independent of the per-user ``notification_email`` (Phase 7).
-    Multiple addresses can be registered and grouped by role; an event's
-    ``min_role`` decides which groups receive it.
-    """
-
-    __tablename__ = "org_notification_emails"
-    __table_args__ = (UniqueConstraint("organization_id", "email", name="uq_org_notification_email"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    email: Mapped[str] = mapped_column(String(255), nullable=False)
-    # admin | analyst | viewer — the ROLE GROUP this address belongs to
-    role: Mapped[str] = mapped_column(String(16), default="analyst")
-    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
-
-
-class OrgNotificationSetting(Base):
-    """Per-event-type notification routing (ORG-4).
-
-    ``min_role`` is the MINIMUM role group that receives this event type:
-    admin = only admins; analyst = analysts + admins; viewer = everyone.
-    """
-
-    __tablename__ = "org_notification_settings"
-    __table_args__ = (UniqueConstraint("organization_id", "event_type", name="uq_org_notification_setting"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    # server_down | mail_server_down | critical_log | impersonation
-    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
-    min_role: Mapped[str] = mapped_column(String(16), default="analyst")
-    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    updated_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now)
-
-
-class OrgNotificationLog(Base):
-    """Delivery log for org notification events (ORG-4).
-
-    ``recipients`` records the per-address outcome:
-    ``[{"email", "role", "status", "error_detail"}]``. Delivery reuses the
-    Phase 7 backend (db_log by default, optional best-effort SMTP).
-    """
-
-    __tablename__ = "org_notification_logs"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    event_type: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
-    recipients: Mapped[list[dict[str, Any]]] = mapped_column(PortableJSON, default=list)
-    subject: Mapped[str] = mapped_column(String(255), nullable=False)
-    body_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    event_metadata: Mapped[Optional[dict[str, Any]]] = mapped_column(PortableJSON, nullable=True)
-    # sent | failed | skipped
-    status: Mapped[str] = mapped_column(String(16), default="sent", index=True)
-    error_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
-
-
-class OrgMailServer(Base):
-    """Org-level mail server connector (ORG-3) — server-to-server
-    infrastructure, NOT the personal OAuth mailbox connector (Phase 2).
-
-    ``credentials_encrypted`` holds a Fernet-encrypted JSON blob with
-    provider-specific credentials (service-account key, client secret, IMAP
-    password); plaintext never hits the database, logs, or API responses.
-    Disconnect is graceful: the mail server itself stays operational, the
-    row (and credentials, unless deleted) is retained.
-    """
-
-    __tablename__ = "org_mail_servers"
-    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_org_mail_server_name"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    name: Mapped[str] = mapped_column(String(120), nullable=False)  # "Primary Gmail"
-    # google_workspace | microsoft_365 | imap_smtp
-    provider_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    # connected | disconnected | error
-    status: Mapped[str] = mapped_column(String(16), default="disconnected", index=True)
-    credentials_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    last_connected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now)
-
-
-class OrgMailServerSetting(Base):
-    """Per-mail-server configuration (ORG-3): scan_interval_seconds,
-    quarantine_enabled, auto_block_malicious_senders, quarantine_expiry_hours."""
-
-    __tablename__ = "org_mail_server_settings"
-    __table_args__ = (UniqueConstraint("mail_server_id", "key", name="uq_org_mail_server_setting"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    mail_server_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("org_mail_servers.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    key: Mapped[str] = mapped_column(String(64), nullable=False)
-    value: Mapped[dict[str, Any]] = mapped_column(PortableJSON, default=dict)
-    updated_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now)
-
-
-class OrgMailServerLog(Base):
-    """Per-mail-server log stream (ORG-3). Logs are grouped BY server —
-    each mail server owns its own stream (connection | scan | quarantine |
-    error); they are never dumped into one combined feed."""
-
-    __tablename__ = "org_mail_server_logs"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    mail_server_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("org_mail_servers.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    # connection | scan | quarantine | error
-    log_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
-    message: Mapped[str] = mapped_column(Text, nullable=False)
-    metadata_json: Mapped[Optional[dict[str, Any]]] = mapped_column(PortableJSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
-
-
-class OrganizationSetting(Base):
-    """Org-level key/value preferences (ORG-1).
-
-    Keys named in ``app.core.permissions.SENSITIVE_SETTING_KEYS`` (e.g.
-    ``api_keys``, ``billing``) are hidden from viewers at both the API and
-    the RLS layer.
-    """
-
-    __tablename__ = "organization_settings"
-    __table_args__ = (UniqueConstraint("organization_id", "key", name="uq_org_setting"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    key: Mapped[str] = mapped_column(String(64), nullable=False)
-    value: Mapped[dict[str, Any]] = mapped_column(PortableJSON, default=dict)
-    updated_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now)
-
-
-class Project(Base):
-    """Org-scoped project (ORG-REDESIGN): a gateway + dashboard surface with
-    exactly two active API keys (master, viewer). Slug is unique per org."""
-
-    __tablename__ = "projects"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36), ForeignKey("org_organizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    slug: Mapped[str] = mapped_column(String(60), nullable=False)
-    # active | archived (archived = soft-delete; keys invalidate via org checks)
-    status: Mapped[str] = mapped_column(String(20), default="active")
-    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    slug: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | archived
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
 
+    organization: Mapped["OrgOrganization"] = relationship("OrgOrganization", back_populates="projects")
+    api_keys: Mapped[list["OrgApiKey"]] = relationship("OrgApiKey", back_populates="project", cascade="all, delete-orphan")
+    events: Mapped[list["OrgEvent"]] = relationship("OrgEvent", back_populates="project", cascade="all, delete-orphan")
 
-class ProjectAPIKey(Base):
-    """Project-scoped gateway API key (ORG-REDESIGN).
 
-    Exactly one active key per (project, role) — enforced by the partial
-    unique index in migration 0019 and re-checked in the service. role:
-    master = all gateway actions, viewer = read-only actions."""
-
-    __tablename__ = "project_api_keys"
+class OrgApiKey(Base):
+    __tablename__ = "org_api_keys"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     project_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36), ForeignKey("org_projects.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    organization_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("org_organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    # master | viewer
-    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # master | viewer
     key_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
-    key_prefix: Mapped[str] = mapped_column(String(12), nullable=False)
+    key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | revoked
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    # active | revoked (revocation frees the (project, role) slot)
-    status: Mapped[str] = mapped_column(String(20), default="active")
-    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
 
+    project: Mapped["OrgProject"] = relationship("OrgProject", back_populates="api_keys")
+
+
+class OrgEvent(Base):
+    __tablename__ = "org_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("org_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("org_organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)  # log_event | ato_event | network_event
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)  # critical | high | medium | low
+    source: Mapped[str] = mapped_column(String(20), default="gateway")  # gateway | manual
+    raw_data: Mapped[dict[str, Any]] = mapped_column(PortableJSON, default=dict)
+    analysis_result: Mapped[dict[str, Any]] = mapped_column(PortableJSON, default=dict)
+    verdict: Mapped[str] = mapped_column(String(32), default="pending_review")  # pending_review | released | blocked_permanently | false_positive
+    user_action: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    acted_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    acted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
+
+    project: Mapped["OrgProject"] = relationship("OrgProject", back_populates="events")
+
+
+class OrgBlockedIndicator(Base):
+    __tablename__ = "org_blocked_indicators"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "indicator_type", "indicator_value", name="uq_org_blocked_ind"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("org_organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("org_projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    indicator_type: Mapped[str] = mapped_column(String(20), nullable=False)  # ip | domain | email | hash | actor
+    indicator_value: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    blocked_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    blocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+
+
+# Compatibility aliases
+Organization = OrgOrganization
+OrganizationMember = OrgMember
+Project = OrgProject
 
 
 class Event(Base):
@@ -386,9 +205,7 @@ class Event(Base):
     project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
-    )
+    organization_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     raw_data: Mapped[dict[str, Any]] = mapped_column(PortableJSON, default=dict)
@@ -398,7 +215,6 @@ class Event(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
 
     # Relationships
-    organization: Mapped[Optional["Organization"]] = relationship("Organization", back_populates="events")
     media_files: Mapped[list["MediaFile"]] = relationship(
         "MediaFile", back_populates="event", cascade="all, delete-orphan"
     )
@@ -432,9 +248,7 @@ class Alert(Base):
     project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
-    )
+    organization_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     event_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("events.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -457,7 +271,6 @@ class Alert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
 
     # Relationships
-    organization: Mapped[Optional["Organization"]] = relationship("Organization", back_populates="alerts")
     event: Mapped[Optional["Event"]] = relationship("Event", back_populates="alerts")
     recommended_actions: Mapped[list["RecommendedAction"]] = relationship(
         "RecommendedAction", back_populates="alert", cascade="all, delete-orphan", lazy="selectin"
@@ -494,9 +307,7 @@ class Incident(Base):
     __tablename__ = "incidents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
-    )
+    organization_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     severity: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="open", index=True)
@@ -507,7 +318,6 @@ class Incident(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now)
 
     # Relationships
-    organization: Mapped[Optional["Organization"]] = relationship("Organization", back_populates="incidents")
     alert_links: Mapped[list["IncidentAlert"]] = relationship(
         "IncidentAlert", back_populates="incident", cascade="all, delete-orphan", lazy="selectin"
     )
@@ -562,9 +372,7 @@ class ResponseExecution(Base):
     __tablename__ = "response_executions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
-    )
+    organization_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     catalog_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("response_catalog.id", ondelete="SET NULL"), nullable=True
     )
@@ -577,7 +385,6 @@ class ResponseExecution(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
 
     # Relationships
-    organization: Mapped[Optional["Organization"]] = relationship("Organization", back_populates="executions")
     catalog_entry: Mapped[Optional["ResponseCatalog"]] = relationship("ResponseCatalog")
 
 
@@ -589,9 +396,7 @@ class AuditLog(Base):
     project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
-    )
+    organization_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     user_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # user | system | scheduler — distinguishes automated vs user-initiated.
@@ -603,8 +408,7 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
 
     # Relationships
-    organization: Mapped[Optional["Organization"]] = relationship("Organization", back_populates="audit_logs")
-
+    
 
 class EnforcementPolicy(Base):
     __tablename__ = "enforcement_policies"
@@ -612,10 +416,7 @@ class EnforcementPolicy(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     # Nullable: personal-workspace policies carry organization_id = NULL and are
     # owner-scoped via owner_user_id instead.
-    organization_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=True, index=True,
-    )
+    organization_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     owner_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)  # e.g. "Strict", "Balanced", "Permissive"
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -659,10 +460,7 @@ class EnforcementPolicy(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now)
 
     # Relationships
-    organization: Mapped["Organization"] = relationship(
-        "Organization", back_populates="enforcement_policies", foreign_keys=[organization_id]
-    )
-
+    
 
 class EmailConnectorAccount(Base):
     __tablename__ = "email_connector_accounts"
@@ -875,9 +673,7 @@ class ActionExecution(Base):
     project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    organization_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True,
-    )
+    organization_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     alert_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("alerts.id", ondelete="SET NULL"), nullable=True, index=True,
     )
@@ -926,7 +722,6 @@ class ActionExecution(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now)
 
     # Relationships
-    organization: Mapped[Optional["Organization"]] = relationship("Organization", back_populates="action_executions")
     alert: Mapped[Optional["Alert"]] = relationship("Alert", back_populates="action_executions")
     event: Mapped[Optional["Event"]] = relationship("Event")
     policy: Mapped[Optional["EnforcementPolicy"]] = relationship("EnforcementPolicy")

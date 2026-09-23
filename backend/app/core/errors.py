@@ -137,9 +137,14 @@ def register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(status_code=exc.status_code, content=content)
 
     @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        status_code = (
+            status.HTTP_422_UNPROCESSABLE_ENTITY
+            if request.url.path.startswith("/api/v1/p/")
+            else status.HTTP_400_BAD_REQUEST
+        )
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status_code,
             content={
                 "error": "invalid_payload",
                 "message": "Request payload failed validation.",

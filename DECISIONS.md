@@ -557,9 +557,22 @@ are deliberate extensions, not omissions — each one lists the reason it exists
   4. **Why Pause / Resume Live Sync Retains Credentials and Handles Gap Synchronization:**
      Unlike disconnect (which destroys credentials and watch state), `pause` temporarily halts mailbox monitoring without requiring the user to repeat the full OAuth consent flow. `pause` invokes `gmail.users.stop()`, preserves encrypted OAuth credentials, and sets `status = 'paused'`, `sync_status = 'paused'`, and `paused_at = now()`. `resume` invokes `gmail.users.watch()` to register a new watch with Google, restores `status = 'connected'`, `sync_status = 'active'`, and `paused_at = NULL`, and crucially enqueues a gap-sync background job using the pre-pause `last_history_id`. This guarantees that any emails received during the paused window are retrieved and analyzed rather than silently lost.
   5. **Why the Scheduled Watch Renewal Cron Filters Strictly by `status == 'connected'`:**
-     The background watch renewal cron (`_run_renew_watches`) executes 4x daily to prevent 7-day watch expirations. If paused or disconnected accounts were included, the renewal job would fail on missing tokens or inadvertently reactivate a Google watch that the user intentionally paused. The query strictly restricts renewals to `GmailAccount.status == 'connected' AND GmailAccount.refresh_token.is_not(None)`, keeping paused accounts safely dormant until explicitly resumed by the user.
+ - **2026-09-23 — ORG-REBUILD: Full teardown and rebuild of multi-tenant organization system.**
+  1. **Why Full Teardown and Rebuild (eliminating legacy fragmentation):**
+     The previous organization system spanned 7 separate backend router families, simulated transport connectors, complex multi-table notification routing, and polling-based UI dashboards. This generated excessive surface area, brittle mock states, and maintenance overhead. The full teardown dropped 7 legacy tables (`org_feature_dashboards`, `org_log_entries`, `org_mail_server_logs`, `org_mail_servers`, `org_notification_group_members`, `org_notification_groups`, `org_notification_logs`) via migration `0100_org_rebuild.py` while preserving existing Alembic migration history on disk, and replaced them with a cohesive 3-level hierarchy.
+  2. **Why 3-Level Architecture (monitoring, gateway, user controls):**
+     - **Level 1 (Organization Monitoring):** High-level visibility into multi-project telemetry, aggregated 24h event ingestion, severity breakdowns, and global blocklist indicators.
+     - **Level 2 (Project Gateway):** A single public ingestion entry point (`POST /api/v1/p/{project_slug}/gateway`) authenticated via Bearer project API keys (`cg_proj_live_*`). Viewer keys receive HTTP 403 Forbidden; unknown/unavailable analyzers receive HTTP 501.
+     - **Level 3 (Analyst & User Controls):** Project-scoped key management (1 master, 1 viewer slot max), team member role assignment, and incident review triage queues (`org_events`) where analysts can release, block permanently (auto-populating `org_blocked_indicators`), or mark false positive.
+  3. **Why Exactly 3 Core Analyzers with Uniform Output Contract:**
+     Rather than maintaining dozens of half-implemented simulated endpoints, ORG-REBUILD focuses exclusively on 3 robust engines: Log Analysis (`regex_rules`), Account Takeover (`heuristic_rules`), and Network Threat (`zeek_suricata_rules`). Every analyzer outputs a strict contract `{risk_score, severity, indicators, mitre, engine, available}`. Analyzers without an active model return `available: false` and trigger HTTP 501 at the gateway, avoiding simulated illusions of protection.
+  4. **Why Supabase Realtime CDC + Single Seed Fetch (zero polling):**
+     Periodic client-side polling loops (`setInterval`) create unnecessary server load, database query spikes, and stale UI counters. In ORG-REBUILD, `cyberguard.org_events` is published to the `supabase_realtime` publication. Frontend telemetry hooks perform a single HTTP seed fetch on mount (`/counters/initial`) and maintain live state strictly through Postgres change events (INSERT increments totals and severity counts; UPDATE decrements pending review).
+  5. **Why Personal Workspace Remains 100% Isolated:**
+     Personal workspaces (`is_personal=True`, `isOrg=False`) and their routes (`/phishing`, `/url-analysis`, `/impersonation`, `/deepfake`, `/mailbox/*`) remain completely untouched. Core detection algorithms are consumed as read-only dependencies, guaranteeing zero regression for personal workflows.
 
 ---
+
 
 ## The Five Invariants Every Later Decision Preserves
 

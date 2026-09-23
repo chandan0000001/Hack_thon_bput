@@ -17,7 +17,6 @@
 import {
   Ban,
   Bell,
-  Building2,
   ClipboardCheck,
   FileBarChart,
   KeyRound,
@@ -68,6 +67,9 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/notification-log', label: 'Notification Log', icon: Bell, scope: 'both', section: 'history' },
   { to: '/audit-logs', label: 'Audit Logs', icon: ScrollText, scope: 'org', section: 'history' },
   // --- org (organization workspace) ---
+  { to: '/org/dashboard', label: 'Organization Dashboard', icon: LayoutDashboard, scope: 'org', section: 'org' },
+  { to: '/org/events', label: 'Events', icon: ShieldAlert, scope: 'org', section: 'org' },
+  { to: '/org/settings', label: 'Project Settings', icon: Settings, scope: 'org', section: 'org' },
   { to: '/alerts', label: 'Alerts', icon: Bell, scope: 'org', section: 'org' },
   { to: '/incidents', label: 'Incidents', icon: ShieldAlert, scope: 'org', section: 'org' },
   { to: '/response-actions', label: 'Response Actions', icon: Zap, scope: 'org', section: 'org' },
@@ -75,7 +77,6 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/blocklist', label: 'Block List', icon: Ban, scope: 'org', section: 'org' },
   { to: '/action-log', label: 'Action Log', icon: ScrollText, scope: 'org', section: 'org' },
   { to: '/policies', label: 'Policy Management', icon: Settings2, scope: 'org', section: 'org', adminOnly: true },
-  { to: '/organization', label: 'Organization & Team', icon: Building2, scope: 'org', section: 'org' },
   // --- system ---
   { to: '/dlq', label: 'Dead Letter Queue', icon: Zap, scope: 'both', section: 'system', adminOnly: true },
   { to: '/reports', label: 'Reports', icon: FileBarChart, scope: 'org', section: 'system' },

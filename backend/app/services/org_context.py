@@ -83,31 +83,31 @@ async def resolve_org_context(db: AsyncSession, owner_user_id: str) -> tuple[Opt
                 )
             ).scalar()
             if role is not None:
-                personal_row = (
+                org_row = (
                     await db.execute(
                         text(
-                            "select is_personal from cyberguard.organizations where id = :org"
+                            "select id from cyberguard.org_organizations where id = :org"
                         ),
                         {"org": active},
                     )
                 ).first()
-                if personal_row is not None:
+                if org_row is not None:
                     org_id = active
-                    is_personal = bool(personal_row[0])
+                    is_personal = False
         if org_id is None:
-            personal = (
+            first_org = (
                 await db.execute(
                     text(
-                        "select id from cyberguard.organizations "
-                        "where is_personal = true and owner_id = :uid "
-                        "and status = 'active' limit 1"
+                        "select id from cyberguard.org_organizations "
+                        "where owner_id = :uid "
+                        "and status = 'active' order by created_at asc limit 1"
                     ),
                     {"uid": owner_user_id},
                 )
             ).scalar()
-            if personal:
-                org_id = personal
-                is_personal = True
+            if first_org:
+                org_id = first_org
+                is_personal = False
 
     _cache[owner_user_id] = (now + _TTL_SECONDS, (org_id, is_personal))
     return org_id, is_personal
@@ -159,7 +159,7 @@ async def resolve_project_id(
         valid = (
             await db.execute(
                 text(
-                    "select 1 from cyberguard.projects "
+                    "select 1 from cyberguard.org_projects "
                     "where id = :pid and organization_id = :org and status = 'active'"
                 ),
                 {"pid": active, "org": org_id},
@@ -171,7 +171,7 @@ async def resolve_project_id(
         project_id = (
             await db.execute(
                 text(
-                    "select id from cyberguard.projects "
+                    "select id from cyberguard.org_projects "
                     "where organization_id = :org and status = 'active' "
                     "order by created_at asc limit 1"
                 ),

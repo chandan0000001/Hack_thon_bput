@@ -22,7 +22,7 @@ from supabase import Client, create_client
 
 from app.core.config import get_settings
 from app.core.errors import ComingSoonError, NotFoundError, PermissionDeniedError
-from app.db.models import Organization, OrganizationMember, User
+from app.db.models import OrgMember, OrgOrganization, User
 from app.db.session import current_user_id, get_db
 
 logger = logging.getLogger("cyberguard.security")
@@ -235,17 +235,17 @@ async def get_tenant_context(
 
     # 1. If a specific organization was requested
     if target_org_id:
-        org_query = await db.execute(select(Organization).where(Organization.id == target_org_id))
+        org_query = await db.execute(select(OrgOrganization).where(OrgOrganization.id == target_org_id))
         organization = org_query.scalar_one_or_none()
         if organization is None:
             raise NotFoundError("Organization", target_org_id)
 
         # Check membership
         member_query = await db.execute(
-            select(OrganizationMember).where(
+            select(OrgMember).where(
                 and_(
-                    OrganizationMember.organization_id == target_org_id,
-                    OrganizationMember.user_id == user.id,
+                    OrgMember.organization_id == target_org_id,
+                    OrgMember.user_id == user.id,
                 )
             )
         )
@@ -261,7 +261,7 @@ async def get_tenant_context(
             organization_id=organization.id,
             organization_name=organization.name,
             role=role,
-            is_single_user=organization.is_personal,
+            is_single_user=False,
         )
 
     # 2. Look for user's active organization
@@ -269,14 +269,14 @@ async def get_tenant_context(
     user_db = user_db_query.scalar_one()
 
     if user_db.active_organization_id:
-        org_query = await db.execute(select(Organization).where(Organization.id == user_db.active_organization_id))
+        org_query = await db.execute(select(OrgOrganization).where(OrgOrganization.id == user_db.active_organization_id))
         organization = org_query.scalar_one_or_none()
         if organization:
             member_query = await db.execute(
-                select(OrganizationMember).where(
+                select(OrgMember).where(
                     and_(
-                        OrganizationMember.organization_id == organization.id,
-                        OrganizationMember.user_id == user.id,
+                        OrgMember.organization_id == organization.id,
+                        OrgMember.user_id == user.id,
                     )
                 )
             )
@@ -290,7 +290,7 @@ async def get_tenant_context(
                     organization_id=organization.id,
                     organization_name=organization.name,
                     role=role,
-                    is_single_user=organization.is_personal,
+                    is_single_user=False,
                 )
 
     # 3. Fallback to personal workspace (no organization row is created; org

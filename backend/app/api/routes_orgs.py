@@ -1,915 +1,1218 @@
-"""ORG-1 foundation endpoints: org creation with name salting, API key
-management, org settings, members (RBAC), and the org-scoped gateway.
+"""Session-scoped Organization APIs (JWT only).
 
-User-mode code (Phases -1 through 7) is untouched: the frozen
-``/organizations`` router stays exactly as it was; this router is the always-
-on Orgs-Phase surface under ``/orgs``.
-
-Gateway contract (server-to-server):
-
-    POST /api/v1/org/{org_id}/gateway
-    org_authorization: cg_live_...
-    {"action": "scan_email" | "scan_url" | "ingest_log", "data": {...}}
+Implements 3-level architecture:
+- Org level: Organization CRUD, membership & roles, aggregate dashboard
+- Project level: Project lifecycle, API key management (plaintext-once, role-slot enforcement)
+- Event level: Event review, verdict transitions, blocked indicators enforcement
 """
 
-import asyncio
+import hashlib
 import logging
 import re
+import secrets
 import uuid
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
-from app.core.errors import (
-    ConflictError,
-    NotFoundError,
-    PermissionDeniedError,
-    UnauthorizedError,
-    ValidationError,
-)
-from fastapi import Request
-from app.core.permissions import OrgRole, can_read_setting, require_org_role
-from app.core.security import CurrentUser, TenantContext, get_current_user
-from app.db.models import (
-    EnforcementPolicy,
-    Event,
-    Organization,
-    OrganizationAPIKey,
-    OrganizationMember,
-    OrganizationSetting,
-    Project,
-    ProjectAPIKey,
-    User,
-)
-from app.db.session import get_db
-from app.schemas.alerts import AlertResponse
-from app.schemas.organizations import (
-    ApiKeyCreate,
-    ApiKeyCreatedResponse,
-    ApiKeyResponse,
-    MemberAdd,
-    MemberResponse,
-    MemberRoleUpdate,
-    OrganizationCreate,
-    OrganizationResponse,
-    SettingResponse,
-    SettingUpsert,
-)
-from app.services import project_service
-from app.services.api_key_service import (
-    create_api_key,
-    create_project_key,
-    get_org_from_api_key,
-    list_project_keys,
-    revoke_project_key,
-    validate_project_key,
-)
+from app.core.config import get_settings
+from app.core.errors import ComingSoonError
+from app.core.security import CurrentUser, ORG_COMING_SOON, get_current_user
+from app.db.models import OrgApiKey, OrgBlockedIndicator, OrgEvent, OrgMember, OrgOrganization, OrgProject, User
+from app.db.session import get_session
 
 logger = logging.getLogger("cyberguard.orgs")
 
-router = APIRouter(prefix="/orgs", tags=["Org Foundation"])
-gateway_router = APIRouter(prefix="/org", tags=["Org Gateway"])
-
-MAX_SALT_ATTEMPTS = 8
+router = APIRouter(tags=["Organizations"])
 
 
-class GatewayPayload(BaseModel):
-    action: str
-    data: dict[str, Any] = {}
+# ─────────────────────────────────────────────────────────────
+# Request / Response Schemas
+# ─────────────────────────────────────────────────────────────
 
 
-# ---------------------------------------------------------------------------
-# Projects + project-scoped API keys (ORG-REDESIGN)
-# ---------------------------------------------------------------------------
+class CreateOrgRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
 
 
-class ProjectCreate(BaseModel):
-    name: str
+class UpdateOrgRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
 
 
-class ProjectResponse(BaseModel):
-    id: str
-    organization_id: str
-    name: str
-    slug: str
-    status: str
-    created_at: Any = None
+class InviteMemberRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+    role: str = Field("viewer", pattern="^(admin|analyst|viewer)$")
 
 
-class ProjectKeyCreate(BaseModel):
-    role: str  # master | viewer
-    name: str = ""
+class UpdateMemberRoleRequest(BaseModel):
+    role: str = Field(..., pattern="^(admin|analyst|viewer)$")
 
 
-class ProjectKeyResponse(BaseModel):
-    id: str
-    project_id: str
-    name: str
-    role: str
-    key_prefix: str
-    last_used_at: Any = None
-    status: str
-    created_at: Any = None
+class CreateProjectRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
+    slug: Optional[str] = Field(None, max_length=60)
 
 
-class ProjectKeyCreatedResponse(ProjectKeyResponse):
-    """Plaintext ``key`` is returned EXACTLY ONCE by the create endpoint."""
+class UpdateProjectRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=120)
+    status: Optional[str] = Field(None, pattern="^(active|archived)$")
 
-    key: str
+
+class CreateApiKeyRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
+    role: str = Field("master", pattern="^(master|viewer)$")
 
 
-# ---------------------------------------------------------------------------
-# Organization creation (name salting)
-# ---------------------------------------------------------------------------
+class EventVerdictActionRequest(BaseModel):
+    action: str = Field(..., pattern="^(released|blocked_permanently|false_positive)$")
+    reason: Optional[str] = None
+
+
+class CreateBlockedIndicatorRequest(BaseModel):
+    indicator_type: str = Field(..., pattern="^(ip|domain|email|hash|actor)$")
+    indicator_value: str = Field(..., min_length=1, max_length=255)
+    reason: Optional[str] = None
+    project_id: Optional[str] = None
+
+
+# ─────────────────────────────────────────────────────────────
+# Helper Functions
+# ─────────────────────────────────────────────────────────────
 
 
 def _slugify(name: str) -> str:
-    slug = re.sub(r"[^\w\s-]", "", name).strip().lower()
-    return re.sub(r"[-\s]+", "-", slug)
+    cleaned = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return cleaned[:60] if cleaned else "project"
 
 
-async def _salt_organization_name(db: AsyncSession, name: str) -> str:
-    """Return the first free ``name``: "Acme Corp" -> "Acme Corp-2" -> ...
-
-    Uniqueness is enforced here rather than by a DB constraint because every
-    user's personal workspace legitimately shares the literal name
-    "Personal Workspace".
-    """
-    salted = name
-    counter = 2
-    for _ in range(MAX_SALT_ATTEMPTS):
-        existing = await db.execute(
-            select(Organization.id).where(Organization.name == salted).limit(1)
+async def _set_rls_context(session: AsyncSession, user_id: str) -> None:
+    try:
+        await session.execute(
+            text("SELECT set_config('app.user_id', :uid, true)"),
+            {"uid": str(user_id)},
         )
-        if existing.scalar_one_or_none() is None:
-            return salted
-        salted = f"{name}-{counter}"
-        counter += 1
-    raise ConflictError("Could not derive a unique organization name — try a different name")
+    except Exception as exc:
+        logger.debug("Failed to set app.user_id RLS context: %s", exc)
 
 
-@router.post("", response_model=OrganizationResponse, status_code=status.HTTP_201_CREATED)
+async def _get_org_and_role(
+    org_id: str, user_id: str, session: AsyncSession, min_role: Optional[str] = None
+) -> tuple[OrgOrganization, str]:
+    await _set_rls_context(session, user_id)
+    org = await session.get(OrgOrganization, org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    if org.owner_id == user_id:
+        user_role = "admin"
+    else:
+        m_stmt = select(OrgMember).where(
+            OrgMember.organization_id == org_id,
+            OrgMember.user_id == user_id,
+        )
+        member = (await session.execute(m_stmt)).scalar_one_or_none()
+        if not member:
+            raise HTTPException(status_code=403, detail="Not a member of this organization")
+        user_role = member.role
+
+    if min_role == "admin" and user_role != "admin":
+        raise HTTPException(status_code=403, detail="Admin permissions required")
+    if min_role == "analyst" and user_role not in ("admin", "analyst"):
+        raise HTTPException(status_code=403, detail="Analyst or Admin permissions required")
+
+    return org, user_role
+
+
+def _extract_indicators_for_blocking(raw_data: Any, analysis_result: Any) -> list[tuple[str, str]]:
+    """Extract candidate (indicator_type, indicator_value) pairs from event."""
+    results: list[tuple[str, str]] = []
+    seen = set()
+
+    def add(itype: str, ival: str):
+        val = str(ival).strip()
+        if not val or len(val) < 2:
+            return
+        key = (itype, val.lower())
+        if key not in seen:
+            seen.add(key)
+            results.append((itype, val))
+
+    indicators = analysis_result.get("indicators", []) if isinstance(analysis_result, dict) else []
+    for ind in indicators:
+        if isinstance(ind, dict):
+            itype = str(ind.get("type", "")).lower()
+            val = ind.get("value") or ind.get("indicator")
+            if val:
+                t = "ip" if "ip" in itype else ("email" if "@" in str(val) else ("actor" if "user" in itype or "actor" in itype else "ip"))
+                add(t, str(val))
+            if "source_ip" in ind:
+                add("ip", ind["source_ip"])
+            if "ip" in ind:
+                add("ip", ind["ip"])
+            if "user" in ind:
+                add("actor", ind["user"])
+            if "email" in ind:
+                add("email", ind["email"])
+        elif isinstance(ind, str):
+            s = ind.strip()
+            if "@" in s:
+                add("email", s)
+            elif re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s):
+                add("ip", s)
+            elif re.match(r"^[a-fA-F0-9]{32,64}$", s):
+                add("hash", s)
+            elif "." in s and " " not in s:
+                add("domain", s)
+            else:
+                add("actor", s)
+
+    if isinstance(raw_data, dict):
+        for k in ["source_ip", "ip", "src_ip", "dest_ip", "dst_ip"]:
+            if k in raw_data and raw_data[k]:
+                add("ip", str(raw_data[k]))
+        for k in ["email", "sender"]:
+            if k in raw_data and raw_data[k]:
+                add("email", str(raw_data[k]))
+        for k in ["user", "username", "actor"]:
+            if k in raw_data and raw_data[k]:
+                add("actor", str(raw_data[k]))
+        for k in ["domain", "host"]:
+            if k in raw_data and raw_data[k]:
+                add("domain", str(raw_data[k]))
+        for k in ["hash", "md5", "sha256"]:
+            if k in raw_data and raw_data[k]:
+                add("hash", str(raw_data[k]))
+
+    return results
+
+
+def _has_blocked_indicator_match(blocked_rows: list[OrgBlockedIndicator], raw_data: Any, indicators: list[Any]) -> bool:
+    """Check if any indicator in the event matches a blocked indicator."""
+    import json
+    data_str = json.dumps(raw_data).lower() if isinstance(raw_data, (dict, list)) else str(raw_data).lower()
+    for b in blocked_rows:
+        val = b.indicator_value.strip().lower()
+        if not val:
+            continue
+        for ind in indicators:
+            if isinstance(ind, str) and val in ind.lower():
+                return True
+            if isinstance(ind, dict):
+                for v in ind.values():
+                    if isinstance(v, str) and val in v.lower():
+                        return True
+        if val in data_str:
+            return True
+    return False
+
+
+# ─────────────────────────────────────────────────────────────
+# 1. Organization & Member Endpoints
+# ─────────────────────────────────────────────────────────────
+
+
+@router.post("/organizations", status_code=status.HTTP_201_CREATED)
+@router.post("/orgs", status_code=status.HTTP_201_CREATED)
+@router.post("/org/organizations", status_code=status.HTTP_201_CREATED)
 async def create_organization(
-    payload: OrganizationCreate,
+    req: CreateOrgRequest,
     user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    """Create an organization (creator becomes admin). Salts the name on
-    conflict; applies to both email/password and OAuth flows (the frontend
-    calls this after account creation when the user selects "Organization")."""
-    display_name = payload.name.strip()
-    salted_name = await _salt_organization_name(db, display_name)
+    session: AsyncSession = Depends(get_session),
+):
+    if not get_settings().ORG_ENABLED:
+        raise ComingSoonError(ORG_COMING_SOON)
 
-    org = Organization(
-        id=str(uuid.uuid4()),
-        name=salted_name,
-        display_name=display_name,
-        slug=f"{_slugify(display_name) or 'org'}-{str(uuid.uuid4())[:6]}",
-        is_personal=False,
-        owner_id=user.id,  # creator (mission's created_by)
+    await _set_rls_context(session, user.id)
+    org_id = str(uuid.uuid4())
+    org = OrgOrganization(
+        id=org_id,
+        name=req.name.strip(),
+        owner_id=user.id,
         status="active",
+        created_at=datetime.now(timezone.utc),
     )
-    db.add(org)
-    await db.flush()
+    session.add(org)
 
-    member = OrganizationMember(
+    # Owner is default admin member
+    member = OrgMember(
         id=str(uuid.uuid4()),
-        organization_id=org.id,
+        organization_id=org_id,
         user_id=user.id,
-        role=OrgRole.ADMIN.value,
+        role="admin",
+        joined_at=datetime.now(timezone.utc),
     )
-    db.add(member)
+    session.add(member)
 
-    user_query = await db.execute(select(User).where(User.id == user.id))
-    user_db = user_query.scalar_one_or_none()
-    if user_db is not None:
-        user_db.active_organization_id = org.id
-
-    # Default enforcement policy so server-mode integrations resolve a policy
-    # for this org immediately (parity with the frozen /organizations route).
-    db.add(EnforcementPolicy(
-        organization_id=org.id,
-        name="Balanced (default)",
-        description="Auto-block critical/high, require approval for medium.",
-        is_active=True,
-    ))
-
-    # ORG-REDESIGN: every new org starts with a 'General' project so the
-    # project switcher and the project gateway are usable immediately.
-    from app.services.project_service import ensure_default_project  # noqa: PLC0415
-
-    await ensure_default_project(db, org_id=org.id, actor_user_id=user.id)
-
-    await db.commit()
-
-    return OrganizationResponse(
-        id=org.id,
-        name=org.name,
-        display_name=org.display_name,
-        slug=org.slug,
-        is_personal=org.is_personal,
-        owner_id=org.owner_id,
-        created_at=org.created_at,
-        role=OrgRole.ADMIN.value,
+    # Create default project
+    default_proj = OrgProject(
+        id=str(uuid.uuid4()),
+        organization_id=org_id,
+        name="Default Project",
+        slug="default",
+        status="active",
+        created_at=datetime.now(timezone.utc),
     )
+    session.add(default_proj)
+
+    await session.commit()
+
+    return {
+        "id": org.id,
+        "name": org.name,
+        "owner_id": org.owner_id,
+        "status": org.status,
+        "created_at": org.created_at.isoformat(),
+        "default_project_id": default_proj.id,
+    }
 
 
-@router.get("/{org_id}", response_model=OrganizationResponse)
+@router.get("/orgs")
+@router.get("/org/organizations")
+async def list_user_organizations(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _set_rls_context(session, user.id)
+    stmt = (
+        select(OrgOrganization, OrgMember.role)
+        .outerjoin(
+            OrgMember,
+            (OrgMember.organization_id == OrgOrganization.id) & (OrgMember.user_id == user.id),
+        )
+        .where(
+            (OrgOrganization.owner_id == user.id)
+            | (OrgMember.user_id == user.id)
+        )
+        .order_by(desc(OrgOrganization.created_at))
+    )
+    res = await session.execute(stmt)
+    orgs = []
+    for org, role in res.all():
+        effective_role = "admin" if org.owner_id == user.id else (role or "viewer")
+        orgs.append({
+            "id": org.id,
+            "name": org.name,
+            "owner_id": org.owner_id,
+            "status": org.status,
+            "role": effective_role,
+            "created_at": org.created_at.isoformat(),
+        })
+    return {"organizations": orgs}
+
+
+@router.get("/organizations")
+async def list_user_organizations_legacy(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    if not get_settings().ORG_ENABLED:
+        raise ComingSoonError(ORG_COMING_SOON)
+    res = await list_user_organizations(user, session)
+    return res["organizations"]
+
+
+@router.get("/orgs/{org_id}")
+@router.get("/org/{org_id}")
 async def get_organization(
     org_id: str,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.VIEWER)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    org = await db.get(Organization, org_id)
-    if org is None:
-        raise NotFoundError("Organization", org_id)
-    return OrganizationResponse(
-        id=org.id,
-        name=org.name,
-        display_name=org.display_name,
-        slug=org.slug,
-        is_personal=org.is_personal,
-        owner_id=org.owner_id,
-        created_at=org.created_at,
-        role=member.role,
-    )
-
-
-# ---------------------------------------------------------------------------
-# API key management (admin only)
-# ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/{org_id}/api-keys",
-    response_model=ApiKeyCreatedResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_org_api_key(
-    org_id: str,
-    payload: ApiKeyCreate,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
     user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    """Create an API key. The plaintext is returned EXACTLY ONCE."""
-    if await db.get(Organization, org_id) is None:
-        raise NotFoundError("Organization", org_id)
-    created = await create_api_key(
-        db,
-        organization_id=org_id,
-        name=payload.name.strip(),
-        expires_at=payload.expires_at,
-        created_by=user.id,
+    session: AsyncSession = Depends(get_session),
+):
+    org, role = await _get_org_and_role(org_id, user.id, session)
+
+    proj_count = await session.scalar(
+        select(func.count(OrgProject.id)).where(OrgProject.organization_id == org_id)
     )
-    stored = await db.get(OrganizationAPIKey, created["id"])
-    return ApiKeyCreatedResponse(
-        id=stored.id,
-        name=stored.name,
-        key_prefix=stored.key_prefix,
-        key=created["key"],
-        last_used_at=stored.last_used_at,
-        expires_at=stored.expires_at,
-        status=stored.status,
-        created_at=stored.created_at,
+    member_count = await session.scalar(
+        select(func.count(OrgMember.id)).where(OrgMember.organization_id == org_id)
     )
 
+    return {
+        "id": org.id,
+        "name": org.name,
+        "owner_id": org.owner_id,
+        "status": org.status,
+        "role": role,
+        "projects_count": proj_count or 0,
+        "members_count": member_count or 0,
+        "created_at": org.created_at.isoformat(),
+    }
 
-@router.get("/{org_id}/api-keys", response_model=list[ApiKeyResponse])
-async def list_org_api_keys(
+
+@router.patch("/orgs/{org_id}")
+@router.patch("/org/{org_id}")
+async def update_organization(
     org_id: str,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    """List API keys (prefix only — hashes and plaintext are never returned)."""
-    result = await db.execute(
-        select(OrganizationAPIKey)
-        .where(OrganizationAPIKey.organization_id == org_id)
-        .order_by(OrganizationAPIKey.created_at.desc())
-    )
-    return [
-        ApiKeyResponse(
-            id=k.id,
-            name=k.name,
-            key_prefix=k.key_prefix,
-            last_used_at=k.last_used_at,
-            expires_at=k.expires_at,
-            status=k.status,
-            created_at=k.created_at,
-        )
-        for k in result.scalars().all()
-    ]
-
-
-@router.delete("/{org_id}/api-keys/{key_id}", response_model=ApiKeyResponse)
-async def revoke_org_api_key(
-    org_id: str,
-    key_id: str,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    api_key = await db.get(OrganizationAPIKey, key_id)
-    if api_key is None or api_key.organization_id != org_id:
-        raise NotFoundError("API key", key_id)
-    api_key.status = "revoked"
-    await db.commit()
-    return ApiKeyResponse(
-        id=api_key.id,
-        name=api_key.name,
-        key_prefix=api_key.key_prefix,
-        last_used_at=api_key.last_used_at,
-        expires_at=api_key.expires_at,
-        status=api_key.status,
-        created_at=api_key.created_at,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Organization settings
-# ---------------------------------------------------------------------------
-
-
-@router.get("/{org_id}/settings", response_model=list[SettingResponse])
-async def list_org_settings(
-    org_id: str,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.VIEWER)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    """List settings. Viewers are filtered out of sensitive keys (mirrors the
-    organization_settings RLS policy)."""
-    result = await db.execute(
-        select(OrganizationSetting).where(OrganizationSetting.organization_id == org_id)
-    )
-    return [
-        SettingResponse(key=s.key, value=s.value, updated_at=s.updated_at)
-        for s in result.scalars().all()
-        if can_read_setting(member.role, s.key)
-    ]
-
-
-@router.put("/{org_id}/settings/{key}", response_model=SettingResponse)
-async def upsert_org_setting(
-    org_id: str,
-    key: str,
-    payload: SettingUpsert,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
+    req: UpdateOrgRequest,
     user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    if len(key) > 64:
-        raise ValidationError("Setting key must be at most 64 characters")
-    result = await db.execute(
-        select(OrganizationSetting).where(
-            OrganizationSetting.organization_id == org_id,
-            OrganizationSetting.key == key,
-        )
-    )
-    setting = result.scalar_one_or_none()
-    if setting is None:
-        setting = OrganizationSetting(
-            organization_id=org_id,
-            key=key,
-            value=payload.value,
-            updated_by=user.id,
-        )
-        db.add(setting)
-    else:
-        setting.value = payload.value
-        setting.updated_by = user.id
-    await db.commit()
-    return SettingResponse(key=setting.key, value=setting.value, updated_at=setting.updated_at)
+    session: AsyncSession = Depends(get_session),
+):
+    org, _ = await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    org.name = req.name.strip()
+    await session.commit()
+    return {"id": org.id, "name": org.name, "status": org.status}
 
 
-# ---------------------------------------------------------------------------
-# Members (admin-managed; roster readable by every member)
-# ---------------------------------------------------------------------------
-
-
-@router.get("/{org_id}/members", response_model=list[MemberResponse])
-async def list_org_members(
+@router.get("/orgs/{org_id}/members")
+@router.get("/org/{org_id}/members")
+async def list_members(
     org_id: str,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.VIEWER)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    result = await db.execute(
-        select(OrganizationMember)
-        .options(selectinload(OrganizationMember.user))
-        .where(OrganizationMember.organization_id == org_id)
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session)
+    stmt = (
+        select(OrgMember, User.email, User.full_name)
+        .outerjoin(User, User.id == OrgMember.user_id)
+        .where(OrgMember.organization_id == org_id)
+        .order_by(OrgMember.joined_at)
     )
-    return [
-        MemberResponse(
-            id=m.id,
-            organization_id=m.organization_id,
-            user_id=m.user_id,
-            email=m.user.email if m.user else None,
-            full_name=m.user.full_name if m.user else None,
-            role=m.role,
-            joined_at=m.joined_at,
-        )
-        for m in result.scalars().all()
-    ]
+    res = await session.execute(stmt)
+    members = []
+    for m, email, full_name in res.all():
+        members.append({
+            "id": m.id,
+            "organization_id": m.organization_id,
+            "user_id": m.user_id,
+            "email": email or "",
+            "full_name": full_name or "",
+            "role": m.role,
+            "joined_at": m.joined_at.isoformat(),
+        })
+    return {"members": members}
 
 
-@router.post("/{org_id}/members", response_model=MemberResponse, status_code=status.HTTP_201_CREATED)
-async def add_org_member(
+@router.post("/orgs/{org_id}/members", status_code=status.HTTP_201_CREATED)
+@router.post("/org/{org_id}/members", status_code=status.HTTP_201_CREATED)
+async def add_or_invite_member(
     org_id: str,
-    payload: MemberAdd,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    org = await db.get(Organization, org_id)
-    if org is None:
-        raise NotFoundError("Organization", org_id)
-    if org.is_personal:
-        raise ValidationError("Personal workspaces cannot have additional members.")
+    req: InviteMemberRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    email = req.email.strip().lower()
 
-    email = payload.email.strip().lower()
-    # RLS on ``users`` hides other accounts from the app role — resolve (or
-    # pre-create) the invitee through the service role, mirroring the frozen
-    # /organizations invite behavior.
-    from app.db.admin import find_user_by_email, precreate_user_for_invite
-
-    invitee = await find_user_by_email(email)
-    if invitee is None:
-        invitee = await precreate_user_for_invite(email)
-
-    existing = await db.execute(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == org_id,
-            OrganizationMember.user_id == invitee["id"],
+    # Find or stub user
+    u_stmt = select(User).where(User.email == email)
+    target_user = (await session.execute(u_stmt)).scalar_one_or_none()
+    if not target_user:
+        target_user = User(
+            id=str(uuid.uuid4()),
+            email=email,
+            full_name=email.split("@")[0],
+            account_type="user",
+            is_single_user=False,
         )
-    )
-    if existing.scalar_one_or_none() is not None:
-        raise ConflictError(f"User '{email}' is already a member of this organization")
+        session.add(target_user)
+        await session.flush()
 
-    new_member = OrganizationMember(
+    # Check if already member
+    m_stmt = select(OrgMember).where(
+        OrgMember.organization_id == org_id,
+        OrgMember.user_id == target_user.id,
+    )
+    existing = (await session.execute(m_stmt)).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=400, detail="User is already a member of this organization")
+
+    member = OrgMember(
         id=str(uuid.uuid4()),
         organization_id=org_id,
-        user_id=invitee["id"],
-        role=payload.role,
+        user_id=target_user.id,
+        role=req.role,
+        joined_at=datetime.now(timezone.utc),
     )
-    db.add(new_member)
-    await db.commit()
-    return MemberResponse(
-        id=new_member.id,
-        organization_id=new_member.organization_id,
-        user_id=new_member.user_id,
-        email=invitee["email"],
-        full_name=invitee["full_name"],
-        role=new_member.role,
-        joined_at=new_member.joined_at,
-    )
+    session.add(member)
+    await session.commit()
+
+    return {
+        "id": member.id,
+        "organization_id": member.organization_id,
+        "user_id": member.user_id,
+        "email": target_user.email,
+        "role": member.role,
+        "joined_at": member.joined_at.isoformat(),
+    }
 
 
-@router.patch("/{org_id}/members/{target_user_id}", response_model=MemberResponse)
-async def update_org_member_role(
+@router.patch("/orgs/{org_id}/members/{member_id}")
+@router.patch("/org/{org_id}/members/{member_id}")
+async def update_member_role(
     org_id: str,
-    target_user_id: str,
-    payload: MemberRoleUpdate,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    org = await db.get(Organization, org_id)
-    if org is None:
-        raise NotFoundError("Organization", org_id)
-    if target_user_id == org.owner_id and payload.role != OrgRole.ADMIN.value:
-        raise ValidationError("Cannot demote the organization owner")
+    member_id: str,
+    req: UpdateMemberRoleRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    member = await session.get(OrgMember, member_id)
+    if not member or member.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Member not found")
 
-    result = await db.execute(
-        select(OrganizationMember)
-        .options(selectinload(OrganizationMember.user))
-        .where(
-            OrganizationMember.organization_id == org_id,
-            OrganizationMember.user_id == target_user_id,
+    member.role = req.role
+    await session.commit()
+    return {"id": member.id, "role": member.role}
+
+
+@router.delete("/orgs/{org_id}/members/{member_id}")
+@router.delete("/org/{org_id}/members/{member_id}")
+async def remove_member(
+    org_id: str,
+    member_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    org, _ = await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    member = await session.get(OrgMember, member_id)
+    if not member or member.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    if member.user_id == org.owner_id:
+        raise HTTPException(status_code=400, detail="Cannot remove organization owner")
+
+    await session.delete(member)
+    await session.commit()
+    return {"status": "deleted"}
+
+
+# ─────────────────────────────────────────────────────────────
+# 2. Project Endpoints
+# ─────────────────────────────────────────────────────────────
+
+
+@router.get("/orgs/{org_id}/projects")
+@router.get("/org/{org_id}/projects")
+async def list_projects(
+    org_id: str,
+    status: Optional[str] = None,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session)
+    stmt = select(OrgProject).where(OrgProject.organization_id == org_id)
+    if status:
+        stmt = stmt.where(OrgProject.status == status)
+    stmt = stmt.order_by(OrgProject.created_at)
+    res = await session.execute(stmt)
+    projects = res.scalars().all()
+    return {
+        "projects": [
+            {
+                "id": p.id,
+                "organization_id": p.organization_id,
+                "name": p.name,
+                "slug": p.slug,
+                "status": p.status,
+                "created_at": p.created_at.isoformat(),
+            }
+            for p in projects
+        ]
+    }
+
+
+@router.post("/orgs/{org_id}/projects", status_code=status.HTTP_201_CREATED)
+@router.post("/org/{org_id}/projects", status_code=status.HTTP_201_CREATED)
+async def create_project(
+    org_id: str,
+    req: CreateProjectRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    slug = _slugify(req.slug if req.slug else req.name)
+
+    # Check slug uniqueness in org
+    existing = await session.scalar(
+        select(OrgProject).where(
+            OrgProject.organization_id == org_id,
+            OrgProject.slug == slug,
         )
     )
-    target = result.scalar_one_or_none()
-    if target is None:
-        raise NotFoundError("Member in organization", target_user_id)
-
-    target.role = payload.role
-    await db.commit()
-    return MemberResponse(
-        id=target.id,
-        organization_id=target.organization_id,
-        user_id=target.user_id,
-        email=target.user.email if target.user else None,
-        full_name=target.user.full_name if target.user else None,
-        role=target.role,
-        joined_at=target.joined_at,
-    )
-
-
-@router.delete("/{org_id}/members/{target_user_id}")
-async def remove_org_member(
-    org_id: str,
-    target_user_id: str,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
-    org = await db.get(Organization, org_id)
-    if org is None:
-        raise NotFoundError("Organization", org_id)
-    if target_user_id == org.owner_id:
-        raise ValidationError("Cannot remove the owner of the organization")
-    if target_user_id == member.user_id:
-        raise ValidationError("Admins cannot remove themselves — ask another admin")
-
-    result = await db.execute(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == org_id,
-            OrganizationMember.user_id == target_user_id,
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project with slug '{slug}' already exists in this organization",
         )
+
+    project = OrgProject(
+        id=str(uuid.uuid4()),
+        organization_id=org_id,
+        name=req.name.strip(),
+        slug=slug,
+        status="active",
+        created_at=datetime.now(timezone.utc),
     )
-    target = result.scalar_one_or_none()
-    if target is None:
-        raise NotFoundError("Member in organization", target_user_id)
+    session.add(project)
+    await session.commit()
 
-    await db.delete(target)
-    await db.commit()
-    return {"message": "Member removed"}
-
-
-# ---------------------------------------------------------------------------
-# Projects + project-scoped API keys (ORG-REDESIGN)
-# ---------------------------------------------------------------------------
-
-
-def _project_response(project: Project) -> dict[str, Any]:
     return {
         "id": project.id,
         "organization_id": project.organization_id,
         "name": project.name,
         "slug": project.slug,
         "status": project.status,
-        "created_at": project.created_at,
+        "created_at": project.created_at.isoformat(),
     }
 
 
-def _project_key_response(key: ProjectAPIKey) -> dict[str, Any]:
+@router.get("/orgs/{org_id}/projects/{project_id}")
+@router.get("/org/{org_id}/projects/{project_id}")
+async def get_project(
+    org_id: str,
+    project_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session)
+    project = await session.get(OrgProject, project_id)
+    if not project or project.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
     return {
-        "id": key.id,
-        "project_id": key.project_id,
-        "name": key.name,
-        "role": key.role,
-        "key_prefix": key.key_prefix,
-        "last_used_at": key.last_used_at,
-        "status": key.status,
-        "created_at": key.created_at,
+        "id": project.id,
+        "organization_id": project.organization_id,
+        "name": project.name,
+        "slug": project.slug,
+        "status": project.status,
+        "created_at": project.created_at.isoformat(),
     }
 
 
-@router.get("/{org_id}/projects", response_model=list[ProjectResponse])
-async def list_org_projects(
+@router.patch("/orgs/{org_id}/projects/{project_id}")
+@router.patch("/org/{org_id}/projects/{project_id}")
+async def update_project(
     org_id: str,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.VIEWER)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    """Active projects of the org (viewer+; feeds the project switcher)."""
-    projects = await project_service.list_projects(db, org_id=org_id)
-    return [_project_response(p) for p in projects]
+    project_id: str,
+    req: UpdateProjectRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    project = await session.get(OrgProject, project_id)
+    if not project or project.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if req.name:
+        project.name = req.name.strip()
+    if req.status:
+        project.status = req.status
+
+    await session.commit()
+    return {
+        "id": project.id,
+        "name": project.name,
+        "slug": project.slug,
+        "status": project.status,
+    }
 
 
-@router.post("/{org_id}/projects", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
-async def create_org_project(
+# ─────────────────────────────────────────────────────────────
+# 3. API Key Management (Master & Viewer, Plaintext ONCE)
+# ─────────────────────────────────────────────────────────────
+
+
+@router.get("/orgs/{org_id}/projects/{project_id}/keys")
+@router.get("/org/{org_id}/projects/{project_id}/keys")
+async def list_project_api_keys(
     org_id: str,
-    payload: ProjectCreate,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    """Create a project (admin). Slug auto-derived; duplicate name -> 409."""
-    project = await project_service.create_project(
-        db, org_id=org_id, name=payload.name, actor_user_id=member.user_id
+    project_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    stmt = (
+        select(OrgApiKey)
+        .where(
+            OrgApiKey.organization_id == org_id,
+            OrgApiKey.project_id == project_id,
+        )
+        .order_by(desc(OrgApiKey.created_at))
     )
-    return _project_response(project)
+    keys = (await session.execute(stmt)).scalars().all()
+
+    # Plaintext and hash are NEVER returned
+    return {
+        "keys": [
+            {
+                "id": k.id,
+                "project_id": k.project_id,
+                "organization_id": k.organization_id,
+                "name": k.name,
+                "role": k.role,
+                "key_prefix": k.key_prefix,
+                "status": k.status,
+                "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+                "created_at": k.created_at.isoformat(),
+            }
+            for k in keys
+        ]
+    }
 
 
-@router.delete("/{org_id}/projects/{project_id}")
-async def archive_org_project(
+@router.post("/orgs/{org_id}/projects/{project_id}/keys", status_code=status.HTTP_201_CREATED)
+@router.post("/org/{org_id}/projects/{project_id}/keys", status_code=status.HTTP_201_CREATED)
+async def create_project_api_key(
     org_id: str,
     project_id: str,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
-    """Soft-archive a project (admin). Gateway 404s; history keeps stamps."""
-    await project_service.archive_project(
-        db, project_id=project_id, org_id=org_id, actor_user_id=member.user_id
+    req: CreateApiKeyRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    project = await session.get(OrgProject, project_id)
+    if not project or project.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Enforce slot: Only 1 active key per role per project
+    existing_active = await session.scalar(
+        select(OrgApiKey).where(
+            OrgApiKey.project_id == project_id,
+            OrgApiKey.role == req.role,
+            OrgApiKey.status == "active",
+        )
     )
-    return {"message": "Project archived", "status": "archived"}
+    if existing_active:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An active {req.role} key already exists for this project. Revoke it before generating a new key.",
+        )
 
+    # Generate token
+    raw_secret = f"cg_org_{secrets.token_urlsafe(32)}"
+    key_hash = hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()
+    key_prefix = raw_secret[:10] + "..."
 
-@router.get("/{org_id}/projects/{project_id}/keys", response_model=list[ProjectKeyResponse])
-async def list_org_project_keys(
-    org_id: str,
-    project_id: str,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    """Keys of one project (admin). No plaintext — ever."""
-    keys = await list_project_keys(db, project_id=project_id, organization_id=org_id)
-    return [_project_key_response(k) for k in keys]
-
-
-@router.post(
-    "/{org_id}/projects/{project_id}/keys",
-    response_model=ProjectKeyCreatedResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_org_project_key(
-    org_id: str,
-    project_id: str,
-    payload: ProjectKeyCreate,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    """Generate the project's master or viewer key (admin). Plaintext is
-    returned ONCE. One active key per (project, role): creating again is 409
-    until the existing key is revoked."""
-    project = await db.get(Project, project_id)
-    if project is None or project.organization_id != org_id:
-        raise NotFoundError("Project", project_id)
-    created = await create_project_key(
-        db,
+    api_key_row = OrgApiKey(
+        id=str(uuid.uuid4()),
         project_id=project_id,
         organization_id=org_id,
-        role=payload.role,
-        name=payload.name,
-        actor_user_id=member.user_id,
+        name=req.name.strip(),
+        role=req.role,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        status="active",
+        created_at=datetime.now(timezone.utc),
     )
-    key = await db.get(ProjectAPIKey, created["id"])
-    resp = _project_key_response(key)
-    resp["key"] = created["key"]
-    return resp
+    session.add(api_key_row)
+    await session.commit()
+
+    # Return plaintext token ONCE
+    return {
+        "id": api_key_row.id,
+        "project_id": api_key_row.project_id,
+        "organization_id": api_key_row.organization_id,
+        "name": api_key_row.name,
+        "role": api_key_row.role,
+        "key_prefix": api_key_row.key_prefix,
+        "status": api_key_row.status,
+        "created_at": api_key_row.created_at.isoformat(),
+        "api_key": raw_secret,
+    }
 
 
-@router.delete("/{org_id}/projects/{project_id}/keys/{key_id}")
-async def revoke_org_project_key(
+@router.post("/orgs/{org_id}/projects/{project_id}/keys/{key_id}/revoke")
+@router.post("/org/{org_id}/projects/{project_id}/keys/{key_id}/revoke")
+@router.delete("/orgs/{org_id}/projects/{project_id}/keys/{key_id}")
+@router.delete("/org/{org_id}/projects/{project_id}/keys/{key_id}")
+async def revoke_api_key(
     org_id: str,
     project_id: str,
     key_id: str,
-    member: OrganizationMember = Depends(require_org_role(OrgRole.ADMIN)),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
-    """Revoke a project key (admin) — frees the (project, role) slot."""
-    revoked = await revoke_project_key(
-        db,
-        key_id=key_id,
-        project_id=project_id,
-        organization_id=org_id,
-        actor_user_id=member.user_id,
-    )
-    if revoked is None:
-        raise NotFoundError("Project key", key_id)
-    return {"message": f"{revoked.role} key revoked", "status": "revoked"}
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    key = await session.get(OrgApiKey, key_id)
+    if not key or key.organization_id != org_id or key.project_id != project_id:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    key.status = "revoked"
+    await session.commit()
+    return {"status": "revoked", "id": key.id}
 
 
-# ---------------------------------------------------------------------------
-# Org-scoped gateway (server-to-server, API-key auth)
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────
+# 4. Events & Review Endpoints
+# ─────────────────────────────────────────────────────────────
 
 
-def _org_tenant(org: Organization, project_id: str | None = None) -> TenantContext:
-    """Tenant context for gateway requests: the org's service identity.
+@router.get("/orgs/{org_id}/projects/{project_id}/events")
+@router.get("/org/{org_id}/projects/{project_id}/events")
+@router.get("/orgs/{org_id}/events")
+@router.get("/org/{org_id}/events")
+async def list_events(
+    org_id: str,
+    project_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+    severity: Optional[str] = None,
+    verdict: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session)
+    stmt = select(OrgEvent).where(OrgEvent.organization_id == org_id)
 
-    Server-to-server calls have no user; the request runs under the org
-    creator's RLS identity (stamped by validate_api_key) and rows are scoped
-    to the organization.
-    """
-    return TenantContext(
-        user_id=org.owner_id,
-        owner_user_id=org.owner_id,
-        organization_id=org.id,
-        organization_name=org.name,
-        role=OrgRole.ADMIN.value,
-        is_single_user=False,
-        project_id=project_id,
-    )
-
-
-async def _gateway_scan_email(
-    db: AsyncSession, org: Organization, data: dict[str, Any], project_id: str | None = None
-) -> Any:
-    from app.ai.prompt_templates import (
-        PHISHING_SYSTEM_PROMPT,
-        format_phishing_user_prompt,
-    )
-    from app.api.routes_analysis import _run_analysis_pipeline
-    from app.services.phishing_detector import analyze_email_heuristics
-
-    sender = data.get("sender")
-    if not sender:
-        raise ValidationError("scan_email requires data.sender")
-    tenant = _org_tenant(org, project_id)
-    indicators = await asyncio.to_thread(
-        analyze_email_heuristics,
-        sender=sender,
-        subject=data.get("subject", ""),
-        body=data.get("body", ""),
-    )
-    alert = await _run_analysis_pipeline(
-        db,
-        tenant,
-        event_type="phishing_email",
-        module="phishing",
-        source="gateway",
-        raw_data=data,
-        indicators=indicators,
-        system_prompt=PHISHING_SYSTEM_PROMPT,
-        user_prompt_builder=format_phishing_user_prompt,
-    )
-    # ORG-4 trigger: impersonation-type indicators page the impersonation group.
-    from app.services.org_notification_service import (
-        IMPERSONATION_INDICATOR_TYPES,
-        impersonation_email,
-        send_event,
-    )
-    impersonation_hits = [i for i in indicators if str(i.get("type")) in IMPERSONATION_INDICATOR_TYPES]
-    if impersonation_hits:
-        n_subject, n_body = impersonation_email(impersonation_hits, data.get("sender"))
-        await send_event(
-            db,
-            organization_id=org.id,
-            event_type="impersonation",
-            subject=n_subject,
-            body_html=n_body,
-            event_metadata={"alert_id": alert.id, "sender": data.get("sender"),
-                            "indicators": [i.get("type") for i in impersonation_hits]},
+    if project_id:
+        stmt = stmt.where(OrgEvent.project_id == project_id)
+    if event_type:
+        stmt = stmt.where(OrgEvent.event_type == event_type)
+    if severity:
+        stmt = stmt.where(OrgEvent.severity == severity.lower())
+    if verdict:
+        stmt = stmt.where(OrgEvent.verdict == verdict)
+    if q:
+        search_pattern = f"%{q.lower()}%"
+        stmt = stmt.where(
+            func.cast(OrgEvent.raw_data, text("text")).ilike(search_pattern)
+            | func.cast(OrgEvent.analysis_result, text("text")).ilike(search_pattern)
         )
-    return AlertResponse.model_validate(alert).model_dump(mode="json")
 
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await session.scalar(count_stmt)) or 0
 
-async def _gateway_scan_url(
-    db: AsyncSession, org: Organization, data: dict[str, Any], project_id: str | None = None
-) -> Any:
-    from app.ai.prompt_templates import URL_SYSTEM_PROMPT, format_url_user_prompt
-    from app.api.routes_analysis import _run_analysis_pipeline
-    from app.services.url_detector import analyze_url_heuristics
+    stmt = stmt.order_by(desc(OrgEvent.created_at)).offset(offset).limit(limit)
+    res = await session.execute(stmt)
+    events = res.scalars().all()
 
-    url = data.get("url")
-    if not url:
-        raise ValidationError("scan_url requires data.url")
-    tenant = _org_tenant(org, project_id)
-    indicators = await asyncio.to_thread(analyze_url_heuristics, url)
-    alert = await _run_analysis_pipeline(
-        db,
-        tenant,
-        event_type="malicious_url",
-        module="url",
-        source="gateway",
-        raw_data=data,
-        indicators=indicators,
-        system_prompt=URL_SYSTEM_PROMPT,
-        user_prompt_builder=lambda d, ind, score, sev: format_url_user_prompt(url, ind, score, sev),
-    )
-    return AlertResponse.model_validate(alert).model_dump(mode="json")
-
-
-async def _gateway_ingest_log(
-    db: AsyncSession, org: Organization, data: dict[str, Any], project_id: str | None = None
-) -> dict[str, Any]:
-    """Splunk-style log ingestion: persist the raw log event AND the analyzed
-    org log stream row (ORG-WIRE D4).
-
-    Dual-write rationale: the generic ``Event`` row keeps the org dashboard
-    aggregations working (summary/feature dashboards count ``events``), while
-    the ``OrgLogEvent`` row (with the org_log_analyzer output) feeds
-    ``/org/{id}/logs/stream`` and the log-analysis feature views, which
-    previously only saw logs sent through ``POST /org/{id}/logs/ingest``.
-    """
-    from app.db.models import OrgLogEvent
-    from app.services.org_log_analyzer import analyze_log
-
-    event = Event(
-        id=str(uuid.uuid4()),
-        organization_id=org.id,
-        project_id=project_id,
-        owner_user_id=org.owner_id,
-        event_type="log",
-        source="gateway",
-        raw_data=data,
-        status="received",
-        created_by=f"api_key:{org.id}",
-    )
-    db.add(event)
-
-    analysis = analyze_log(data)
-    log_event = OrgLogEvent(
-        organization_id=org.id,
-        project_id=project_id,
-        log_type=analysis["log_type"],
-        raw_data=data if isinstance(data, (dict, list)) else {"value": str(data)},
-        analysis_result=analysis,
-        severity=analysis["severity"],
-        created_by=f"api_key:{org.id}",
-    )
-    db.add(log_event)
-    await db.commit()
     return {
-        "event_id": event.id,
-        "log_id": log_event.id,
-        "status": event.status,
-        "stored": True,
+        "total": total,
+        "events": [
+            {
+                "id": e.id,
+                "project_id": e.project_id,
+                "organization_id": e.organization_id,
+                "event_type": e.event_type,
+                "severity": e.severity,
+                "source": e.source,
+                "raw_data": e.raw_data,
+                "analysis_result": e.analysis_result,
+                "verdict": e.verdict,
+                "user_action": e.user_action,
+                "acted_by": e.acted_by,
+                "acted_at": e.acted_at.isoformat() if e.acted_at else None,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in events
+        ],
     }
 
 
-@gateway_router.post("/{org_id}/gateway")
-async def org_gateway(
+@router.get("/orgs/{org_id}/projects/{project_id}/events/{event_id}")
+@router.get("/org/{org_id}/projects/{project_id}/events/{event_id}")
+@router.get("/orgs/{org_id}/events/{event_id}")
+@router.get("/org/{org_id}/events/{event_id}")
+async def get_event_detail(
     org_id: str,
-    payload: GatewayPayload,
-    org: Organization = Depends(get_org_from_api_key),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """DEPRECATED (ORG-REDESIGN): org-flat gateway kept one version for
-    compatibility. Use ``POST /org/{org_id}/projects/{project_slug}/gateway``
-    with a project key instead. Removal tracked in DECISIONS.md."""
-    logger.warning(
-        "DEPRECATED org gateway used: POST /org/%s/gateway (org %s) — "
-        "migrate to /org/{org_id}/projects/{project_slug}/gateway",
-        org_id,
-        org.id,
+    event_id: str,
+    project_id: Optional[str] = None,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session)
+    event = await session.get(OrgEvent, event_id)
+    if not event or event.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if project_id and event.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Event not found in this project")
+
+    # Check if any indicator in this event is currently blocked
+    blocked_stmt = select(OrgBlockedIndicator).where(OrgBlockedIndicator.organization_id == org_id)
+    blocked_rows = (await session.execute(blocked_stmt)).scalars().all()
+    has_blocked = _has_blocked_indicator_match(
+        blocked_rows, event.raw_data, event.analysis_result.get("indicators", [])
     )
-    if org.id != org_id:
-        raise PermissionDeniedError("API key does not belong to this organization")
 
-    action = payload.action
-    if action == "scan_email":
-        result = await _gateway_scan_email(db, org, payload.data)
-    elif action == "scan_url":
-        result = await _gateway_scan_url(db, org, payload.data)
-    elif action == "ingest_log":
-        result = await _gateway_ingest_log(db, org, payload.data)
-    else:
-        raise ValidationError(f"Unknown action: {action}")
-
-    return {"status": "success", "action": action, "result": result}
-
-
-# ---------------------------------------------------------------------------
-# Project-scoped gateway (ORG-REDESIGN)
-# ---------------------------------------------------------------------------
-
-# Viewer keys may call exactly these read-only actions; anything else is a
-# 403 for viewers (master keys may attempt any action — unknown ones 404).
-_PROJECT_VIEWER_ACTIONS = {"scan_email", "scan_url", "ingest_log"}
+    return {
+        "id": event.id,
+        "project_id": event.project_id,
+        "organization_id": event.organization_id,
+        "event_type": event.event_type,
+        "severity": event.severity,
+        "source": event.source,
+        "raw_data": event.raw_data,
+        "analysis_result": event.analysis_result,
+        "verdict": event.verdict,
+        "user_action": event.user_action,
+        "acted_by": event.acted_by,
+        "acted_at": event.acted_at.isoformat() if event.acted_at else None,
+        "created_at": event.created_at.isoformat(),
+        "indicator_blocked": has_blocked,
+    }
 
 
-async def get_project_gateway_context(
+@router.patch("/orgs/{org_id}/projects/{project_id}/events/{event_id}")
+@router.patch("/org/{org_id}/projects/{project_id}/events/{event_id}")
+@router.patch("/orgs/{org_id}/events/{event_id}")
+@router.patch("/org/{org_id}/events/{event_id}")
+async def update_event_verdict(
     org_id: str,
-    project_slug: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> tuple[Organization, Project, str]:
-    """Authenticate a project-gateway call: the ``org_authorization`` header
-    must carry an ACTIVE key of THIS project in THIS org.
+    event_id: str,
+    req: EventVerdictActionRequest,
+    project_id: Optional[str] = None,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session, min_role="analyst")
+    event = await session.get(OrgEvent, event_id)
+    if not event or event.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if project_id and event.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Event not found in this project")
 
-    Returns (org, project, role). 401 for missing/invalid/revoked keys and
-    keys of another org/project; 404 for unknown or archived slugs."""
-    raw_key = request.headers.get("org_authorization") or ""
-    if not raw_key:
-        raise UnauthorizedError("Missing org_authorization header")
-    claims = await validate_project_key(db, raw_key)
-    if claims is None:
-        raise UnauthorizedError("Invalid or revoked project API key")
-    if claims["organization_id"] != org_id:
-        raise UnauthorizedError("Project API key does not belong to this organization")
-    org = await db.get(Organization, org_id)
-    if org is None or org.status != "active":
-        raise UnauthorizedError("Organization is not active")
-    project = await project_service.get_project_by_slug(db, org_id=org_id, slug=project_slug)
-    if claims["project_id"] != project.id:
-        raise UnauthorizedError("Project API key does not belong to this project")
-    return org, project, claims["role"]
+    action = req.action
+    now = datetime.now(timezone.utc)
 
-
-@gateway_router.post("/{org_id}/projects/{project_slug}/gateway")
-async def org_project_gateway(
-    payload: GatewayPayload,
-    ctx: tuple[Organization, Project, str] = Depends(get_project_gateway_context),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """Project-scoped gateway: the project key (master|viewer) authenticates
-    the call; events/alerts/log rows are stamped with the project_id.
-
-    master: all actions. viewer: read-only actions only (scan_email,
-    scan_url, ingest_log); future write actions reject 403."""
-    org, project, role = ctx
-
-    action = payload.action
-    if role == "viewer" and action not in _PROJECT_VIEWER_ACTIONS:
-        raise PermissionDeniedError(
-            f"Viewer keys cannot perform '{action}' — ask for a master key"
+    if action == "released":
+        # Check if any indicator is in org_blocked_indicators
+        blocked_stmt = select(OrgBlockedIndicator).where(
+            OrgBlockedIndicator.organization_id == org_id
         )
-    if action == "scan_email":
-        result = await _gateway_scan_email(db, org, payload.data, project.id)
-    elif action == "scan_url":
-        result = await _gateway_scan_url(db, org, payload.data, project.id)
-    elif action == "ingest_log":
-        result = await _gateway_ingest_log(db, org, payload.data, project.id)
-    else:
-        raise ValidationError(f"Unknown action: {action}")
+        blocked_rows = (await session.execute(blocked_stmt)).scalars().all()
+        if _has_blocked_indicator_match(blocked_rows, event.raw_data, event.analysis_result.get("indicators", [])):
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot release event: indicator is blocked permanently",
+            )
+        event.verdict = "released"
+        event.user_action = "released"
+        event.acted_by = user.id
+        event.acted_at = now
 
-    return {"status": "success", "action": action, "project": project.slug, "result": result}
+    elif action == "blocked_permanently":
+        event.verdict = "blocked_permanently"
+        event.user_action = "blocked_permanently"
+        event.acted_by = user.id
+        event.acted_at = now
+
+        # Auto-insert event indicators into org_blocked_indicators
+        candidate_indicators = _extract_indicators_for_blocking(
+            event.raw_data, event.analysis_result
+        )
+        for itype, ival in candidate_indicators:
+            existing = await session.scalar(
+                select(OrgBlockedIndicator).where(
+                    OrgBlockedIndicator.organization_id == org_id,
+                    OrgBlockedIndicator.indicator_type == itype,
+                    OrgBlockedIndicator.indicator_value == ival,
+                )
+            )
+            if not existing:
+                new_b = OrgBlockedIndicator(
+                    id=str(uuid.uuid4()),
+                    organization_id=org_id,
+                    project_id=event.project_id,
+                    indicator_type=itype,
+                    indicator_value=ival,
+                    reason=f"Blocked via event {event.id}",
+                    blocked_by=user.id,
+                    blocked_at=now,
+                )
+                session.add(new_b)
+
+    elif action == "false_positive":
+        event.verdict = "false_positive"
+        event.user_action = "false_positive"
+        event.acted_by = user.id
+        event.acted_at = now
+
+    await session.commit()
+
+    return {
+        "id": event.id,
+        "verdict": event.verdict,
+        "user_action": event.user_action,
+        "acted_by": event.acted_by,
+        "acted_at": event.acted_at.isoformat() if event.acted_at else None,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# 5. Blocked Indicators Endpoints
+# ─────────────────────────────────────────────────────────────
+
+
+@router.get("/orgs/{org_id}/blocked-indicators")
+@router.get("/org/{org_id}/blocked-indicators")
+async def list_blocked_indicators(
+    org_id: str,
+    indicator_type: Optional[str] = None,
+    q: Optional[str] = None,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session)
+    stmt = select(OrgBlockedIndicator).where(OrgBlockedIndicator.organization_id == org_id)
+
+    if indicator_type:
+        stmt = stmt.where(OrgBlockedIndicator.indicator_type == indicator_type)
+    if q:
+        stmt = stmt.where(OrgBlockedIndicator.indicator_value.ilike(f"%{q}%"))
+
+    stmt = stmt.order_by(desc(OrgBlockedIndicator.blocked_at))
+    indicators = (await session.execute(stmt)).scalars().all()
+
+    return {
+        "indicators": [
+            {
+                "id": b.id,
+                "organization_id": b.organization_id,
+                "project_id": b.project_id,
+                "indicator_type": b.indicator_type,
+                "indicator_value": b.indicator_value,
+                "reason": b.reason,
+                "blocked_by": b.blocked_by,
+                "blocked_at": b.blocked_at.isoformat(),
+            }
+            for b in indicators
+        ]
+    }
+
+
+@router.post("/orgs/{org_id}/blocked-indicators", status_code=status.HTTP_201_CREATED)
+@router.post("/org/{org_id}/blocked-indicators", status_code=status.HTTP_201_CREATED)
+async def add_blocked_indicator(
+    org_id: str,
+    req: CreateBlockedIndicatorRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session, min_role="analyst")
+    val = req.indicator_value.strip()
+
+    # Check duplicate
+    existing = await session.scalar(
+        select(OrgBlockedIndicator).where(
+            OrgBlockedIndicator.organization_id == org_id,
+            OrgBlockedIndicator.indicator_type == req.indicator_type,
+            OrgBlockedIndicator.indicator_value == val,
+        )
+    )
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Indicator '{val}' of type '{req.indicator_type}' is already blocked",
+        )
+
+    blocked = OrgBlockedIndicator(
+        id=str(uuid.uuid4()),
+        organization_id=org_id,
+        project_id=req.project_id,
+        indicator_type=req.indicator_type,
+        indicator_value=val,
+        reason=req.reason,
+        blocked_by=user.id,
+        blocked_at=datetime.now(timezone.utc),
+    )
+    session.add(blocked)
+    await session.commit()
+
+    return {
+        "id": blocked.id,
+        "organization_id": blocked.organization_id,
+        "indicator_type": blocked.indicator_type,
+        "indicator_value": blocked.indicator_value,
+        "reason": blocked.reason,
+        "blocked_by": blocked.blocked_by,
+        "blocked_at": blocked.blocked_at.isoformat(),
+    }
+
+
+@router.delete("/orgs/{org_id}/blocked-indicators/{indicator_id}")
+@router.delete("/org/{org_id}/blocked-indicators/{indicator_id}")
+async def delete_blocked_indicator(
+    org_id: str,
+    indicator_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session, min_role="analyst")
+    indicator = await session.get(OrgBlockedIndicator, indicator_id)
+    if not indicator or indicator.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Blocked indicator not found")
+
+    await session.delete(indicator)
+    await session.commit()
+    return {"status": "deleted", "id": indicator_id}
+
+
+# ─────────────────────────────────────────────────────────────
+# 6. Counters Initial Seed (Single aggregate SQL seed query)
+# ─────────────────────────────────────────────────────────────
+
+
+@router.get("/orgs/{org_id}/projects/{project_id}/counters/initial")
+@router.get("/org/{org_id}/projects/{project_id}/counters/initial")
+async def get_initial_counters(
+    org_id: str,
+    project_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Seed fetch for live counters.
+
+    Frontend calls this once on mount, then relies strictly on Supabase Realtime
+    for incremental updates (zero polling).
+    """
+    await _get_org_and_role(org_id, user.id, session)
+
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    agg_sql = text("""
+        SELECT
+            count(*) FILTER (WHERE created_at >= :since) AS total_24h,
+            count(*) FILTER (WHERE created_at >= :since AND severity = 'critical') AS sev_critical,
+            count(*) FILTER (WHERE created_at >= :since AND severity = 'high') AS sev_high,
+            count(*) FILTER (WHERE created_at >= :since AND severity = 'medium') AS sev_medium,
+            count(*) FILTER (WHERE created_at >= :since AND severity = 'low') AS sev_low,
+            count(*) FILTER (WHERE created_at >= :since AND event_type = 'log_event') AS type_log,
+            count(*) FILTER (WHERE created_at >= :since AND event_type = 'ato_event') AS type_ato,
+            count(*) FILTER (WHERE created_at >= :since AND event_type = 'network_event') AS type_network,
+            count(*) FILTER (WHERE verdict = 'pending_review') AS pending_review
+        FROM cyberguard.org_events
+        WHERE organization_id = :org_id AND project_id = :project_id;
+    """)
+    res = await session.execute(agg_sql, {
+        "org_id": org_id,
+        "project_id": project_id,
+        "since": since,
+    })
+    row = res.mappings().first() or {}
+
+    blocked_count = await session.scalar(
+        select(func.count(OrgBlockedIndicator.id)).where(
+            OrgBlockedIndicator.organization_id == org_id
+        )
+    ) or 0
+
+    return {
+        "total_24h": int(row.get("total_24h") or 0),
+        "by_severity": {
+            "critical": int(row.get("sev_critical") or 0),
+            "high": int(row.get("sev_high") or 0),
+            "medium": int(row.get("sev_medium") or 0),
+            "low": int(row.get("sev_low") or 0),
+        },
+        "by_type": {
+            "log": int(row.get("type_log") or 0),
+            "ato": int(row.get("type_ato") or 0),
+            "network": int(row.get("type_network") or 0),
+        },
+        "pending_review": int(row.get("pending_review") or 0),
+        "blocked_indicators_count": int(blocked_count),
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# 7. Dashboard Overview Endpoint
+# ─────────────────────────────────────────────────────────────
+
+
+@router.get("/orgs/{org_id}/dashboard")
+@router.get("/org/{org_id}/dashboard")
+async def get_organization_dashboard(
+    org_id: str,
+    project_id: Optional[str] = None,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _get_org_and_role(org_id, user.id, session)
+
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    # Base query for events
+    stmt_base = select(OrgEvent).where(OrgEvent.organization_id == org_id)
+    if project_id:
+        stmt_base = stmt_base.where(OrgEvent.project_id == project_id)
+
+    # Aggregate counts
+    agg_sql = text("""
+        SELECT
+            count(*) FILTER (WHERE created_at >= :since) AS total_24h,
+            count(*) FILTER (WHERE created_at >= :since AND event_type = 'log_event') AS count_log,
+            count(*) FILTER (WHERE created_at >= :since AND event_type = 'ato_event') AS count_ato,
+            count(*) FILTER (WHERE created_at >= :since AND event_type = 'network_event') AS count_network,
+            count(*) FILTER (WHERE created_at >= :since AND severity = 'critical') AS sev_critical,
+            count(*) FILTER (WHERE created_at >= :since AND severity = 'high') AS sev_high,
+            count(*) FILTER (WHERE created_at >= :since AND severity = 'medium') AS sev_medium,
+            count(*) FILTER (WHERE created_at >= :since AND severity = 'low') AS sev_low,
+            count(*) FILTER (WHERE verdict = 'pending_review') AS pending_count,
+            max(created_at) AS last_event_at
+        FROM cyberguard.org_events
+        WHERE organization_id = :org_id
+        """ + (" AND project_id = :project_id" if project_id else "") + ";"
+    )
+    params: dict[str, Any] = {"org_id": org_id, "since": since}
+    if project_id:
+        params["project_id"] = project_id
+
+    agg_res = await session.execute(agg_sql, params)
+    row = agg_res.mappings().first() or {}
+
+    # Blocked indicators count
+    blocked_count = await session.scalar(
+        select(func.count(OrgBlockedIndicator.id)).where(
+            OrgBlockedIndicator.organization_id == org_id
+        )
+    ) or 0
+
+    # Recent 10 events
+    recent_stmt = (
+        stmt_base.order_by(desc(OrgEvent.created_at))
+        .limit(10)
+    )
+    recent_events = (await session.execute(recent_stmt)).scalars().all()
+
+    last_event_at = row.get("last_event_at")
+
+    return {
+        "analyzers": {
+            "log": {
+                "name": "Log Analysis",
+                "engine": "org_log_analyzer",
+                "available": True,
+                "count_24h": int(row.get("count_log") or 0),
+            },
+            "ato": {
+                "name": "Account Takeover",
+                "engine": "account_takeover_detector",
+                "available": True,
+                "count_24h": int(row.get("count_ato") or 0),
+            },
+            "network": {
+                "name": "Network Threat",
+                "engine": "network_threat_detector",
+                "available": True,
+                "count_24h": int(row.get("count_network") or 0),
+            },
+        },
+        "total_24h": int(row.get("total_24h") or 0),
+        "severity_mix": {
+            "critical": int(row.get("sev_critical") or 0),
+            "high": int(row.get("sev_high") or 0),
+            "medium": int(row.get("sev_medium") or 0),
+            "low": int(row.get("sev_low") or 0),
+        },
+        "pending_review": int(row.get("pending_count") or 0),
+        "blocked_indicators_count": int(blocked_count),
+        "last_event_at": last_event_at.isoformat() if last_event_at else None,
+        "recent_events": [
+            {
+                "id": e.id,
+                "project_id": e.project_id,
+                "event_type": e.event_type,
+                "severity": e.severity,
+                "verdict": e.verdict,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in recent_events
+        ],
+    }

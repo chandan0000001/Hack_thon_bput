@@ -432,47 +432,12 @@ async def run_tests():
     await run_phase_6_7_tests(runner)
 
     # -----------------------------------------------------------------------
-    # 17. ORG-1 — Organization Foundation (salting, API keys, gateway, RBAC, RLS)
+    # 45. ORG-REBUILD — Organization System Rebuild (3-level architecture)
     # -----------------------------------------------------------------------
-    print("\n[Suite 17] ORG-1 — Organization Foundation")
-    from test_org_foundation import run_org_foundation_tests
+    print("\n[Suite 45] ORG-REBUILD — Organization System 3-Level Architecture")
+    from test_org_rebuild import run_org_rebuild_tests
 
-    await run_org_foundation_tests(runner)
-
-    # -----------------------------------------------------------------------
-    # 18. ORG-2 — Dashboards + Splunk Log Analysis (summary, feeds, ingest,
-    #     stream, manual actions, RBAC, isolation)
-    # -----------------------------------------------------------------------
-    print("\n[Suite 18] ORG-2 — Dashboards + Live Log Analysis")
-    from test_org_dashboards import run_org_dashboard_tests
-
-    await run_org_dashboard_tests(runner)
-
-    # -----------------------------------------------------------------------
-    # 19. ORG-3 — Mail Server Connectors (server-to-server, per-server
-    #     logs/settings, graceful disconnect, encrypted credentials)
-    # -----------------------------------------------------------------------
-    print("\n[Suite 19] ORG-3 — Mail Server Connectors")
-    from test_org_mail_connectors import run_org_mail_tests
-
-    await run_org_mail_tests(runner)
-
-    # -----------------------------------------------------------------------
-    # 20. ORG-4 — Email Notification Groups (role-grouped recipients, event
-    #     routing, triggers, delivery logs)
-    # -----------------------------------------------------------------------
-    print("\n[Suite 20] ORG-4 — Email Notification Groups")
-    from test_org_notifications import run_org_notification_tests
-
-    await run_org_notification_tests(runner)
-
-    # -----------------------------------------------------------------------
-    # 21. ORG-5 — Realtime policy tightening (gated authenticated SELECT)
-    # -----------------------------------------------------------------------
-    print("\n[Suite 21] ORG-5 — Realtime Policy Tightening")
-    from test_org_realtime_policies import run_realtime_policy_tests
-
-    await run_realtime_policy_tests(runner)
+    await run_org_rebuild_tests(runner)
 
     # -----------------------------------------------------------------------
     # 22. RT-1 — Real-time Pipeline Infrastructure (Redis, Arq, Docker, workers)
@@ -1030,40 +995,6 @@ async def run_tests():
         )
 
     await run_se_pattern_tests()
-
-    # -----------------------------------------------------------------------
-    # 38. ORG-FIX-1 — DB-level RLS tenant isolation (no permissive bypass)
-    # -----------------------------------------------------------------------
-    print("\n[Suite 38] ORG-FIX-1 — DB-Level RLS Tenant Isolation")
-    from test_org_rls_isolation import run_org_rls_isolation_tests
-
-    await run_org_rls_isolation_tests(runner)
-
-    # -----------------------------------------------------------------------
-    # 39. ORG-WIRE — org-stamped pipeline events, org-branch RLS, fan-out,
-    #     gateway log linkage
-    # -----------------------------------------------------------------------
-    print("\n[Suite 39] ORG-WIRE — Org-Stamped Pipeline + Org-Branch RLS + Fan-Out")
-    from test_org_wire import run_org_wire_tests
-
-    await run_org_wire_tests(runner)
-
-    # -----------------------------------------------------------------------
-    # 40. ORG-REDESIGN — projects, project-scoped API keys, project gateway,
-    #     project RLS
-    # -----------------------------------------------------------------------
-    print("\n[Suite 40] ORG-REDESIGN — Projects + Project-Scoped API Keys + Gateway")
-    from test_org_redesign import run_org_redesign_tests
-
-    await run_org_redesign_tests(runner)
-
-    # -----------------------------------------------------------------------
-    # 41. ORG-LIVE-VIEWS — feature streams, ingestion status, project scoping
-    # -----------------------------------------------------------------------
-    print("\n[Suite 41] ORG-LIVE-VIEWS — Monitored Event Streams")
-    from test_org_streams import run_org_streams_tests
-
-    await run_org_streams_tests(runner)
 
     # -----------------------------------------------------------------------
     # 42. GMAIL-RECONNECT-UX — Disconnect=stop, Reconnect=start, Recently Connected
