@@ -474,6 +474,15 @@ export default function Login() {
           )}
         </div>
 
+        <div className="mt-4 text-center">
+          <Link
+            to="/org/entry"
+            className="text-xs text-zinc-400 transition hover:text-red-400"
+          >
+            Organization login →
+          </Link>
+        </div>
+
         <p className="mt-6 text-center text-[11px] text-zinc-500">
           CyberGuard SOC Platform • End-to-End Encrypted Sessions • Multi-Tenant RBAC
         </p>

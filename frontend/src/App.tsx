@@ -1,4 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { Loader2 } from 'lucide-react';
 import MainLayout from './components/layout/MainLayout';
 import ProtectedRoute from './components/layout/ProtectedRoute';
 import RoleGuard from './components/layout/RoleGuard';
@@ -34,10 +35,37 @@ import LogAnalysis from './pages/LogAnalysis';
 import AccountTakeover from './pages/AccountTakeover';
 import NetworkThreats from './pages/NetworkThreats';
 
+// Org window modules
+import OrgEntry from './pages/OrgEntry';
+import OrgSelector from './pages/OrgSelector';
+import ProjectSelector from './pages/ProjectSelector';
+import { useAuthStore } from './store/authStore';
+
 /**
  * Workspace guard: pass-through for personal workspace.
  */
 function WorkspaceGuard({ children }: { path?: string; children: React.ReactNode }) {
+  return <>{children}</>;
+}
+
+/**
+ * Org route guard: redirects unauthenticated users to /org/entry.
+ */
+function OrgGuard({ children }: { children: React.ReactNode }) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const hydrated = useAuthStore((s) => s.hydrated);
+
+  if (!hydrated) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-950">
+        <Loader2 className="h-6 w-6 animate-spin text-red-500" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/org/entry" replace />;
+  }
   return <>{children}</>;
 }
 
@@ -47,6 +75,32 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+
+        {/* Org window routes */}
+        <Route path="/org/entry" element={<OrgEntry />} />
+        <Route
+          path="/org/select"
+          element={
+            <OrgGuard>
+              <OrgSelector />
+            </OrgGuard>
+          }
+        />
+        <Route
+          path="/org/:orgId/projects"
+          element={
+            <OrgGuard>
+              <ProjectSelector />
+            </OrgGuard>
+          }
+        />
+
+        {/* Org redirects for root / legacy URLs */}
+        <Route path="/org" element={<Navigate to="/org/select" replace />} />
+        <Route path="/organization" element={<Navigate to="/org/select" replace />} />
+        <Route path="/org/*" element={<Navigate to="/dashboard" replace />} />
+
+        {/* Personal workspace protected routes */}
         <Route
           element={
             <ProtectedRoute>
@@ -156,11 +210,6 @@ export default function App() {
               </WorkspaceGuard>
             }
           />
-
-          {/* Org UI teardown: catch-all redirects for old org paths → /dashboard */}
-          <Route path="/org" element={<Navigate to="/dashboard" replace />} />
-          <Route path="/org/*" element={<Navigate to="/dashboard" replace />} />
-          <Route path="/organization" element={<Navigate to="/dashboard" replace />} />
 
           {/* System */}
           <Route

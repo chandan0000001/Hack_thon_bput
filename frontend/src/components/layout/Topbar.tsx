@@ -18,6 +18,8 @@ const ROUTE_TITLES: [RegExp, string][] = [
   [/^\/incidents/, 'Incident Management'],
   [/^\/response-actions/, 'Response Actions'],
   [/^\/audit-logs/, 'Audit Logs'],
+  [/^\/org\/select/, 'Organizations'],
+  [/^\/org\/.+\/projects/, 'Projects'],
   [/^\/reports/, 'Reports & Export'],
   [/^\/settings/, 'Settings'],
 ];
@@ -25,6 +27,8 @@ const ROUTE_TITLES: [RegExp, string][] = [
 export default function Topbar() {
   const location = useLocation();
   const user = useAuthStore((s) => s.user);
+  const activeOrganization = useAuthStore((s) => s.activeOrganization);
+  const activeProject = useAuthStore((s) => s.activeProject);
   const logout = useAuthStore((s) => s.logout);
 
   const liveSimulation = useUiStore((s) => s.liveSimulation);
@@ -55,6 +59,19 @@ export default function Topbar() {
       <h1 className="text-base font-semibold text-zinc-100">{title}</h1>
 
       <div className="flex items-center gap-3">
+        {/* Selection state visible in Topbar chip (org name › project name) */}
+        {activeOrganization && (
+          <span className="flex items-center gap-1.5 rounded-md bg-zinc-950 px-2.5 py-1 font-mono text-[11px] text-zinc-300 ring-1 ring-zinc-800">
+            <span className="font-semibold text-zinc-200">{activeOrganization.name}</span>
+            {activeProject && (
+              <>
+                <span className="text-zinc-600">›</span>
+                <span className="font-semibold text-red-400">{activeProject.name}</span>
+              </>
+            )}
+          </span>
+        )}
+
         {/* Live backend badge */}
         <span className="rounded-md bg-red-500/15 px-2.5 py-1 font-mono text-[11px] font-bold tracking-wider text-red-400 ring-1 ring-red-500/40">
           CLOUD SOC

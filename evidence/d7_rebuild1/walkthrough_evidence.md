@@ -1,0 +1,550 @@
+# ORG-UX-REBUILD-1 Browser Verification Evidence
+
+## 01_org_entry
+```yaml
+- link "Personal login":
+  - /url: /login
+  - img
+  - text: Personal login
+- img
+- heading "CYBERGUARD" [level=1]
+- paragraph: Organization Security Operations Center
+- button "Sign In"
+- button "Register"
+- text: ORGANIZATION ACCESS Sign In
+- button "Continue with Google":
+  - img
+  - text: Continue with Google
+- button "Continue with GitHub":
+  - img
+  - text: Continue with GitHub
+- text: OR CONTINUE WITH EMAIL Email or Username
+- img
+- textbox "you@company.com or alex.mercer"
+- text: Password
+- img
+- textbox "••••••••"
+- button "Sign In to Organization"
+- paragraph: CyberGuard SOC Platform • End-to-End Encrypted Sessions • Multi-Tenant RBAC
+```
+
+## 02_personal_login
+```yaml
+- link "Back to Overview":
+  - /url: /
+  - img
+  - text: Back to Overview
+- img
+- heading "CYBERGUARD" [level=1]
+- paragraph: AI-Powered Cyber Threat & SOAR Command Center
+- button "Sign In"
+- button "Register"
+- button "Reset"
+- text: ENTERPRISE SOC MODE Supabase Auth Connected
+- button "Continue with Google":
+  - img
+  - text: Continue with Google
+- button "Continue with GitHub":
+  - img
+  - text: Continue with GitHub
+- text: OR CONTINUE WITH EMAIL Email or Username
+- img
+- textbox "you@company.com or alex.mercer"
+- text: Password
+- button "Forgot password?"
+- img
+- textbox "••••••••"
+- button "Sign In to Workspace"
+- link "Organization login →":
+  - /url: /org/entry
+- paragraph: CyberGuard SOC Platform • End-to-End Encrypted Sessions • Multi-Tenant RBAC
+```
+
+## 03_register_filled
+```yaml
+- link "Personal login":
+  - /url: /login
+  - img
+  - text: Personal login
+- img
+- heading "CYBERGUARD" [level=1]
+- paragraph: Organization Security Operations Center
+- button "Sign In"
+- button "Register"
+- text: ORGANIZATION ACCESS Step 1 of 2
+- button "Continue with Google":
+  - img
+  - text: Continue with Google
+- button "Continue with GitHub":
+  - img
+  - text: Continue with GitHub
+- text: OR CONTINUE WITH EMAIL Username
+- img
+- textbox "alex.mercer": sec.lead.tf5ja
+- paragraph: Checking availability...
+- text: Full Name
+- img
+- textbox "Alex Mercer": Security Lead
+- text: Email Address
+- img
+- textbox "analyst@yourcompany.com": lead.tf5ja@apex-sec.local
+- text: Password
+- img
+- textbox "••••••••": Password123!
+- text: Confirm Password
+- img
+- textbox "••••••••": Password123!
+- 'button "Next: Organization Setup"':
+  - text: "Next: Organization Setup"
+  - img
+- paragraph: CyberGuard SOC Platform • End-to-End Encrypted Sessions • Multi-Tenant RBAC
+```
+
+## 04_org_name_step
+```yaml
+- link "Personal login":
+  - /url: /login
+  - img
+  - text: Personal login
+- img
+- heading "CYBERGUARD" [level=1]
+- paragraph: Organization Security Operations Center
+- text: "ORGANIZATION ACCESS Step 2: Organization Organization Name"
+- img
+- textbox "Acme Cyber Defense": Apex Cyber Defense
+- paragraph: "Slug: apex-cyber-defense"
+- button "Back"
+- button "Create organization"
+- paragraph: CyberGuard SOC Platform • End-to-End Encrypted Sessions • Multi-Tenant RBAC
+```
+
+## 05_org_select
+```yaml
+- banner:
+  - heading "Organizations" [level=1]
+  - text: Apex Cyber Defense › Default Project CLOUD SOC
+  - button "Live Alerts"
+  - button "Security Lead":
+    - img
+    - text: Security Lead
+    - img
+- main:
+  - heading "Your organizations" [level=2]
+  - paragraph: Select an organization to manage projects and security operations.
+  - button "+ New organization":
+    - img
+    - text: + New organization
+  - img
+  - textbox "Search organizations..."
+  - img
+  - text: admin
+  - heading "Apex Cyber Defense" [level=3]
+  - paragraph: 1 project
+```
+
+## 06_projects_view
+```yaml
+- banner:
+  - heading "Projects" [level=1]
+  - text: Apex Cyber Defense › Default Project CLOUD SOC
+  - button "Live Alerts"
+  - button "Security Lead":
+    - img
+    - text: Security Lead
+    - img
+- main:
+  - link "All organizations":
+    - /url: /org/select
+    - img
+    - text: All organizations
+  - heading "Projects" [level=2]
+  - paragraph: "Organization: Apex Cyber Defense"
+  - button "+ New project":
+    - img
+    - text: + New project
+  - img
+  - textbox "Search projects..."
+  - combobox:
+    - 'option "Status: All" [selected]'
+    - 'option "Status: Active"'
+    - 'option "Status: Archived"'
+  - combobox:
+    - 'option "Sort: Created" [selected]'
+    - 'option "Sort: Name"'
+  - button "Grid view":
+    - img
+  - button "List view":
+    - img
+  - img
+```
+
+## 07_new_project_modal
+```yaml
+- banner:
+  - heading "Projects" [level=1]
+  - text: Apex Cyber Defense › Default Project CLOUD SOC
+  - button "Live Alerts"
+  - button "Security Lead":
+    - img
+    - text: Security Lead
+    - img
+- main:
+  - link "All organizations":
+    - /url: /org/select
+    - img
+    - text: All organizations
+  - heading "Projects" [level=2]
+  - paragraph: "Organization: Apex Cyber Defense"
+  - button "+ New project":
+    - img
+    - text: + New project
+  - img
+  - textbox "Search projects..."
+  - combobox:
+    - 'option "Status: All" [selected]'
+    - 'option "Status: Active"'
+    - 'option "Status: Archived"'
+  - combobox:
+    - 'option "Sort: Created" [selected]'
+    - 'option "Sort: Name"'
+  - button "Grid view":
+    - img
+  - button "List view":
+    - img
+  - img
+  - heading "Default Project" [level=3]
+  - text: Active active
+  - button:
+    - img
+  - paragraph: default
+- heading "Create project" [level=3]
+- button:
+  - img
+- text: Project Name
+- img
+- textbox "Core Defense SOC": Perimeter Sentinel
+- paragraph: "Slug: perimeter-sentinel"
+- button "Cancel"
+- button "Create project"
+```
+
+## 08_project_created
+```yaml
+- banner:
+  - heading "Projects" [level=1]
+  - text: Apex Cyber Defense › Perimeter Sentinel CLOUD SOC
+  - button "Live Alerts"
+  - button "Security Lead":
+    - img
+    - text: Security Lead
+    - img
+- main:
+  - link "All organizations":
+    - /url: /org/select
+    - img
+    - text: All organizations
+  - heading "Projects" [level=2]
+  - paragraph: "Organization: Apex Cyber Defense"
+  - button "+ New project":
+    - img
+    - text: + New project
+  - img
+  - textbox "Search projects..."
+  - combobox:
+    - 'option "Status: All" [selected]'
+    - 'option "Status: Active"'
+    - 'option "Status: Archived"'
+  - combobox:
+    - 'option "Sort: Created" [selected]'
+    - 'option "Sort: Name"'
+  - button "Grid view":
+    - img
+  - button "List view":
+    - img
+  - img
+  - heading "Perimeter Sentinel" [level=3]
+  - text: Active active
+  - button:
+    - img
+  - paragraph: perimeter-sentinel
+  - img
+  - heading "Default Project" [level=3]
+  - text: active
+  - button:
+    - img
+  - paragraph: default
+```
+
+## 09_project_activated
+```yaml
+- banner:
+  - heading "Projects" [level=1]
+  - text: Apex Cyber Defense › Perimeter Sentinel CLOUD SOC
+  - button "Live Alerts"
+  - button "Security Lead":
+    - img
+    - text: Security Lead
+    - img
+- main:
+  - link "All organizations":
+    - /url: /org/select
+    - img
+    - text: All organizations
+  - heading "Projects" [level=2]
+  - paragraph: "Organization: Apex Cyber Defense"
+  - button "+ New project":
+    - img
+    - text: + New project
+  - img
+  - textbox "Search projects..."
+  - combobox:
+    - 'option "Status: All" [selected]'
+    - 'option "Status: Active"'
+    - 'option "Status: Archived"'
+  - combobox:
+    - 'option "Sort: Created" [selected]'
+    - 'option "Sort: Name"'
+  - button "Grid view":
+    - img
+  - button "List view":
+    - img
+  - img
+  - heading "Perimeter Sentinel" [level=3]
+  - text: Active active
+  - button:
+    - img
+  - paragraph: perimeter-sentinel
+  - img
+  - heading "Default Project" [level=3]
+  - text: active
+  - button:
+    - img
+  - paragraph: default
+```
+
+## 10_reload_persists
+```yaml
+- banner:
+  - heading "Projects" [level=1]
+  - text: Apex Cyber Defense › Perimeter Sentinel CLOUD SOC
+  - button "Live Alerts"
+  - button "Security Lead":
+    - img
+    - text: Security Lead
+    - img
+- main:
+  - link "All organizations":
+    - /url: /org/select
+    - img
+    - text: All organizations
+  - heading "Projects" [level=2]
+  - paragraph: "Organization: Apex Cyber Defense"
+  - button "+ New project":
+    - img
+    - text: + New project
+  - img
+  - textbox "Search projects..."
+  - combobox:
+    - 'option "Status: All" [selected]'
+    - 'option "Status: Active"'
+    - 'option "Status: Archived"'
+  - combobox:
+    - 'option "Sort: Created" [selected]'
+    - 'option "Sort: Name"'
+  - button "Grid view":
+    - img
+  - button "List view":
+    - img
+  - img
+  - heading "Perimeter Sentinel" [level=3]
+  - text: Active active
+  - button:
+    - img
+  - paragraph: perimeter-sentinel
+  - img
+  - heading "Default Project" [level=3]
+  - text: active
+  - button:
+    - img
+  - paragraph: default
+```
+
+## 11_archive_modal
+```yaml
+- banner:
+  - heading "Projects" [level=1]
+  - text: Apex Cyber Defense › Perimeter Sentinel CLOUD SOC
+  - button "Live Alerts"
+  - button "Security Lead":
+    - img
+    - text: Security Lead
+    - img
+- main:
+  - link "All organizations":
+    - /url: /org/select
+    - img
+    - text: All organizations
+  - heading "Projects" [level=2]
+  - paragraph: "Organization: Apex Cyber Defense"
+  - button "+ New project":
+    - img
+    - text: + New project
+  - img
+  - textbox "Search projects..."
+  - combobox:
+    - 'option "Status: All" [selected]'
+    - 'option "Status: Active"'
+    - 'option "Status: Archived"'
+  - combobox:
+    - 'option "Sort: Created" [selected]'
+    - 'option "Sort: Name"'
+  - button "Grid view":
+    - img
+  - button "List view":
+    - img
+  - img
+  - heading "Perimeter Sentinel" [level=3]
+  - text: Active active
+  - button:
+    - img
+  - paragraph: perimeter-sentinel
+  - img
+  - heading "Default Project" [level=3]
+  - text: active
+  - button:
+    - img
+  - paragraph: default
+- heading "Archive project" [level=3]
+- paragraph: Are you sure you want to archive Perimeter Sentinel?
+- button "Cancel"
+- button "Archive"
+```
+
+## 12_archived_result
+```yaml
+- banner:
+  - heading "Projects" [level=1]
+  - text: Apex Cyber Defense CLOUD SOC
+  - button "Live Alerts"
+  - button "Security Lead":
+    - img
+    - text: Security Lead
+    - img
+- main:
+  - link "All organizations":
+    - /url: /org/select
+    - img
+    - text: All organizations
+  - heading "Projects" [level=2]
+  - paragraph: "Organization: Apex Cyber Defense"
+  - button "+ New project":
+    - img
+    - text: + New project
+  - img
+  - textbox "Search projects..."
+  - combobox:
+    - 'option "Status: All" [selected]'
+    - 'option "Status: Active"'
+    - 'option "Status: Archived"'
+  - combobox:
+    - 'option "Sort: Created" [selected]'
+    - 'option "Sort: Name"'
+  - button "Grid view":
+    - img
+  - button "List view":
+    - img
+  - img
+  - heading "Perimeter Sentinel" [level=3]
+  - text: archived
+  - button:
+    - img
+  - paragraph: perimeter-sentinel
+  - img
+  - heading "Default Project" [level=3]
+  - text: active
+  - button:
+    - img
+  - paragraph: default
+```
+
+## 13_personal_dashboard
+```yaml
+- complementary:
+  - img
+  - text: CYBERGUARD SOC Command Center
+  - navigation:
+    - paragraph: Analyze
+    - link "Dashboard":
+      - /url: /dashboard
+      - img
+      - text: Dashboard
+    - link "Phishing Analysis":
+      - /url: /phishing
+      - img
+      - text: Phishing Analysis
+    - link "URL Analysis":
+      - /url: /url-analysis
+      - img
+      - text: URL Analysis
+    - link "Impersonation":
+      - /url: /impersonation
+      - img
+      - text: Impersonation
+    - link "Deepfake Detection":
+      - /url: /deepfake
+      - img
+      - text: Deepfake Detection
+    - link "Log Analysis":
+      - /url: /log-analysis
+      - img
+      - text: Log Analysis
+    - paragraph: Email Security
+    - link "Email Connectors":
+      - /url: /email-connectors
+      - img
+      - text: Email Connectors
+    - link "Quarantine Queue":
+      - /url: /quarantine
+      - img
+      - text: Quarantine Queue
+    - link "Blocked Senders":
+      - /url: /blocked-senders
+      - img
+      - text: Blocked Senders
+    - paragraph: History & Audit
+    - link "Security History":
+      - /url: /security-history
+      - img
+      - text: Security History
+    - link "Notification Log":
+      - /url: /notification-log
+      - img
+      - text: Notification Log
+    - paragraph: System
+    - link "Dead Letter Queue":
+      - /url: /dlq
+      - img
+      - text: Dead Letter Queue
+    - link "Settings":
+      - /url: /settings
+      - img
+      - text: Settings
+  - button "SOC Assistant":
+    - img
+    - text: SOC Assistant
+  - button "Collapse Sidebar":
+    - img
+    - text: Collapse Sidebar
+- banner:
+  - heading "Security Operations Center" [level=1]
+  - text: Apex Cyber Defense CLOUD SOC
+  - button "Live Alerts"
+  - button "Security Lead":
+    - img
+    - text: Security Lead
+    - img
+- main:
+  - heading "Security Operations Center" [level=2]
+  - paragraph: Real-time threat monitoring, detection and response overview. Auto-refreshes every 30 seconds.
+```
+

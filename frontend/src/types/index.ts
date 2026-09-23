@@ -30,6 +30,17 @@ export interface Organization {
   created_at?: string;
 }
 
+export type ProjectStatus = 'active' | 'archived';
+
+export interface Project {
+  id: string;
+  organization_id: string;
+  name: string;
+  slug: string;
+  status: ProjectStatus;
+  created_at: string;
+}
+
 export interface UserContext {
   id: string;
   email: string;
