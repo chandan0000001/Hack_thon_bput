@@ -90,6 +90,7 @@ async def find_user_by_email(email: str) -> Optional[dict]:
             "email": user.email,
             "full_name": user.full_name,
             "status": getattr(user, "status", "active") or "active",
+            "account_type": getattr(user, "account_type", "personal") or "personal",
             "username": user.username,
         }
 
@@ -112,6 +113,7 @@ async def precreate_user_for_invite(email: str) -> dict:
                 "email": user.email,
                 "full_name": user.full_name,
                 "status": getattr(user, "status", "active") or "active",
+                "account_type": getattr(user, "account_type", "org") or "org",
                 "username": user.username,
             }
 
@@ -120,6 +122,7 @@ async def precreate_user_for_invite(email: str) -> dict:
             email=clean_email,
             full_name=clean_email.split("@")[0],
             status="invited",
+            account_type="org",
             is_single_user=False,
         )
         session.add(user)
@@ -135,6 +138,7 @@ async def precreate_user_for_invite(email: str) -> dict:
             "email": user.email,
             "full_name": user.full_name,
             "status": getattr(user, "status", "active") or "active",
+            "account_type": getattr(user, "account_type", "org") or "org",
             "username": user.username,
         }
 

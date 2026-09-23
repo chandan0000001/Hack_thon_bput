@@ -132,6 +132,19 @@ export default function Login() {
     return () => clearTimeout(t);
   }, [username, mode, step]);
 
+  // Check for error query param (e.g. from OAuth callback redirect)
+  useEffect(() => {
+    const errorParam = searchParams.get('error');
+    if (errorParam === 'account_type_mismatch') {
+      setAuthError({
+        error: 'account_type_mismatch',
+        message: 'This email is registered as an organization account.',
+        hint: 'use_org_mode',
+      });
+      setError(null);
+    }
+  }, [searchParams]);
+
   const resetMessages = () => {
     setError(null);
     setNotice(null);
@@ -143,18 +156,42 @@ export default function Login() {
     setAuthMode(newTarget);
     setStep('auth');
     if (newTarget === 'org') {
-      if (mode === 'forgot') setMode('signin');
       setSearchParams((prev) => {
         const p = new URLSearchParams(prev);
         p.set('mode', 'org');
+        p.delete('error');
         return p;
       });
     } else {
       setSearchParams((prev) => {
         const p = new URLSearchParams(prev);
         p.delete('mode');
+        p.delete('error');
         return p;
       });
+    }
+  };
+
+  const handleSwitchToOrg = () => {
+    const preservedEmail = email;
+    setAuthMode('org');
+    setStep('auth');
+    setMode('signin');
+    setEmail(preservedEmail);
+    resetMessages();
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev);
+      p.set('mode', 'org');
+      p.delete('error');
+      return p;
+    });
+  };
+
+  const handleAuthErrorAction = () => {
+    if (authError?.hint === 'use_org_mode' || authError?.error === 'account_type_mismatch') {
+      handleSwitchToOrg();
+    } else {
+      switchMode('signin');
     }
   };
 
@@ -168,7 +205,7 @@ export default function Login() {
     setLoading(true);
     resetMessages();
     try {
-      await login(emailOverride || email, password);
+      await login(emailOverride || email, password, authMode);
       if (authMode === 'org') {
         const orgs = await fetchOrganizations();
         if (orgs.length > 0) {
@@ -177,11 +214,26 @@ export default function Login() {
           setStep('org-name');
         }
       } else {
-        // Personal mode: ALWAYS navigate /dashboard
-        navigate('/dashboard', { replace: true });
+        // Personal mode: check if authenticated user is org-type
+        const currentUser = useAuthStore.getState().user;
+        if (currentUser?.account_type === 'org') {
+          navigate('/org/select', { replace: true });
+        } else {
+          navigate('/dashboard', { replace: true });
+        }
       }
     } catch (err: any) {
-      if (err instanceof AuthApiError && err.status === 409 && err.code === 'email_exists') {
+      if (
+        (err instanceof AuthApiError && (err.status === 403 || err.code === 'account_type_mismatch')) ||
+        (err instanceof Error && err.message.toLowerCase().includes('organization account'))
+      ) {
+        setAuthError({
+          error: 'account_type_mismatch',
+          message: 'This email is registered as an organization account.',
+          hint: 'use_org_mode',
+        });
+        setError(null);
+      } else if (err instanceof AuthApiError && err.status === 409 && err.code === 'email_exists') {
         setAuthError({
           error: err.code,
           message: err.message,
@@ -336,10 +388,18 @@ export default function Login() {
       return;
     }
     setLoading(true);
+    resetMessages();
     try {
-      await requestPasswordReset(email);
-      resetMessages();
-      setNotice('Password reset link sent! Check your inbox for recovery instructions.');
+      const redirectUrl =
+        authMode === 'org'
+          ? `${window.location.origin}/login?mode=org`
+          : `${window.location.origin}/reset-password`;
+      await requestPasswordReset(email, redirectUrl);
+      setNotice(
+        authMode === 'org'
+          ? `If an account exists for ${email}, a reset link has been sent. Check your inbox.`
+          : 'Password reset link sent! Check your inbox for recovery instructions.'
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not send reset email');
     } finally {
@@ -456,17 +516,15 @@ export default function Login() {
               >
                 Register
               </button>
-              {authMode === 'personal' && (
-                <button
-                  type="button"
-                  onClick={() => switchMode('forgot')}
-                  className={`flex-1 rounded-md py-1.5 text-xs font-semibold transition ${
-                    mode === 'forgot' ? 'bg-red-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  Reset
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => switchMode('forgot')}
+                className={`flex-1 rounded-md py-1.5 text-xs font-semibold transition ${
+                  mode === 'forgot' ? 'bg-red-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Reset
+              </button>
             </div>
           )}
 
@@ -474,14 +532,29 @@ export default function Login() {
           {authMode === 'personal' ? (
             <div className="mb-5 flex items-center justify-between rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs">
               <span className="font-mono text-[11px] font-bold text-red-400">ENTERPRISE SOC MODE</span>
-              <span className="text-[10px] text-zinc-400">Supabase Auth Connected</span>
+              <span className="text-[10px] text-zinc-400">
+                {mode === 'forgot' ? 'Password Reset' : 'Supabase Auth Connected'}
+              </span>
             </div>
           ) : (
-            <div className="mb-5 flex items-center justify-between rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs">
-              <span className="font-mono text-[11px] font-bold text-red-400">ORGANIZATION ACCESS</span>
-              <span className="text-[10px] text-zinc-400">
-                {step === 'auth' ? (mode === 'signin' ? 'Sign In' : 'Step 1 of 2') : 'Step 2: Organization'}
-              </span>
+            <div className="mb-5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-[11px] font-bold text-red-400">ORGANIZATION ACCESS</span>
+                <span className="text-[10px] text-zinc-400">
+                  {step === 'auth'
+                    ? mode === 'signin'
+                      ? 'Sign In'
+                      : mode === 'forgot'
+                      ? 'Password Reset'
+                      : 'Step 1 of 2'
+                    : 'Step 2: Organization'}
+                </span>
+              </div>
+              {mode === 'forgot' && step === 'auth' && (
+                <p className="mt-1.5 text-[11px] text-zinc-300">
+                  Enter your work email to receive a password reset link.
+                </p>
+              )}
             </div>
           )}
 
@@ -677,33 +750,54 @@ export default function Login() {
                 </div>
               )}
 
-              {notice && (
-                <div className="flex items-start gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-300">
-                  <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-emerald-400 mt-0.5" />
-                  <span>{notice}</span>
+              {notice && mode === 'forgot' && authMode === 'org' ? (
+                <div className="space-y-4">
+                  <div className="flex items-start gap-2.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3.5 text-xs text-emerald-300">
+                    <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-emerald-400 mt-0.5" />
+                    <span className="leading-relaxed">{notice}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetMessages();
+                      switchMode('signin');
+                    }}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white shadow-lg shadow-red-600/20 transition hover:bg-red-500"
+                  >
+                    Back to Organization Sign In
+                  </button>
                 </div>
+              ) : (
+                <>
+                  {notice && (
+                    <div className="flex items-start gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-300">
+                      <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-emerald-400 mt-0.5" />
+                      <span>{notice}</span>
+                    </div>
+                  )}
+
+                  <AuthErrorBanner
+                    errorInfo={authError}
+                    onAction={handleAuthErrorAction}
+                  />
+
+                  {error && !authError && (
+                    <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-400">
+                      {error}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={loading || oauthLoading !== null}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white shadow-lg shadow-red-600/20 transition hover:bg-red-500 disabled:opacity-60"
+                  >
+                    {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {loading ? 'Processing...' : submitLabel}
+                    {!loading && authMode === 'org' && mode === 'signup' && <ChevronRight className="h-4 w-4" />}
+                  </button>
+                </>
               )}
-
-              <AuthErrorBanner
-                errorInfo={authError}
-                onAction={() => switchMode('signin')}
-              />
-
-              {error && !authError && (
-                <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-400">
-                  {error}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={loading || oauthLoading !== null}
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white shadow-lg shadow-red-600/20 transition hover:bg-red-500 disabled:opacity-60"
-              >
-                {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-                {loading ? 'Processing...' : submitLabel}
-                {!loading && authMode === 'org' && mode === 'signup' && <ChevronRight className="h-4 w-4" />}
-              </button>
             </form>
           )}
 
@@ -735,7 +829,7 @@ export default function Login() {
 
               <AuthErrorBanner
                 errorInfo={authError}
-                onAction={() => switchMode('signin')}
+                onAction={handleAuthErrorAction}
               />
 
               {error && !authError && (
@@ -767,7 +861,7 @@ export default function Login() {
             </form>
           )}
 
-          {mode === 'forgot' && (
+          {mode === 'forgot' && !(notice && authMode === 'org') && (
             <div className="mt-4 text-center">
               <button
                 type="button"

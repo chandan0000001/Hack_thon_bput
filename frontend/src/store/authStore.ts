@@ -33,7 +33,7 @@ interface AuthState {
   activeOrganization: Organization | null;
   activeProject: Project | null;
 
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, mode?: 'personal' | 'org') => Promise<void>;
   loginWithOAuth: (provider: 'google' | 'github', mode?: 'personal' | 'org') => Promise<void>;
   signUp: (
     fullName: string,
@@ -41,7 +41,7 @@ interface AuthState {
     password: string,
     username: string,
   ) => Promise<{ confirmationPending: boolean }>;
-  requestPasswordReset: (email: string) => Promise<void>;
+  requestPasswordReset: (email: string, redirectTo?: string) => Promise<void>;
   completePasswordReset: (newPassword: string) => Promise<void>;
   logout: () => Promise<void>;
   hydrate: () => Promise<void>;
@@ -60,6 +60,7 @@ export { AuthApiError };
 function toUser(supabaseUser: {
   id: string;
   email?: string | null;
+  account_type?: string;
   user_metadata?: Record<string, any>;
 }): User {
   const email = supabaseUser.email ?? '';
@@ -69,6 +70,7 @@ function toUser(supabaseUser: {
     name: fullName || email.split('@')[0] || 'SOC Analyst',
     email,
     role: 'analyst',
+    account_type: supabaseUser.account_type || (supabaseUser.user_metadata?.account_type as any) || 'personal',
     avatar: supabaseUser.user_metadata?.avatar_url,
   };
 }
@@ -86,17 +88,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   activeOrganization: null,
   activeProject: null,
 
-  login: async (email, password) => {
+  login: async (email, password, mode?: 'personal' | 'org') => {
     // Backend-mediated sign-in: usernames are resolved to emails server-side.
     const res = await fetch(`${BASE_URL}/auth/signin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ identifier: email, password }),
+      body: JSON.stringify({ identifier: email, password, mode: mode || 'personal' }),
     });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
       const detail = errBody.detail || errBody.message || 'Login failed';
-      throw new Error(typeof detail === 'string' ? detail : 'Login failed');
+      throw new AuthApiError(
+        typeof detail === 'string' ? detail : 'Login failed',
+        res.status,
+        errBody.error,
+        errBody.hint
+      );
     }
     const auth = await res.json();
     // Install the session into the Supabase client so token refresh in
@@ -158,9 +165,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     return { confirmationPending: false };
   },
 
-  requestPasswordReset: async (email) => {
+  requestPasswordReset: async (email, redirectTo?: string) => {
+    const targetRedirect = redirectTo || `${window.location.origin}/reset-password`;
     const { error } = await getSupabase().auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo: targetRedirect,
     });
     if (error) throw new Error(error.message);
   },
@@ -356,6 +364,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             ? {
                 ...get().user!,
                 role: activeRole,
+                account_type: data.account_type || get().user!.account_type || 'personal',
                 name: data.full_name || get().user!.name,
               }
             : null,

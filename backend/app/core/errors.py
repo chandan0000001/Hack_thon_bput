@@ -65,6 +65,20 @@ class EmailExistsError(AppError):
         self.hint = hint
 
 
+class AccountTypeMismatchError(AppError):
+    def __init__(
+        self,
+        message: str = "This email is registered as an organization account. Please sign in using Organization mode.",
+        hint: str = "use_org_mode",
+    ):
+        super().__init__(
+            message=message,
+            code="account_type_mismatch",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+        self.hint = hint
+
+
 class ExternalServiceError(AppError):
     def __init__(self, service: str, message: str):
         super().__init__(

@@ -41,7 +41,7 @@ class User(Base):
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True, index=True)
     username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True, index=True)
     status: Mapped[str] = mapped_column(String(20), default="active")  # 'active' | 'invited'
-    account_type: Mapped[str] = mapped_column(String(16), default="user")  # 'user' | 'organization' (frozen)
+    account_type: Mapped[str] = mapped_column(String(16), default="personal")  # 'personal' | 'org'
     # Notification address (Phase 7) — strictly separate from any connected
     # mailbox; system notifications NEVER go to connected mailboxes.
     notification_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

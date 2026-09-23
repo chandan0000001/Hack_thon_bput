@@ -7,6 +7,8 @@ export default function ProtectedRoute({ children }: { children: ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const hydrated = useAuthStore((s) => s.hydrated);
 
+  const user = useAuthStore((s) => s.user);
+
   // Wait for session restoration (Supabase getSession) before deciding.
   if (!hydrated) {
     return (
@@ -19,5 +21,11 @@ export default function ProtectedRoute({ children }: { children: ReactNode }) {
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
+
+  // F4: Org accounts are restricted to the organization window
+  if (user?.account_type === 'org') {
+    return <Navigate to="/org/select" replace />;
+  }
+
   return <>{children}</>;
 }

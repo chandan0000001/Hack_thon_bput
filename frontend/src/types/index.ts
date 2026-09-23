@@ -17,6 +17,7 @@ export interface User {
   name: string;
   email: string;
   role: OrganizationRole;
+  account_type?: 'personal' | 'org' | string;
   avatar?: string;
 }
 

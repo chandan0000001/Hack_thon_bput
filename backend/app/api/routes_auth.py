@@ -10,7 +10,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +19,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
-from app.core.errors import ConflictError, EmailExistsError, PermissionDeniedError, UnauthorizedError, ValidationError
+from app.core.errors import (
+    AccountTypeMismatchError,
+    ConflictError,
+    EmailExistsError,
+    PermissionDeniedError,
+    UnauthorizedError,
+    ValidationError,
+)
 from app.core.security import (
     USERNAME_PATTERN,
     CurrentUser,
@@ -71,6 +79,21 @@ class RegisterOrgRequest(BaseModel):
 class SigninRequest(BaseModel):
     identifier: str = Field(min_length=3, max_length=255)  # email or username
     password: str = Field(min_length=1, max_length=128)
+    mode: Optional[str] = Field(default="personal", max_length=16)
+
+
+class VerifyOtpRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    token: str = Field(min_length=1, max_length=128)
+    type: Optional[str] = "email"
+    mode: Optional[str] = "personal"
+
+
+class OAuthCallbackRequest(BaseModel):
+    code: Optional[str] = None
+    mode: Optional[str] = "personal"
+    email: Optional[str] = None
+    state: Optional[str] = None
 
 
 class NotificationEmailUpdate(BaseModel):
@@ -171,7 +194,7 @@ async def signup(
         id=auth_id,
         email=email,
         username=username,
-        account_type="user",
+        account_type="personal",
         full_name=full_name,
         status="active",
         is_single_user=True,
@@ -290,7 +313,7 @@ async def register_org(
         id=auth_id,
         email=email,
         username=username,
-        account_type="user",
+        account_type="org",
         full_name=full_name,
         status="active",
         is_single_user=False,
@@ -394,6 +417,15 @@ async def signin(payload: SigninRequest) -> dict[str, Any]:
         if not email:
             raise PermissionDeniedError("Invalid email/username or password")
 
+    mode = (payload.mode or "personal").strip().lower()
+
+    # Pre-auth realm check: org accounts rejected in personal auth BEFORE issuing token/session
+    target_user = await find_user_by_email(email)
+    if target_user:
+        account_type = target_user.get("account_type")
+        if mode == "personal" and account_type == "org":
+            raise AccountTypeMismatchError()
+
     from app.core.security import _get_anon_client
 
     try:
@@ -408,6 +440,14 @@ async def signin(payload: SigninRequest) -> dict[str, Any]:
     if session is None or sb_user is None:
         raise PermissionDeniedError("Invalid email/username or password")
 
+    # Post-check if user was not cached before
+    if not target_user:
+        target_user = await find_user_by_email(email)
+        if target_user and mode == "personal" and target_user.get("account_type") == "org":
+            raise AccountTypeMismatchError()
+
+    resolved_account_type = (target_user.get("account_type") if target_user else None) or "personal"
+
     return {
         "access_token": session.access_token,
         "refresh_token": session.refresh_token,
@@ -416,8 +456,144 @@ async def signin(payload: SigninRequest) -> dict[str, Any]:
         "user": {
             "id": str(sb_user.id),
             "email": getattr(sb_user, "email", None),
+            "account_type": resolved_account_type,
         },
     }
+
+
+@router.get("/callback")
+async def oauth_callback_get(
+    code: Optional[str] = Query(None),
+    mode: Optional[str] = Query("personal"),
+    email: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """OAuth redirect callback handler."""
+    resolved_mode = (mode or "personal").strip().lower()
+    if state and "mode=org" in state.lower():
+        resolved_mode = "org"
+    elif state and "mode=personal" in state.lower():
+        resolved_mode = "personal"
+
+    resolved_email = email
+    if not resolved_email and code:
+        if "@" in code:
+            resolved_email = code.strip().lower()
+        else:
+            try:
+                from app.core.security import _get_anon_client
+                res = _get_anon_client().auth.exchange_code_for_session({"auth_code": code})
+                sb_user = getattr(res, "user", None)
+                if sb_user:
+                    resolved_email = getattr(sb_user, "email", None)
+            except Exception:
+                pass
+
+    if resolved_email:
+        target_user = await find_user_by_email(resolved_email.lower())
+        if target_user:
+            if resolved_mode == "personal" and target_user.get("account_type") == "org":
+                return RedirectResponse(
+                    url="/login?mode=personal&error=account_type_mismatch",
+                    status_code=status.HTTP_302_FOUND,
+                )
+
+    if resolved_mode == "org":
+        return RedirectResponse(url="/org/select", status_code=status.HTTP_302_FOUND)
+    return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+
+
+@router.post("/callback")
+async def oauth_callback_post(
+    payload: OAuthCallbackRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """OAuth token/code callback handler for API clients."""
+    resolved_mode = (payload.mode or "personal").strip().lower()
+    if payload.state and "mode=org" in payload.state.lower():
+        resolved_mode = "org"
+
+    resolved_email = payload.email
+    if not resolved_email and payload.code:
+        if "@" in payload.code:
+            resolved_email = payload.code.strip().lower()
+        else:
+            try:
+                from app.core.security import _get_anon_client
+                res = _get_anon_client().auth.exchange_code_for_session({"auth_code": payload.code})
+                sb_user = getattr(res, "user", None)
+                if sb_user:
+                    resolved_email = getattr(sb_user, "email", None)
+            except Exception:
+                pass
+
+    if resolved_email:
+        target_user = await find_user_by_email(resolved_email.lower())
+        if target_user:
+            if resolved_mode == "personal" and target_user.get("account_type") == "org":
+                raise AccountTypeMismatchError()
+            return {
+                "user": {
+                    "id": target_user["id"],
+                    "email": target_user["email"],
+                    "account_type": target_user.get("account_type", "personal"),
+                },
+                "mode": resolved_mode,
+            }
+        else:
+            from app.core.security import _generate_unique_username
+            new_user_id = str(uuid.uuid4())
+            username = await _generate_unique_username(db, resolved_email.lower(), new_user_id)
+            user = User(
+                id=new_user_id,
+                email=resolved_email.lower(),
+                username=username,
+                account_type=resolved_mode,
+                full_name=resolved_email.split("@")[0],
+                status="active",
+                is_single_user=(resolved_mode == "personal"),
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+            return {
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "account_type": user.account_type,
+                },
+                "mode": resolved_mode,
+            }
+    return {"status": "ok", "mode": resolved_mode}
+
+
+@router.post("/verify-otp")
+async def verify_otp(payload: VerifyOtpRequest) -> dict[str, Any]:
+    """Verify one-time passcode with realm enforcement."""
+    email = payload.email.strip().lower()
+    mode = (payload.mode or "personal").strip().lower()
+    target_user = await find_user_by_email(email)
+    if target_user and mode == "personal" and target_user.get("account_type") == "org":
+        raise AccountTypeMismatchError()
+
+    from app.core.security import _get_anon_client
+    try:
+        res = _get_anon_client().auth.verify_otp({
+            "email": email,
+            "token": payload.token,
+            "type": payload.type or "email",
+        })
+        session = getattr(res, "session", None)
+        return {
+            "session": None if not session else {
+                "access_token": session.access_token,
+                "refresh_token": session.refresh_token,
+            }
+        }
+    except Exception as exc:
+        raise PermissionDeniedError(str(exc))
 
 
 @router.get("/me")

@@ -41,7 +41,7 @@ class CurrentUser(BaseModel):
     email: Optional[str] = None
     full_name: Optional[str] = None
     username: Optional[str] = None
-    account_type: str = "user"
+    account_type: str = "personal"
     role: Optional[str] = None
     notification_email: Optional[str] = None
 
@@ -121,6 +121,7 @@ async def _generate_unique_username(db: AsyncSession, email: Optional[str], user
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
+    x_auth_mode: Optional[str] = Header(None),
 ) -> CurrentUser:
     """Verify Supabase bearer token and ensure the user exists in the local database."""
     if credentials is None or not credentials.credentials:
@@ -184,14 +185,15 @@ async def get_current_user(
     if user is None:
         # OAuth / first-login JIT row: auto-generate a unique username.
         username = await _generate_unique_username(db, email, user_id)
+        jit_account_type = "org" if (isinstance(x_auth_mode, str) and x_auth_mode.lower() == "org") else "personal"
         user = User(
             id=user_id,
             email=email,
             username=username,
-            account_type="user",
+            account_type=jit_account_type,
             full_name=full_name,
             status="active",
-            is_single_user=True,
+            is_single_user=(jit_account_type == "personal"),
         )
         db.add(user)
         try:
@@ -214,7 +216,8 @@ async def get_current_user(
             user.username = await _generate_unique_username(db, email, user.id)
         if getattr(user, "status", None) == "invited":
             user.status = "active"
-        user.is_single_user = True
+        if user.account_type == "personal":
+            user.is_single_user = True
         await db.commit()
 
     current_user_id.set(user.id)
@@ -225,7 +228,7 @@ async def get_current_user(
         email=user.email,
         full_name=user.full_name,
         username=user.username,
-        account_type=user.account_type or "user",
+        account_type=user.account_type or "personal",
         notification_email=user.notification_email,
     )
 

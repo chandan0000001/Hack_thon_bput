@@ -54,14 +54,19 @@ export default function Topbar() {
     addToast(next ? 'Live alerts enabled' : 'Live alerts disabled', next ? 'low' : 'safe');
   };
 
+  const isOrgRoute = location.pathname.startsWith('/org');
+
   return (
     <header className="relative z-40 flex h-14 items-center justify-between border-b border-zinc-800 bg-zinc-900/90 px-5 backdrop-blur">
       <h1 className="text-base font-semibold text-zinc-100">{title}</h1>
 
       <div className="flex items-center gap-3">
-        {/* Selection state visible in Topbar chip (org name › project name) */}
-        {activeOrganization && (
-          <span className="flex items-center gap-1.5 rounded-md bg-zinc-950 px-2.5 py-1 font-mono text-[11px] text-zinc-300 ring-1 ring-zinc-800">
+        {/* Selection state visible in Topbar chip (org name › project name) - org window only */}
+        {isOrgRoute && activeOrganization && (
+          <span
+            data-testid="topbar-org-chip"
+            className="flex items-center gap-1.5 rounded-md bg-zinc-950 px-2.5 py-1 font-mono text-[11px] text-zinc-300 ring-1 ring-zinc-800"
+          >
             <span className="font-semibold text-zinc-200">{activeOrganization.name}</span>
             {activeProject && (
               <>
