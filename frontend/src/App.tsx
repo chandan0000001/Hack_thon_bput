@@ -38,6 +38,7 @@ import NetworkThreats from './pages/NetworkThreats';
 // Org window modules
 import OrgSelector from './pages/OrgSelector';
 import ProjectSelector from './pages/ProjectSelector';
+import OrgWorkspaceShell from './pages/OrgWorkspaceShell';
 import { useAuthStore } from './store/authStore';
 
 /**
@@ -90,6 +91,15 @@ export default function App() {
           element={
             <OrgGuard>
               <ProjectSelector />
+            </OrgGuard>
+          }
+        />
+        {/* ORG-SHELL-1: empty workspace shell after project selection */}
+        <Route
+          path="/org/:orgId/projects/:projectId/workspace"
+          element={
+            <OrgGuard>
+              <OrgWorkspaceShell />
             </OrgGuard>
           }
         />

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Building2, ChevronDown, LogOut, Radio, Shield, User } from 'lucide-react';
+import { ArrowLeft, Building2, ChevronDown, LogOut, Radio, Shield, User } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useUiStore } from '../../store/uiStore';
 
@@ -19,6 +19,7 @@ const ROUTE_TITLES: [RegExp, string][] = [
   [/^\/response-actions/, 'Response Actions'],
   [/^\/audit-logs/, 'Audit Logs'],
   [/^\/org\/select/, 'Organizations'],
+  [/^\/org\/.+\/projects\/.+\/workspace/, 'Workspace'],
   [/^\/org\/.+\/projects/, 'Projects'],
   [/^\/reports/, 'Reports & Export'],
   [/^\/settings/, 'Settings'],
@@ -56,25 +57,58 @@ export default function Topbar() {
 
   const isOrgRoute = location.pathname.startsWith('/org');
 
+  // ORG-SHELL-1: on the workspace shell the org›project chip doubles as the
+  // project switcher (opens the selector) and the topbar keeps an
+  // "All organizations" link back to /org/select.
+  const workspaceMatch = location.pathname.match(/^\/org\/([^/]+)\/projects\/([^/]+)\/workspace\/?$/);
+  const isWorkspaceShell = Boolean(workspaceMatch);
+  const chipClasses =
+    'flex items-center gap-1.5 rounded-md bg-zinc-950 px-2.5 py-1 font-mono text-[11px] text-zinc-300 ring-1 ring-zinc-800';
+  const chipInner = (
+    <>
+      <span className="font-semibold text-zinc-200">{activeOrganization?.name}</span>
+      {activeProject && (
+        <>
+          <span className="text-zinc-600">›</span>
+          <span className="font-semibold text-red-400">{activeProject.name}</span>
+        </>
+      )}
+    </>
+  );
+
   return (
     <header className="relative z-40 flex h-14 items-center justify-between border-b border-zinc-800 bg-zinc-900/90 px-5 backdrop-blur">
-      <h1 className="text-base font-semibold text-zinc-100">{title}</h1>
+      <div className="flex items-center gap-4">
+        <h1 className="text-base font-semibold text-zinc-100">{title}</h1>
+        {isWorkspaceShell && (
+          <Link
+            to="/org/select"
+            data-testid="shell-all-orgs-link"
+            className="inline-flex items-center gap-1.5 font-mono text-xs text-zinc-400 transition hover:text-red-400"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            <span>All organizations</span>
+          </Link>
+        )}
+      </div>
 
       <div className="flex items-center gap-3">
         {/* Selection state visible in Topbar chip (org name › project name) - org window only */}
         {isOrgRoute && activeOrganization && (
-          <span
-            data-testid="topbar-org-chip"
-            className="flex items-center gap-1.5 rounded-md bg-zinc-950 px-2.5 py-1 font-mono text-[11px] text-zinc-300 ring-1 ring-zinc-800"
-          >
-            <span className="font-semibold text-zinc-200">{activeOrganization.name}</span>
-            {activeProject && (
-              <>
-                <span className="text-zinc-600">›</span>
-                <span className="font-semibold text-red-400">{activeProject.name}</span>
-              </>
-            )}
-          </span>
+          isWorkspaceShell ? (
+            <Link
+              data-testid="topbar-org-chip"
+              to={`/org/${workspaceMatch![1]}/projects`}
+              title="Switch project"
+              className={`${chipClasses} cursor-pointer transition hover:ring-zinc-600`}
+            >
+              {chipInner}
+            </Link>
+          ) : (
+            <span data-testid="topbar-org-chip" className={chipClasses}>
+              {chipInner}
+            </span>
+          )
         )}
 
         {/* Live backend badge */}

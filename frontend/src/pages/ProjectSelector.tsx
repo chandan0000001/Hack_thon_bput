@@ -167,6 +167,8 @@ export default function ProjectSelector() {
 
   const handleSelectProject = async (project: Project) => {
     await setActiveProject(project);
+    // ORG-SHELL-1: activating a project enters its (empty) workspace shell.
+    navigate(`/org/${orgId}/projects/${project.id}/workspace`);
   };
 
   const handleCreateProject = async (e: React.FormEvent) => {
@@ -189,6 +191,8 @@ export default function ProjectSelector() {
       await setActiveProject(created);
       setNewProjectName('');
       setModalOpen(false);
+      // ORG-SHELL-1: a freshly created project is activated into the shell too.
+      navigate(`/org/${orgId}/projects/${created.id}/workspace`);
     } catch (err: any) {
       setCreateError(err instanceof Error ? err.message : 'Failed to create project');
     } finally {
