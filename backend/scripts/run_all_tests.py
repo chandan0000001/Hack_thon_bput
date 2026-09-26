@@ -1057,6 +1057,14 @@ async def run_tests():
     from scripts.test_migration_fresh_db import run_migration_fresh_db_tests
     await run_migration_fresh_db_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 49. ORG-SETTINGS-P1 — Project Deletion (admin gate, confirm_name,
+    #     project-scope cascade, active_project_id clear, last-project rule)
+    # -----------------------------------------------------------------------
+    print("\n[Suite 49] ORG-SETTINGS-P1 — Project Deletion")
+    from scripts.test_org_settings import run_org_settings_tests
+    await run_org_settings_tests(runner)
+
     return runner.report()
 
 

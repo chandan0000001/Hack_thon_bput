@@ -98,6 +98,9 @@ def do_run_migrations(connection: Connection) -> None:
 
     # Fresh DB Optimization: If cyberguard has no tables and we are upgrading to 0102_squash_baseline,
     # skip the deprecated historical 0001-0101 migrations and jump straight to 0102 squashed baseline.
+    # Mirror on downgrade: 0102's downgrade drops the whole cyberguard schema, so the
+    # legacy 0101..0001 downgrade steps after it would run against a dropped schema and
+    # fail. Truncate the downgrade path at the squash step — base state is "schema gone".
     mig_ctx = context.get_context()
     orig_migrations_fn = getattr(mig_ctx, "_migrations_fn", None)
     if orig_migrations_fn is not None:
@@ -106,20 +109,27 @@ def do_run_migrations(connection: Connection) -> None:
                 text("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'cyberguard'")
             ).scalar() or 0
             steps = list(orig_migrations_fn(heads, mc))
-            squash_step = next(
+            squash_idx = next(
                 (
-                    s for s in steps
-                    if getattr(s, "is_upgrade", False)
-                    and getattr(getattr(s, "revision", None), "revision", None) == "0102_squash_baseline"
+                    i for i, s in enumerate(steps)
+                    if getattr(getattr(s, "revision", None), "revision", None) == "0102_squash_baseline"
                 ),
                 None,
             )
-            if table_count <= 10 and squash_step is not None:
-                logger.info("Fresh database detected (tables=%d): applying 0102_squash_baseline directly", table_count)
-                yield squash_step
-            else:
-                for step in steps:
-                    yield step
+            if squash_idx is not None:
+                step = steps[squash_idx]
+                if getattr(step, "is_upgrade", False):
+                    if table_count <= 10:
+                        logger.info("Fresh database detected (tables=%d): applying 0102_squash_baseline directly", table_count)
+                        yield step
+                        return
+                else:
+                    logger.info("Squash baseline downgrade: truncating deprecated 0101..0001 chain (schema already dropped by 0102)")
+                    for s in steps[:squash_idx + 1]:
+                        yield s
+                    return
+            for step in steps:
+                yield step
 
         mig_ctx._migrations_fn = wrapped_migrations_fn
 

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy import desc, func, select, text
+from sqlalchemy import delete, desc, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -92,6 +92,10 @@ class CreateProjectRequest(BaseModel):
 class UpdateProjectRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=120)
     status: Optional[str] = Field(None, pattern="^(active|archived)$")
+
+
+class DeleteProjectRequest(BaseModel):
+    confirm_name: str = Field(..., min_length=1, max_length=120)
 
 
 class CreateApiKeyRequest(BaseModel):
@@ -638,6 +642,87 @@ async def update_project(
         "name": project.name,
         "slug": project.slug,
         "status": project.status,
+    }
+
+
+@router.delete("/orgs/{org_id}/projects/{project_id}")
+@router.delete("/org/{org_id}/projects/{project_id}")
+async def delete_project(
+    org_id: str,
+    project_id: str,
+    req: DeleteProjectRequest,
+    user: CurrentUser = Depends(get_org_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete a project and its project-scoped rows (ORG-SETTINGS-P1).
+
+    Admin-only. Requires an exact ``confirm_name`` match to the project name
+    (409 otherwise). Cascades org_events / org_api_keys /
+    org_blocked_indicators.project_id rows via the DB FKs; org-scoped rows
+    (members, org-scoped indicators, the org itself) are untouched. Any
+    user's ``active_project_id`` pointing at the deleted project is cleared
+    in the same transaction — that write needs the service-role session
+    because the users UPDATE policy is self-row-only under RLS.
+    """
+    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    project = await session.get(OrgProject, project_id)
+    if not project or project.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if req.confirm_name != project.name:
+        raise HTTPException(
+            status_code=409,
+            detail="confirm_name does not match the project name",
+        )
+
+    project_name = project.name
+    project_slug = project.slug
+
+    # Write phase on the service-role session (bypasses RLS for the
+    # cross-user users.active_project_id clear) in a single transaction.
+    from app.db.admin import _get_admin_session_maker
+
+    admin_maker = _get_admin_session_maker()
+    async with admin_maker() as admin_session:
+        async with admin_session.begin():
+            still_there = await admin_session.get(OrgProject, project_id)
+            if not still_there or still_there.organization_id != org_id:
+                raise HTTPException(status_code=404, detail="Project not found")
+            if still_there.name != project_name:
+                raise HTTPException(
+                    status_code=409,
+                    detail="confirm_name does not match the project name",
+                )
+
+            ev_count = await admin_session.scalar(
+                select(func.count()).select_from(OrgEvent).where(OrgEvent.project_id == project_id)
+            )
+            key_count = await admin_session.scalar(
+                select(func.count()).select_from(OrgApiKey).where(OrgApiKey.project_id == project_id)
+            )
+            ind_count = await admin_session.scalar(
+                select(func.count())
+                .select_from(OrgBlockedIndicator)
+                .where(OrgBlockedIndicator.project_id == project_id)
+            )
+            ptr_count = await admin_session.execute(
+                update(User)
+                .where(User.active_project_id == project_id)
+                .values(active_project_id=None)
+            )
+            await admin_session.execute(delete(OrgProject).where(OrgProject.id == project_id))
+
+    return {
+        "message": "Project deleted",
+        "id": project_id,
+        "name": project_name,
+        "slug": project_slug,
+        "deleted": {
+            "events": int(ev_count or 0),
+            "api_keys": int(key_count or 0),
+            "blocked_indicators": int(ind_count or 0),
+            "active_pointers_cleared": ptr_count.rowcount,
+        },
     }
 
 
