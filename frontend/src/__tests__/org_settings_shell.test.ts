@@ -33,8 +33,8 @@ describe('ORG-SETTINGS-P4 Test Suite (3 Checks)', () => {
     const app = fs.readFileSync(appPath, 'utf8');
     const nested = (app.match(/<OrgWorkspaceShell frame="settings">/g) || []).length;
     assert.strictEqual(nested, 2, `expected 2 shell-hosted settings routes, got ${nested}`);
-    // Workspace route keeps the bare shell (strict guard, empty canvas)
-    assert.match(app, /<OrgGuard>\s*<OrgWorkspaceShell \/>\s*<\/OrgGuard>/);
+    // Workspace route hosts the org dashboard inside the shell (ORG-DASHBOARD-P1)
+    assert.match(app, /<OrgGuard>\s*<OrgWorkspaceShell>\s*<OrgDashboard \/>\s*<\/OrgWorkspaceShell>\s*<\/OrgGuard>/);
     // Settings page no longer renders its own Topbar (shell provides it)
     const settings = fs.readFileSync(settingsPath, 'utf8');
     assert.doesNotMatch(settings, /Topbar/);

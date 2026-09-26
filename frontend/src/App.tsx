@@ -40,6 +40,8 @@ import OrgSelector from './pages/OrgSelector';
 import ProjectSelector from './pages/ProjectSelector';
 import OrgWorkspaceShell from './pages/OrgWorkspaceShell';
 import ProjectSettings, { type ProjectSettingsSection } from './pages/ProjectSettings';
+import OrgDashboard from './pages/OrgDashboard';
+import OrgEventReview from './pages/OrgEventReview';
 import { useAuthStore } from './store/authStore';
 
 /**
@@ -95,12 +97,25 @@ export default function App() {
             </OrgGuard>
           }
         />
-        {/* ORG-SHELL-1: empty workspace shell after project selection */}
+        {/* ORG-DASHBOARD-P1: workspace shell now hosts the org dashboard */}
         <Route
           path="/org/:orgId/projects/:projectId/workspace"
           element={
             <OrgGuard>
-              <OrgWorkspaceShell />
+              <OrgWorkspaceShell>
+                <OrgDashboard />
+              </OrgWorkspaceShell>
+            </OrgGuard>
+          }
+        />
+        {/* ORG-DASHBOARD-P2 will build the review page; P1 provides the target */}
+        <Route
+          path="/org/:orgId/projects/:projectId/events/:eventId/review"
+          element={
+            <OrgGuard>
+              <OrgWorkspaceShell>
+                <OrgEventReview />
+              </OrgWorkspaceShell>
             </OrgGuard>
           }
         />

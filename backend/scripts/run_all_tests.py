@@ -1072,6 +1072,13 @@ async def run_tests():
     from scripts.test_org_settings import run_org_member_email_tests
     await run_org_member_email_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 51. ORG-DASHBOARD-P1 — Live counters seed endpoint + realtime bridge
+    # -----------------------------------------------------------------------
+    print("\n[Suite 51] ORG-DASHBOARD-P1 — Live Counters")
+    from scripts.test_org_dashboard import run_org_dashboard_tests
+    await run_org_dashboard_tests(runner)
+
     return runner.report()
 
 

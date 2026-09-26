@@ -206,6 +206,15 @@ async def project_gateway(
     session.add(event)
     await session.commit()
 
+    # Best-effort realtime signal for live org dashboards (dev-transport
+    # bridge; frontend dedupes against postgres_changes by event id).
+    try:
+        from app.services.org_event_broadcaster import broadcast_org_event
+
+        await broadcast_org_event(event, kind="insert")
+    except Exception:  # noqa: BLE001 - signaling must never fail ingestion
+        logger.debug("org_event broadcast skipped for %s", event.id)
+
     response_payload = {
         "event_id": str(event.id),
         "risk_score": analysis.get("risk_score"),

@@ -993,6 +993,7 @@ async def update_event_verdict(
 
     action = req.action
     now = datetime.now(timezone.utc)
+    previous_verdict = event.verdict
 
     if action == "released":
         # Check if any indicator is in org_blocked_indicators
@@ -1048,6 +1049,15 @@ async def update_event_verdict(
         event.acted_at = now
 
     await session.commit()
+
+    # Best-effort realtime signal so live counters drop the pending_review
+    # count without polling (frontend dedupes against postgres_changes).
+    try:
+        from app.services.org_event_broadcaster import broadcast_org_event
+
+        await broadcast_org_event(event, kind="update", previous_verdict=previous_verdict)
+    except Exception:  # noqa: BLE001 - signaling must never fail the action
+        pass
 
     return {
         "id": event.id,

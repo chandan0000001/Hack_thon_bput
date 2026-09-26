@@ -38,6 +38,25 @@ export interface OrgMemberRow {
 
 export type ApiKeyRole = 'master' | 'viewer';
 
+/** ORG-DASHBOARD-P1: seed shape of GET .../counters/initial (then realtime-only deltas). */
+export interface OrgCounters {
+  total_24h: number;
+  by_severity: { critical: number; high: number; medium: number; low: number };
+  by_type: { log: number; ato: number; network: number };
+  pending_review: number;
+  blocked_indicators_count: number;
+}
+
+/** Row of GET .../events (subset used by the dashboard overview table). */
+export interface OrgEventRow {
+  id: string;
+  event_type: string;
+  severity: string;
+  verdict: string;
+  source: string;
+  created_at: string;
+}
+
 export interface ProjectApiKey {
   id: string;
   project_id: string;
@@ -68,6 +87,21 @@ export const orgApi = {
       method: 'POST',
       body: JSON.stringify({ name }),
     });
+  },
+
+  // ORG-DASHBOARD-P1: one-time seed fetch for live counters (then realtime only)
+  async getInitialCounters(orgId: string, projectId: string): Promise<OrgCounters> {
+    return apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}/counters/initial`
+    );
+  },
+
+  // ORG-DASHBOARD-P1: recent events for the dashboard overview table
+  async listRecentEvents(orgId: string, projectId: string, limit = 10): Promise<OrgEventRow[]> {
+    const data = await apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}/events?limit=${limit}`
+    );
+    return data.events || [];
   },
 
   // List projects for an organization

@@ -14,10 +14,10 @@ describe('ORG-SHELL-1 Test Suite (8 Checks)', () => {
     const app = fs.readFileSync(appPath, 'utf8');
     assert.match(app, /import OrgWorkspaceShell from '\.\/pages\/OrgWorkspaceShell'/);
     assert.match(app, /path="\/org\/:orgId\/projects\/:projectId\/workspace"/);
-    // Route element wrapped in OrgGuard
+    // Route element wrapped in OrgGuard (hosts the dashboard since ORG-DASHBOARD-P1)
     assert.match(
       app,
-      /<OrgGuard>\s*<OrgWorkspaceShell \/>\s*<\/OrgGuard>/
+      /<OrgGuard>\s*<OrgWorkspaceShell>\s*<OrgDashboard \/>\s*<\/OrgWorkspaceShell>\s*<\/OrgGuard>/
     );
   });
 
