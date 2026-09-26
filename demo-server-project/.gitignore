@@ -1,0 +1,5 @@
+# Local runtime data (response store, scratch payloads)
+data/
+
+# Local scratch payloads used for live proofs
+payloads*.json
