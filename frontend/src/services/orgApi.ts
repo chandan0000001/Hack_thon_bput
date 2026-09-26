@@ -57,6 +57,41 @@ export interface OrgEventRow {
   created_at: string;
 }
 
+/** ORG-DASHBOARD-P2: full event inspection payload. */
+export interface OrgEventDetail {
+  id: string;
+  project_id: string;
+  organization_id: string;
+  event_type: string;
+  severity: string;
+  source: string;
+  raw_data: unknown;
+  analysis_result: {
+    risk_score?: number;
+    severity?: string;
+    indicators?: Array<Record<string, unknown>>;
+    mitre?: Array<{ id?: string; name?: string }>;
+    engine?: string;
+    available?: boolean;
+  } | null;
+  verdict: string;
+  user_action: string | null;
+  acted_by: string | null;
+  acted_at: string | null;
+  created_at: string;
+  indicator_blocked: boolean;
+}
+
+/** Row of GET /org/{org}/blocked-indicators. */
+export interface OrgBlockedIndicatorRow {
+  id: string;
+  indicator_type: string;
+  indicator_value: string;
+  reason: string;
+  blocked_by: string | null;
+  blocked_at: string;
+}
+
 export interface ProjectApiKey {
   id: string;
   project_id: string;
@@ -102,6 +137,33 @@ export const orgApi = {
       `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}/events?limit=${limit}`
     );
     return data.events || [];
+  },
+
+  // ORG-DASHBOARD-P2: full event inspection
+  async getEventDetail(orgId: string, projectId: string, eventId: string): Promise<OrgEventDetail> {
+    return apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}/events/${encodeURIComponent(eventId)}`
+    );
+  },
+
+  // ORG-DASHBOARD-P2: triage action (backend contract: {action}, not {user_action})
+  async updateEventVerdict(
+    orgId: string,
+    projectId: string,
+    eventId: string,
+    action: 'released' | 'blocked_permanently' | 'false_positive'
+  ): Promise<{ id: string; verdict: string; user_action: string | null; acted_by: string | null; acted_at: string | null }> {
+    return apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}/events/${encodeURIComponent(eventId)}`,
+      { method: 'PATCH', body: JSON.stringify({ action }) }
+    );
+  },
+
+  // ORG-DASHBOARD-P2: blocked-indicator lookup (q is substring; exact-match client-side)
+  async listBlockedIndicators(orgId: string, q?: string): Promise<OrgBlockedIndicatorRow[]> {
+    const query = q ? `?q=${encodeURIComponent(q)}` : '';
+    const data = await apiFetch(`/orgs/${encodeURIComponent(orgId)}/blocked-indicators${query}`);
+    return data.indicators || [];
   },
 
   // List projects for an organization
