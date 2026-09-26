@@ -1,0 +1,97 @@
+[
+  {
+    "action": "analyze_network",
+    "data": {
+      "flows": [
+        {
+          "source_ip": "10.0.4.15",
+          "dest_ip": "142.250.183.14",
+          "port": 443,
+          "bytes_out": 4096,
+          "protocol": "TCP",
+          "duration_s": 30
+        }
+      ]
+    },
+    "metadata": {
+      "source": "netflow-collector",
+      "description": "Normal HTTPS egress to a Google frontend IP — no triggers fire (port not suspicious, bytes below threshold)."
+    }
+  },
+  {
+    "action": "analyze_network",
+    "data": {
+      "flows": [
+        {
+          "source_ip": "10.0.4.15",
+          "dest_ip": "10.0.4.2",
+          "port": 443,
+          "bytes_out": 18432,
+          "protocol": "TCP",
+          "duration_s": 12
+        }
+      ]
+    },
+    "metadata": {
+      "source": "netflow-collector",
+      "description": "Internal LAN service call (10.x -> 10.x) — stays inside the perimeter, no triggers."
+    }
+  },
+  {
+    "action": "analyze_network",
+    "data": {
+      "flows": [
+        {
+          "source_ip": "10.0.9.7",
+          "dest_ip": "151.101.1.140",
+          "port": 443,
+          "bytes_out": 25600,
+          "protocol": "TCP",
+          "duration_s": 45
+        }
+      ]
+    },
+    "metadata": {
+      "source": "netflow-collector",
+      "description": "Small HTTPS GET responses from a CDN (Fastly range) — benign browsing pattern."
+    }
+  },
+  {
+    "action": "analyze_network",
+    "data": {
+      "flows": [
+        {
+          "source_ip": "10.0.4.15",
+          "dest_ip": "13.107.42.14",
+          "port": 443,
+          "bytes_out": 66560,
+          "protocol": "TCP",
+          "duration_s": 120
+        }
+      ]
+    },
+    "metadata": {
+      "source": "netflow-collector",
+      "description": "SaaS sync traffic (Microsoft 365 range), moderate bytes — normal workday flow."
+    }
+  },
+  {
+    "action": "analyze_network",
+    "data": {
+      "flows": [
+        {
+          "source_ip": "10.0.4.15",
+          "dest_ip": "10.0.0.53",
+          "port": 53,
+          "bytes_out": 512,
+          "protocol": "UDP",
+          "duration_s": 1
+        }
+      ]
+    },
+    "metadata": {
+      "source": "netflow-collector",
+      "description": "Single small UDP/53 query to the internal resolver — port 53 is NOT in the suspicious-port set, benign DNS."
+    }
+  }
+]

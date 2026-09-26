@@ -1,0 +1,48 @@
+[
+  {
+    "action": "analyze_ato",
+    "data": {
+      "events": [
+        {
+          "user": "alice",
+          "status": "success",
+          "timestamp": "2026-09-26T09:05:00Z",
+          "ip": "10.0.4.15",
+          "location": "Bhubaneswar",
+          "device": "laptop-1"
+        }
+      ]
+    },
+    "metadata": {
+      "source": "auth-log-shipper",
+      "description": "Single successful login from a known device and location — no indicators."
+    }
+  },
+  {
+    "action": "analyze_ato",
+    "data": {
+      "events": [
+        { "user": "r.singh", "status": "success", "timestamp": "2026-09-26T08:00:00Z", "ip": "10.0.4.31", "location": "Bhubaneswar", "device": "laptop-2" },
+        { "user": "r.singh", "status": "success", "timestamp": "2026-09-26T10:00:00Z", "ip": "10.0.4.31", "location": "Bhubaneswar", "device": "laptop-2" },
+        { "user": "r.singh", "status": "success", "timestamp": "2026-09-26T12:00:00Z", "ip": "10.0.4.31", "location": "Bhubaneswar", "device": "laptop-2" }
+      ]
+    },
+    "metadata": {
+      "source": "auth-log-shipper",
+      "description": "Normal workday session: same user/device/LAN IP, logins 2h apart (outside the 60-min impossible-travel window)."
+    }
+  },
+  {
+    "action": "analyze_ato",
+    "data": {
+      "events": [
+        { "user": "m.chen", "status": "failed", "timestamp": "2026-09-26T09:14:00Z", "ip": "10.0.4.22", "location": "Bhubaneswar", "device": "laptop-3" },
+        { "user": "m.chen", "status": "success", "timestamp": "2026-09-26T09:14:20Z", "ip": "10.0.4.22", "location": "Bhubaneswar", "device": "laptop-3" }
+      ]
+    },
+    "metadata": {
+      "source": "auth-log-shipper",
+      "description": "One typo-induced failure then success (below the 2-consecutive-failures stuffing threshold and the 3-failure burst threshold) — benign."
+    }
+  }
+]

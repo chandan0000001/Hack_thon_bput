@@ -129,28 +129,84 @@ def cmd_counts(_args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
-    """B1: health-only FastAPI app (B2 adds traffic generation)."""
+    """Start the demo service (health, traffic control, metrics, replay)."""
     import uvicorn
-    from fastapi import FastAPI
 
-    from . import __version__
+    from .service import create_app
 
     config = load_config()
-
-    app = FastAPI(title="CyberGuard Demo Server", version=__version__)
-
-    @app.get("/health")
-    def health() -> dict[str, Any]:
-        return {
-            "status": "ok",
-            "service": "demo-server",
-            "version": __version__,
-            "gateway_endpoint": config.gateway_endpoint,
-            "project_slug": config.project_slug,
-        }
-
+    app = create_app(config)
     uvicorn.run(app, host="127.0.0.1", port=args.port or config.demo_port, log_level="info")
     return 0
+
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    """Run the traffic generator in the foreground; SIGINT stops gracefully."""
+    import signal
+    import threading
+
+    from .scenarios import ScenarioBook, ScenarioError, parse_mix
+    from .traffic import generate
+
+    try:
+        mix = parse_mix(args.mix)
+    except ScenarioError as exc:
+        print(f"mix error: {exc}", file=sys.stderr)
+        return 2
+
+    config, _store, shipper = build_components()
+    book = ScenarioBook()
+    stop_event = threading.Event()
+
+    def _sigint(signum: int, _frame: Any) -> None:
+        print("\nSIGINT received — finishing current send, stopping schedule...")
+        stop_event.set()
+
+    prev_handler = signal.signal(signal.SIGINT, _sigint)
+    try:
+        summary = generate(
+            shipper,
+            book,
+            mix,
+            rate_per_min=args.rate,
+            duration_min=args.duration,
+            jitter=args.jitter,
+            stop_event=stop_event,
+        )
+    finally:
+        signal.signal(signal.SIGINT, prev_handler)
+        shipper.close()
+
+    print(f"\nevents shipped : {summary.events_shipped}")
+    print(f"succeeded      : {summary.succeeded}")
+    print(f"failed         : {summary.failed}")
+    print(f"success rate   : {summary.success_rate:.2%}")
+    print(f"stopped early  : {summary.stopped_early}")
+    print(f"elapsed s      : {summary.elapsed_s:.1f}")
+    print(f"by category    : {summary.by_category}")
+    return 0 if summary.failed == 0 else 1
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """Re-ship stored successful calls in a time window."""
+    from .replay import ReplayError, replay
+
+    config, store, shipper = build_components()
+    try:
+        stats = replay(shipper, store, args.from_ts, args.to_ts, max_rows=args.max_rows)
+    except ReplayError as exc:
+        print(f"replay error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        shipper.close()
+
+    print(f"window         : {stats['window']['from']} -> {stats['window']['to']}")
+    print(f"replayed       : {stats['replayed']}")
+    print(f"succeeded      : {stats['succeeded']}")
+    print(f"success rate   : {stats['success_rate']:.2%}")
+    print(f"sample old ids : {stats['old_event_ids'][:3]}")
+    print(f"sample new ids : {stats['new_event_ids'][:3]}")
+    return 0 if stats["replayed"] == stats["succeeded"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -168,6 +224,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--action", default=None)
     p.add_argument("--min-status", dest="min_status", type=int, default=None)
     p.set_defaults(func=cmd_responses)
+
+    p = sub.add_parser("generate", help="run continuous traffic (SIGINT stops gracefully)")
+    p.add_argument("--rate", type=float, default=60.0, help="payloads per minute")
+    p.add_argument("--duration", type=float, default=10.0, help="minutes to run")
+    p.add_argument("--mix", default="net=15,ato=15,benign=70",
+                   help="percent split, e.g. net=30,ato=20,benign=50")
+    p.add_argument("--jitter", type=float, default=0.2, help="interval jitter 0..1")
+    p.set_defaults(func=cmd_generate)
+
+    p = sub.add_parser("replay", help="re-ship stored successful calls in a time window")
+    p.add_argument("--from", dest="from_ts", required=True, help="window start (ISO, UTC)")
+    p.add_argument("--to", dest="to_ts", required=True, help="window end (ISO, UTC)")
+    p.add_argument("--max-rows", dest="max_rows", type=int, default=1000)
+    p.set_defaults(func=cmd_replay)
 
     sub.add_parser("counts", help="attempt counts by status").set_defaults(func=cmd_counts)
 

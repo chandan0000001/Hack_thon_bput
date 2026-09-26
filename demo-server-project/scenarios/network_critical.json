@@ -1,0 +1,53 @@
+[
+  {
+    "action": "analyze_network",
+    "data": {
+      "flows": [
+        {
+          "source_ip": "10.0.7.42",
+          "dest_ip": "198.51.100.23",
+          "port": 4444,
+          "bytes_out": 8192,
+          "protocol": "TCP",
+          "duration_s": 3600
+        }
+      ]
+    },
+    "metadata": {
+      "source": "netflow-collector",
+      "description": "Long-lived TCP session to port 4444 (Metasploit default) — suspicious_port trigger, severity critical (C2/backdoor channel)."
+    }
+  },
+  {
+    "action": "analyze_network",
+    "data": {
+      "flows": [
+        {
+          "source_ip": "10.0.3.18",
+          "dest_ip": "203.0.113.77",
+          "port": 8443,
+          "bytes_out": 14500000,
+          "protocol": "TCP",
+          "duration_s": 600
+        }
+      ]
+    },
+    "metadata": {
+      "source": "netflow-collector",
+      "description": "14.5 MB outbound in 10 minutes (threshold 10 MB) — potential_exfiltration trigger, severity high."
+    }
+  },
+  {
+    "action": "analyze_network",
+    "data": {
+      "api_logs": [
+        { "source_ip": "192.0.2.66", "endpoint": "/api/v1/dns-lookup", "status": 200 }
+      ],
+      "request_burst": { "source_ip": "192.0.2.66", "count": 74, "window_min": 1, "note": "sustained DNS-tunneling-style query rate" }
+    },
+    "metadata": {
+      "source": "api-gateway",
+      "description": "74 requests/min from one source (threshold 50) — api_rate_abuse trigger, severity high; models a DNS-tunneling request burst."
+    }
+  }
+]
