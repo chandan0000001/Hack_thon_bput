@@ -15,15 +15,15 @@ describe('ORG-SETTINGS-P2 Test Suite (4 Checks)', () => {
     assert.match(app, /import ProjectSettings, \{ type ProjectSettingsSection \} from '\.\/pages\/ProjectSettings'/);
     assert.match(
       app,
-      /path="\/org\/:orgId\/projects\/:projectId\/settings"[\s\S]{0,120}?<ProjectSettings section=\{'general' as ProjectSettingsSection\} \/>/
+      /path="\/org\/:orgId\/projects\/:projectId\/settings"[\s\S]{0,160}?<ProjectSettings section=\{'general' as ProjectSettingsSection\} \/>[\s\S]{0,80}?<\/OrgWorkspaceShell>/
     );
     assert.match(
       app,
-      /path="\/org\/:orgId\/projects\/:projectId\/settings\/api-keys"[\s\S]{0,120}?<ProjectSettings section=\{'api-keys' as ProjectSettingsSection\} \/>/
+      /path="\/org\/:orgId\/projects\/:projectId\/settings\/api-keys"[\s\S]{0,160}?<ProjectSettings section=\{'api-keys' as ProjectSettingsSection\} \/>[\s\S]{0,80}?<\/OrgWorkspaceShell>/
     );
-    // Both wrapped in OrgGuard (session guard -> /login?mode=org)
-    const guardCount = (app.match(/<OrgGuard>\s*<ProjectSettings[\s\S]*?<\/OrgGuard>/g) || []).length;
-    assert.ok(guardCount === 2, `expected 2 OrgGuard-wrapped settings routes, got ${guardCount}`);
+    // Both wrapped in OrgGuard + OrgWorkspaceShell (session guard -> /login?mode=org)
+    const guardCount = (app.match(/<OrgGuard>\s*<OrgWorkspaceShell frame="settings">[\s\S]*?<ProjectSettings[\s\S]*?<\/OrgWorkspaceShell>\s*<\/OrgGuard>/g) || []).length;
+    assert.ok(guardCount === 2, `expected 2 shell-hosted settings routes, got ${guardCount}`);
     assert.match(app, /if \(!isAuthenticated\) \{\s*return <Navigate to="\/login\?mode=org" replace \/>;/);
   });
 

@@ -1,5 +1,5 @@
-import { Navigate, useParams } from 'react-router-dom';
-import { Building2, FolderKanban } from 'lucide-react';
+import { Link, Navigate, useLocation, useParams } from 'react-router-dom';
+import { Building2, FolderKanban, Settings } from 'lucide-react';
 import Topbar from '../components/layout/Topbar';
 import { useAuthStore } from '../store/authStore';
 import type { Organization, Project } from '../types';
@@ -18,15 +18,28 @@ function readPersisted<T>(key: string): T | null {
 }
 
 /**
- * ORG-SHELL-1: empty org workspace shell rendered after project selection.
+ * ORG-SHELL-1 / ORG-SETTINGS-P4: org shell frame.
  *
- * Theme-matched frame only (Topbar + org identity sidebar + empty main) with
- * ZERO widgets, nav items, or data fetching — identity is resolved from the
- * already-hydrated session state (or the persisted selections), never from
- * the API.
+ * - frame="workspace" (default): strict identity guard (id mismatch ->
+ *   /org/select) and an empty main — zero widgets, zero data fetching.
+ * - frame="settings": hosts the ProjectSettings page as children; identity
+ *   is resolved leniently (no redirect — the settings page owns its guard
+ *   chain) and the sidebar gains the bottom "Project Settings" nav item,
+ *   visible only when the active org+project are resolved and the project
+ *   is not archived.
+ *
+ * Identity always comes from the hydrated session state (or persisted
+ * selections), never from the API.
  */
-export default function OrgWorkspaceShell() {
+export default function OrgWorkspaceShell({
+  frame = 'workspace',
+  children,
+}: {
+  frame?: 'workspace' | 'settings';
+  children?: React.ReactNode;
+}) {
   const { orgId, projectId } = useParams<{ orgId: string; projectId: string }>();
+  const location = useLocation();
   const activeOrganization = useAuthStore((s) => s.activeOrganization);
   const activeProject = useAuthStore((s) => s.activeProject);
 
@@ -34,44 +47,74 @@ export default function OrgWorkspaceShell() {
     activeOrganization?.id === orgId ? activeOrganization : readPersisted<Organization>(ACTIVE_ORG_KEY);
   const project = activeProject?.id === projectId ? activeProject : readPersisted<Project>(ACTIVE_PROJECT_KEY);
 
-  // Session guard: ids that don't match the session's selections go back to
-  // the organization selector.
-  if (!orgId || !projectId || org?.id !== orgId || project?.id !== projectId) {
+  // Strict identity guard on the workspace frame only.
+  if (frame === 'workspace' && (!orgId || !projectId || org?.id !== orgId || project?.id !== projectId)) {
     return <Navigate to="/org/select" replace />;
   }
+
+  // N3: settings nav item only with resolved org+project and a live project.
+  const settingsPath = `/org/${orgId}/projects/${projectId}/settings`;
+  const settingsActive = Boolean(orgId && projectId) && location.pathname.startsWith(settingsPath);
+  const showSettingsItem = Boolean(org && project && project.status !== 'archived');
 
   return (
     <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100">
       <Topbar />
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar: org identity header only — zero nav items (ORG-SHELL-1) */}
-        <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950">
-          <div className="border-b border-zinc-800 px-4 py-4">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-red-500/10 text-red-400 ring-1 ring-red-500/30">
-                <Building2 className="h-4 w-4" />
+        {/* Sidebar: org identity header + bottom reference-rail settings item */}
+        <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950" data-testid="shell-sidebar">
+          {org && project && (
+            <div className="border-b border-zinc-800 px-4 py-4">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-red-500/10 text-red-400 ring-1 ring-red-500/30">
+                  <Building2 className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-zinc-100">{org.name}</p>
+                  <p className="truncate font-mono text-[11px] text-zinc-500">{org.slug}</p>
+                </div>
               </div>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-zinc-100">{org.name}</p>
-                <p className="truncate font-mono text-[11px] text-zinc-500">{org.slug}</p>
+
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-2.5 py-2">
+                <FolderKanban className="h-3.5 w-3.5 shrink-0 text-red-400" />
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-medium text-zinc-200">{project.name}</p>
+                  <p className="truncate font-mono text-[10px] text-zinc-500">{project.slug}</p>
+                </div>
               </div>
             </div>
+          )}
 
-            <div className="mt-3 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-2.5 py-2">
-              <FolderKanban className="h-3.5 w-3.5 shrink-0 text-red-400" />
-              <div className="min-w-0">
-                <p className="truncate text-xs font-medium text-zinc-200">{project.name}</p>
-                <p className="truncate font-mono text-[10px] text-zinc-500">{project.slug}</p>
-              </div>
-            </div>
-          </div>
+          {/* Sidebar body intentionally empty — no other items are invented */}
+          <div className="flex-1" />
 
-          {/* Sidebar body intentionally empty — nav lands in a later phase */}
+          {showSettingsItem && (
+            <nav className="border-t border-zinc-800 p-3">
+              <Link
+                to={settingsPath}
+                data-testid="shell-settings-nav"
+                aria-current={settingsActive ? 'page' : undefined}
+                className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs transition ${
+                  settingsActive
+                    ? 'bg-zinc-900 font-semibold text-red-400 ring-1 ring-red-500/30'
+                    : 'text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-100'
+                }`}
+              >
+                <Settings className="h-4 w-4 shrink-0" />
+                <span>Project Settings</span>
+              </Link>
+            </nav>
+          )}
         </aside>
 
-        {/* Empty main: padding only, no cards/charts/tables/text */}
-        <main className="flex-1 p-6" />
+        {/* Workspace frame: empty canvas. Settings frame: hosts the page. */}
+        <main
+          data-testid="shell-main"
+          className={frame === 'settings' ? 'flex-1 overflow-y-auto p-6' : 'flex-1 p-6'}
+        >
+          {children ?? null}
+        </main>
       </div>
     </div>
   );

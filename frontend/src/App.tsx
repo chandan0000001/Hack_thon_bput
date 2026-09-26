@@ -104,12 +104,14 @@ export default function App() {
             </OrgGuard>
           }
         />
-        {/* ORG-SETTINGS-P2: project settings shell (General | API Keys) */}
+        {/* ORG-SETTINGS-P2/P4: project settings page hosted inside the org shell */}
         <Route
           path="/org/:orgId/projects/:projectId/settings"
           element={
             <OrgGuard>
-              <ProjectSettings section={'general' as ProjectSettingsSection} />
+              <OrgWorkspaceShell frame="settings">
+                <ProjectSettings section={'general' as ProjectSettingsSection} />
+              </OrgWorkspaceShell>
             </OrgGuard>
           }
         />
@@ -117,7 +119,9 @@ export default function App() {
           path="/org/:orgId/projects/:projectId/settings/api-keys"
           element={
             <OrgGuard>
-              <ProjectSettings section={'api-keys' as ProjectSettingsSection} />
+              <OrgWorkspaceShell frame="settings">
+                <ProjectSettings section={'api-keys' as ProjectSettingsSection} />
+              </OrgWorkspaceShell>
             </OrgGuard>
           }
         />

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { ArrowLeft, KeyRound, Loader2, Settings as SettingsIcon } from 'lucide-react';
-import Topbar from '../components/layout/Topbar';
 import ProjectSettingsGeneral from './ProjectSettingsGeneral';
 import { orgApi } from '../services/orgApi';
 import { ApiError } from '../services/http';
@@ -63,11 +62,8 @@ export default function ProjectSettings({ section }: { section: ProjectSettingsS
 
   if (!project) {
     return (
-      <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100">
-        <Topbar />
-        <div className="flex flex-1 items-center justify-center">
-          <Loader2 className="h-6 w-6 animate-spin text-red-500" />
-        </div>
+      <div className="flex h-full min-h-64 items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-red-500" />
       </div>
     );
   }
@@ -75,12 +71,9 @@ export default function ProjectSettings({ section }: { section: ProjectSettingsS
   const active = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0];
 
   return (
-    <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100">
-      <Topbar />
-
-      <div className="flex flex-1 overflow-hidden">
+    <div className="flex h-full min-h-0 flex-1 gap-6" data-testid="settings-page">
         {/* Sub-sidebar: Settings nav card only */}
-        <aside className="w-64 shrink-0 border-r border-zinc-800 bg-zinc-950 p-4">
+        <aside className="w-64 shrink-0">
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/60">
             <div className="border-b border-zinc-800 px-4 py-3">
               <h2 className="text-sm font-semibold text-zinc-100">Settings</h2>
@@ -112,8 +105,8 @@ export default function ProjectSettings({ section }: { section: ProjectSettingsS
           </div>
         </aside>
 
-        {/* Main: page header + section placeholder (P3/P4 replace) */}
-        <main className="flex-1 overflow-y-auto p-6">
+        {/* Page column: header + section content */}
+        <div className="min-w-0 flex-1">
           <div className="mb-4">
             <Link
               to={`/org/${orgId}/projects`}
@@ -135,8 +128,7 @@ export default function ProjectSettings({ section }: { section: ProjectSettingsS
               <h2 className="text-base font-semibold text-zinc-100">{active.label}</h2>
             </section>
           )}
-        </main>
-      </div>
+        </div>
     </div>
   );
 }

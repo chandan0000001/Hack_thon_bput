@@ -30,8 +30,9 @@ describe('ORG-SHELL-1 Test Suite (8 Checks)', () => {
     assert.match(shell, /Building2/);
     assert.match(shell, /\{org\.name\}/);
     assert.match(shell, /\{project\.name\}/);
-    // Empty main: padding only, no content inside
-    assert.match(shell, /<main className="flex-1 p-6" \/>/);
+    // Main renders the frame's children only (workspace frame passes none -> empty canvas)
+    assert.match(shell, /<main\n?[^>]*data-testid="shell-main"/);
+    assert.match(shell, /\{children \?\? null\}/);
   });
 
   // Check 3: zero widgets — no nav items, cards, tables, or empty-state copy
