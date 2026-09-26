@@ -36,6 +36,25 @@ export interface OrgMemberRow {
   joined_at: string;
 }
 
+export type ApiKeyRole = 'master' | 'viewer';
+
+export interface ProjectApiKey {
+  id: string;
+  project_id: string;
+  organization_id: string;
+  name: string;
+  role: ApiKeyRole;
+  key_prefix: string;
+  status: 'active' | 'revoked';
+  last_used_at: string | null;
+  created_at: string;
+}
+
+/** Create-key response — api_key (plaintext) is returned exactly once. */
+export interface CreatedProjectKey extends ProjectApiKey {
+  api_key: string;
+}
+
 export const orgApi = {
   // List organizations for current user
   async listOrgs(): Promise<Organization[]> {
@@ -104,6 +123,36 @@ export const orgApi = {
     await apiFetch(
       `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}`,
       { method: 'DELETE', body: JSON.stringify({ confirm_name: confirmName }) }
+    );
+  },
+
+  // List project API keys (admin only; plaintext and hash are never returned)
+  async listKeys(orgId: string, projectId: string): Promise<ProjectApiKey[]> {
+    const data = await apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}/keys`
+    );
+    return data.keys || [];
+  },
+
+  // Generate a project key (admin only). Response carries the plaintext
+  // `api_key` exactly once; the slot model allows one active key per role.
+  async createKey(
+    orgId: string,
+    projectId: string,
+    name: string,
+    role: ApiKeyRole
+  ): Promise<CreatedProjectKey> {
+    return apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}/keys`,
+      { method: 'POST', body: JSON.stringify({ name, role }) }
+    );
+  },
+
+  // Revoke a project key (admin only); revoking frees the role's slot
+  async revokeKey(orgId: string, projectId: string, keyId: string): Promise<void> {
+    await apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}/keys/${encodeURIComponent(keyId)}/revoke`,
+      { method: 'POST' }
     );
   },
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { ArrowLeft, KeyRound, Loader2, Settings as SettingsIcon } from 'lucide-react';
 import ProjectSettingsGeneral from './ProjectSettingsGeneral';
+import ProjectSettingsApiKeys from './ProjectSettingsApiKeys';
 import { orgApi } from '../services/orgApi';
 import { ApiError } from '../services/http';
 import type { Project } from '../types';
@@ -123,6 +124,8 @@ export default function ProjectSettings({ section }: { section: ProjectSettingsS
 
           {section === 'general' && orgId ? (
             <ProjectSettingsGeneral orgId={orgId} project={project} onProjectRefresh={refresh} />
+          ) : section === 'api-keys' && orgId && projectId ? (
+            <ProjectSettingsApiKeys orgId={orgId} projectId={projectId} projectSlug={project.slug} />
           ) : (
             <section className="mt-6">
               <h2 className="text-base font-semibold text-zinc-100">{active.label}</h2>

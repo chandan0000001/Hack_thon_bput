@@ -43,9 +43,13 @@ export default function OrgWorkspaceShell({
   const activeOrganization = useAuthStore((s) => s.activeOrganization);
   const activeProject = useAuthStore((s) => s.activeProject);
 
-  const org =
+  const rawOrg =
     activeOrganization?.id === orgId ? activeOrganization : readPersisted<Organization>(ACTIVE_ORG_KEY);
-  const project = activeProject?.id === projectId ? activeProject : readPersisted<Project>(ACTIVE_PROJECT_KEY);
+  const rawProject = activeProject?.id === projectId ? activeProject : readPersisted<Project>(ACTIVE_PROJECT_KEY);
+  // Persisted fallbacks must still match the URL ids — a stale selection is
+  // not this project's identity.
+  const org = rawOrg?.id === orgId ? rawOrg : null;
+  const project = rawProject?.id === projectId ? rawProject : null;
 
   // Strict identity guard on the workspace frame only.
   if (frame === 'workspace' && (!orgId || !projectId || org?.id !== orgId || project?.id !== projectId)) {
