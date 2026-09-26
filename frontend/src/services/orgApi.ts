@@ -15,6 +15,27 @@ export interface UpdateProjectPayload {
   status?: ProjectStatus;
 }
 
+export interface OrgInfo {
+  id: string;
+  name: string;
+  owner_id: string;
+  status: string;
+  role: 'admin' | 'analyst' | 'viewer';
+  projects_count: number;
+  members_count: number;
+  created_at: string;
+}
+
+export interface OrgMemberRow {
+  id: string;
+  organization_id: string;
+  user_id: string;
+  email: string;
+  full_name: string;
+  role: 'admin' | 'analyst' | 'viewer';
+  joined_at: string;
+}
+
 export const orgApi = {
   // List organizations for current user
   async listOrgs(): Promise<Organization[]> {
@@ -41,6 +62,48 @@ export const orgApi = {
   async getProject(orgId: string, projectId: string): Promise<Project> {
     return apiFetch(
       `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}`
+    );
+  },
+
+  // Get organization info (includes viewer's role + member count)
+  async getOrg(orgId: string): Promise<OrgInfo> {
+    return apiFetch(`/orgs/${encodeURIComponent(orgId)}`);
+  },
+
+  // List organization members
+  async listMembers(orgId: string): Promise<OrgMemberRow[]> {
+    const data = await apiFetch(`/orgs/${encodeURIComponent(orgId)}/members`);
+    return data.members || [];
+  },
+
+  // Add/invite a member (admin only)
+  async addMember(orgId: string, email: string, role: string): Promise<OrgMemberRow> {
+    return apiFetch(`/orgs/${encodeURIComponent(orgId)}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ email, role }),
+    });
+  },
+
+  // Change a member's role (admin only)
+  async updateMemberRole(orgId: string, memberId: string, role: string): Promise<void> {
+    await apiFetch(`/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(memberId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    });
+  },
+
+  // Remove a member (admin only)
+  async removeMember(orgId: string, memberId: string): Promise<void> {
+    await apiFetch(`/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(memberId)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // Delete a project (admin only; exact confirm_name required, 409 on mismatch)
+  async deleteProject(orgId: string, projectId: string, confirmName: string): Promise<void> {
+    await apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}`,
+      { method: 'DELETE', body: JSON.stringify({ confirm_name: confirmName }) }
     );
   },
 

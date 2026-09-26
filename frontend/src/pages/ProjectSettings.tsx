@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { ArrowLeft, KeyRound, Loader2, Settings as SettingsIcon } from 'lucide-react';
 import Topbar from '../components/layout/Topbar';
+import ProjectSettingsGeneral from './ProjectSettingsGeneral';
 import { orgApi } from '../services/orgApi';
 import { ApiError } from '../services/http';
 import type { Project } from '../types';
@@ -28,6 +29,9 @@ export default function ProjectSettings({ section }: { section: ProjectSettingsS
   const { orgId, projectId } = useParams<{ orgId: string; projectId: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [redirect, setRedirect] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
 
   useEffect(() => {
     let mounted = true;
@@ -53,7 +57,7 @@ export default function ProjectSettings({ section }: { section: ProjectSettingsS
     return () => {
       mounted = false;
     };
-  }, [orgId, projectId]);
+  }, [orgId, projectId, reloadKey]);
 
   if (redirect) return <Navigate to={redirect} replace />;
 
@@ -124,9 +128,13 @@ export default function ProjectSettings({ section }: { section: ProjectSettingsS
           <h1 className="text-2xl font-bold tracking-tight text-zinc-100">Project Settings</h1>
           <p className="mt-1 text-xs text-zinc-400">General configuration, ownership, and lifecycle</p>
 
-          <section className="mt-6">
-            <h2 className="text-base font-semibold text-zinc-100">{active.label}</h2>
-          </section>
+          {section === 'general' && orgId ? (
+            <ProjectSettingsGeneral orgId={orgId} project={project} onProjectRefresh={refresh} />
+          ) : (
+            <section className="mt-6">
+              <h2 className="text-base font-semibold text-zinc-100">{active.label}</h2>
+            </section>
+          )}
         </main>
       </div>
     </div>
