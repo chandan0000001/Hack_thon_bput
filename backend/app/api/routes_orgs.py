@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy import delete, desc, func, select, text, update
+from sqlalchemy import column, delete, desc, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -403,8 +403,17 @@ async def list_members(
     session: AsyncSession = Depends(get_session),
 ):
     await _get_org_and_role(org_id, user.id, session)
+    # Emails come from the SECURITY DEFINER fn (0024): the direct users join
+    # is blinded by users_select RLS (self-row-only), which left non-self
+    # member emails NULL. The definer is scoped to org_members of org_id.
+    email_rows = text(
+        "SELECT user_id, email FROM cyberguard.org_member_emails(:org)"
+    ).bindparams(org=org_id).columns(
+        column("user_id"), column("email")
+    ).subquery()
     stmt = (
-        select(OrgMember, User.email, User.full_name)
+        select(OrgMember, email_rows.c.email, User.full_name)
+        .outerjoin(email_rows, email_rows.c.user_id == OrgMember.user_id)
         .outerjoin(User, User.id == OrgMember.user_id)
         .where(OrgMember.organization_id == org_id)
         .order_by(OrgMember.joined_at)

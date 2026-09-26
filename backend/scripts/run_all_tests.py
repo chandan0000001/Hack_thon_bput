@@ -1065,6 +1065,13 @@ async def run_tests():
     from scripts.test_org_settings import run_org_settings_tests
     await run_org_settings_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 50. ORG-SETTINGS-P6 — Member emails via SECURITY DEFINER fn
+    # -----------------------------------------------------------------------
+    print("\n[Suite 50] ORG-SETTINGS-P6 — Member Emails via Definer Fn")
+    from scripts.test_org_settings import run_org_member_email_tests
+    await run_org_member_email_tests(runner)
+
     return runner.report()
 
 

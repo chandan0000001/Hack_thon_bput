@@ -350,3 +350,152 @@ async def _run_org_settings_body(runner) -> None:
 
     # Clean up overrides
     app.dependency_overrides.pop(get_current_user, None)
+
+
+async def run_org_member_email_tests(runner) -> None:
+    """Suite 50 — ORG-SETTINGS-P6: real member emails for all members.
+
+    Verifies the org_member_emails SECURITY DEFINER fn fixes the RLS-blinded
+    users join: admin and analyst alike see every member's email, outsiders
+    get rejected, and the definer never returns rows for a foreign org id.
+    """
+    print("\n[Suite 50] ORG-SETTINGS-P6 — Member Emails via Definer Fn")
+
+    from app.core.config import get_settings
+    _saved_org_enabled = get_settings().ORG_ENABLED
+    get_settings().ORG_ENABLED = True
+
+    try:
+        await _run_member_email_body(runner)
+    finally:
+        get_settings().ORG_ENABLED = _saved_org_enabled
+
+
+async def _run_member_email_body(runner) -> None:
+    admin_id = str(uuid.uuid4())
+    analyst_id = str(uuid.uuid4())
+    outsider_id = str(uuid.uuid4())
+
+    admin_user = CurrentUser(
+        id=admin_id,
+        email=f"mail-admin-{admin_id[:8]}@example.com",
+        full_name="Mail Admin",
+        username=f"mail_admin_{admin_id[:8]}",
+        account_type="user",
+    )
+    analyst_user = CurrentUser(
+        id=analyst_id,
+        email=f"mail-analyst-{analyst_id[:8]}@example.com",
+        full_name="Mail Analyst",
+        username=f"mail_analyst_{analyst_id[:8]}",
+        account_type="user",
+    )
+    outsider_user = CurrentUser(
+        id=outsider_id,
+        email=f"mail-outsider-{outsider_id[:8]}@example.com",
+        full_name="Mail Outsider",
+        username=f"mail_outsider_{outsider_id[:8]}",
+        account_type="user",
+    )
+
+    from app.db.admin import _get_admin_session_maker
+    admin_maker = _get_admin_session_maker()
+
+    async with admin_maker() as db_session:
+        for u in (admin_user, analyst_user, outsider_user):
+            db_session.add(User(
+                id=u.id, email=u.email, full_name=u.full_name,
+                username=u.username, account_type="user",
+            ))
+        await db_session.commit()
+
+    app.dependency_overrides[get_current_user] = lambda: admin_user
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r_org = await client.post("/api/v1/orgs", json={"name": "Mail Test Org"})
+            assert r_org.status_code == 201, r_org.text
+            org_id = r_org.json()["id"]
+
+            r_member = await client.post(
+                f"/api/v1/orgs/{org_id}/members",
+                json={"email": analyst_user.email, "role": "analyst"},
+            )
+            assert r_member.status_code == 201, r_member.text
+
+            # Check 1: admin list shows real emails for self AND others
+            try:
+                r_admin = await client.get(f"/api/v1/orgs/{org_id}/members")
+                rows = r_admin.json().get("members", [])
+                by_user = {m["user_id"]: m for m in rows}
+                admin_email_ok = by_user.get(admin_id, {}).get("email") == admin_user.email
+                analyst_email_ok = by_user.get(analyst_id, {}).get("email") == analyst_user.email
+                runner.assert_true(
+                    r_admin.status_code == 200 and admin_email_ok and analyst_email_ok,
+                    "1. admin members list shows emails for self+others",
+                    f"Status: {r_admin.status_code}, rows: {rows}",
+                )
+            except Exception as exc:
+                runner.assert_true(False, "1. admin members list emails", str(exc))
+
+            # Check 2: analyst list likewise sees all emails (RLS would blind them)
+            try:
+                app.dependency_overrides[get_current_user] = lambda: analyst_user
+                r_analyst = await client.get(f"/api/v1/orgs/{org_id}/members")
+                rows = r_analyst.json().get("members", [])
+                by_user = {m["user_id"]: m for m in rows}
+                emails_ok = (
+                    by_user.get(admin_id, {}).get("email") == admin_user.email
+                    and by_user.get(analyst_id, {}).get("email") == analyst_user.email
+                )
+                runner.assert_true(
+                    r_analyst.status_code == 200 and emails_ok and len(rows) == 2,
+                    "2. analyst members list shows emails for self+others",
+                    f"Status: {r_analyst.status_code}, rows: {rows}",
+                )
+            except Exception as exc:
+                runner.assert_true(False, "2. analyst members list emails", str(exc))
+            finally:
+                app.dependency_overrides[get_current_user] = lambda: admin_user
+
+            # Check 3: outsider rejected; definer returns nothing for foreign org ids
+            try:
+                app.dependency_overrides[get_current_user] = lambda: outsider_user
+                r_out = await client.get(f"/api/v1/orgs/{org_id}/members")
+                outsider_rejected = r_out.status_code in (403, 404)
+                app.dependency_overrides[get_current_user] = lambda: admin_user
+
+                foreign_id = str(uuid.uuid4())
+                async with async_session_maker() as db:
+                    await db.execute(
+                        text("SELECT set_config('app.user_id', :uid, true)"), {"uid": admin_id}
+                    )
+                    foreign_rows = (
+                        await db.execute(
+                            text(
+                                "SELECT user_id, email FROM cyberguard.org_member_emails(:org)"
+                            ),
+                            {"org": foreign_id},
+                        )
+                    ).all()
+                runner.assert_true(
+                    outsider_rejected and len(foreign_rows) == 0,
+                    "3. outsider rejected + definer returns 0 rows for foreign org",
+                    f"status: {r_out.status_code}, foreign_rows: {foreign_rows}",
+                )
+            except Exception as exc:
+                runner.assert_true(False, "3. outsider + foreign org definer call", str(exc))
+
+            # Teardown
+            async with admin_maker() as db:
+                async with db.begin():
+                    await db.execute(
+                        text("DELETE FROM cyberguard.org_organizations WHERE id = :o"),
+                        {"o": org_id},
+                    )
+                    for uid in (admin_id, analyst_id, outsider_id):
+                        await db.execute(
+                            text("DELETE FROM cyberguard.users WHERE id = :u"), {"u": uid}
+                        )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
