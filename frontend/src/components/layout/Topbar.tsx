@@ -19,6 +19,7 @@ const ROUTE_TITLES: [RegExp, string][] = [
   [/^\/response-actions/, 'Response Actions'],
   [/^\/audit-logs/, 'Audit Logs'],
   [/^\/org\/select/, 'Organizations'],
+  [/^\/org\/.+\/projects\/.+\/settings/, 'Project Settings'],
   [/^\/org\/.+\/projects\/.+\/workspace/, 'Workspace'],
   [/^\/org\/.+\/projects/, 'Projects'],
   [/^\/reports/, 'Reports & Export'],

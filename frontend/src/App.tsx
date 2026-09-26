@@ -39,6 +39,7 @@ import NetworkThreats from './pages/NetworkThreats';
 import OrgSelector from './pages/OrgSelector';
 import ProjectSelector from './pages/ProjectSelector';
 import OrgWorkspaceShell from './pages/OrgWorkspaceShell';
+import ProjectSettings, { type ProjectSettingsSection } from './pages/ProjectSettings';
 import { useAuthStore } from './store/authStore';
 
 /**
@@ -100,6 +101,23 @@ export default function App() {
           element={
             <OrgGuard>
               <OrgWorkspaceShell />
+            </OrgGuard>
+          }
+        />
+        {/* ORG-SETTINGS-P2: project settings shell (General | API Keys) */}
+        <Route
+          path="/org/:orgId/projects/:projectId/settings"
+          element={
+            <OrgGuard>
+              <ProjectSettings section={'general' as ProjectSettingsSection} />
+            </OrgGuard>
+          }
+        />
+        <Route
+          path="/org/:orgId/projects/:projectId/settings/api-keys"
+          element={
+            <OrgGuard>
+              <ProjectSettings section={'api-keys' as ProjectSettingsSection} />
             </OrgGuard>
           }
         />

@@ -11,6 +11,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Settings,
   X,
 } from 'lucide-react';
 import Topbar from '../components/layout/Topbar';
@@ -411,6 +412,18 @@ export default function ProjectSelector() {
                             ref={menuRef}
                             className="absolute right-0 top-full z-20 mt-1 w-36 rounded-lg border border-zinc-800 bg-zinc-900 p-1 shadow-xl"
                           >
+                            <button
+                              type="button"
+                              data-testid={`kebab-settings-${project.id}`}
+                              onClick={() => {
+                                setMenuOpenId(null);
+                                navigate(`/org/${orgId}/projects/${project.id}/settings`);
+                              }}
+                              className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-xs text-zinc-300 transition hover:bg-zinc-800 hover:text-red-400"
+                            >
+                              <Settings className="h-3.5 w-3.5" />
+                              <span>Settings</span>
+                            </button>
                             <button
                               type="button"
                               onClick={() => {

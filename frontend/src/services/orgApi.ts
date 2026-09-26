@@ -37,6 +37,13 @@ export const orgApi = {
     return data.projects || [];
   },
 
+  // Get a single project (403 for non-members, 404 for missing)
+  async getProject(orgId: string, projectId: string): Promise<Project> {
+    return apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}`
+    );
+  },
+
   // Create project in organization
   async createProject(orgId: string, payload: CreateProjectPayload): Promise<Project> {
     return apiFetch(`/orgs/${encodeURIComponent(orgId)}/projects`, {
