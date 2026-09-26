@@ -42,6 +42,7 @@ import OrgWorkspaceShell from './pages/OrgWorkspaceShell';
 import ProjectSettings, { type ProjectSettingsSection } from './pages/ProjectSettings';
 import OrgDashboard from './pages/OrgDashboard';
 import OrgEventReview from './pages/OrgEventReview';
+import EventsListPage from './pages/EventsListPage';
 import { useAuthStore } from './store/authStore';
 
 /**
@@ -115,6 +116,17 @@ export default function App() {
             <OrgGuard>
               <OrgWorkspaceShell>
                 <OrgEventReview />
+              </OrgWorkspaceShell>
+            </OrgGuard>
+          }
+        />
+        {/* ORG-DASHBOARD-P3: filtered events list in the shell */}
+        <Route
+          path="/org/:orgId/projects/:projectId/events"
+          element={
+            <OrgGuard>
+              <OrgWorkspaceShell>
+                <EventsListPage />
               </OrgWorkspaceShell>
             </OrgGuard>
           }

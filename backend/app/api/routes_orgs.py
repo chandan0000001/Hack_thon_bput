@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy import column, delete, desc, func, select, text, update
+from sqlalchemy import String, cast, column, delete, desc, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -894,9 +894,11 @@ async def list_events(
         stmt = stmt.where(OrgEvent.verdict == verdict)
     if q:
         search_pattern = f"%{q.lower()}%"
+        # cast(col, String) — a previous text("text") clause here was invalid
+        # SQLAlchemy (TextClause is not a type) and 500'd every q search.
         stmt = stmt.where(
-            func.cast(OrgEvent.raw_data, text("text")).ilike(search_pattern)
-            | func.cast(OrgEvent.analysis_result, text("text")).ilike(search_pattern)
+            cast(OrgEvent.raw_data, String).ilike(search_pattern)
+            | cast(OrgEvent.analysis_result, String).ilike(search_pattern)
         )
 
     count_stmt = select(func.count()).select_from(stmt.subquery())

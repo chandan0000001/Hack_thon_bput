@@ -1,5 +1,5 @@
 import { Link, Navigate, useLocation, useParams } from 'react-router-dom';
-import { Building2, FolderKanban, Settings } from 'lucide-react';
+import { Building2, FolderKanban, LayoutDashboard, ScrollText, Settings } from 'lucide-react';
 import Topbar from '../components/layout/Topbar';
 import { useAuthStore } from '../store/authStore';
 import type { Organization, Project } from '../types';
@@ -21,7 +21,8 @@ function readPersisted<T>(key: string): T | null {
  * ORG-SHELL-1 / ORG-SETTINGS-P4: org shell frame.
  *
  * - frame="workspace" (default): strict identity guard (id mismatch ->
- *   /org/select) and an empty main — zero widgets, zero data fetching.
+ *   /org/select); children provide the page (dashboard, events list).
+ *   The shell itself still fetches nothing.
  * - frame="settings": hosts the ProjectSettings page as children; identity
  *   is resolved leniently (no redirect — the settings page owns its guard
  *   chain) and the sidebar gains the bottom "Project Settings" nav item,
@@ -57,7 +58,11 @@ export default function OrgWorkspaceShell({
   }
 
   // N3: settings nav item only with resolved org+project and a live project.
+  const workspacePath = `/org/${orgId}/projects/${projectId}/workspace`;
+  const eventsPath = `/org/${orgId}/projects/${projectId}/events`;
   const settingsPath = `/org/${orgId}/projects/${projectId}/settings`;
+  const dashboardActive = Boolean(orgId && projectId) && location.pathname.startsWith(workspacePath);
+  const eventsActive = Boolean(orgId && projectId) && location.pathname.startsWith(eventsPath);
   const settingsActive = Boolean(orgId && projectId) && location.pathname.startsWith(settingsPath);
   const showSettingsItem = Boolean(org && project && project.status !== 'archived');
 
@@ -90,7 +95,40 @@ export default function OrgWorkspaceShell({
             </div>
           )}
 
-          {/* Sidebar body intentionally empty — no other items are invented */}
+          {/* ORG-DASHBOARD-P3: primary nav triad — Dashboard / Events (review
+              pages count as the events family via startsWith) */}
+          {org && project && (
+            <nav className="p-3" data-testid="shell-primary-nav">
+              <Link
+                to={workspacePath}
+                data-testid="shell-dashboard-nav"
+                aria-current={dashboardActive ? 'page' : undefined}
+                className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs transition ${
+                  dashboardActive
+                    ? 'bg-zinc-900 font-semibold text-red-400 ring-1 ring-red-500/30'
+                    : 'text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-100'
+                }`}
+              >
+                <LayoutDashboard className="h-4 w-4 shrink-0" />
+                <span>Dashboard</span>
+              </Link>
+              <Link
+                to={eventsPath}
+                data-testid="shell-events-nav"
+                aria-current={eventsActive ? 'page' : undefined}
+                className={`mt-1 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs transition ${
+                  eventsActive
+                    ? 'bg-zinc-900 font-semibold text-red-400 ring-1 ring-red-500/30'
+                    : 'text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-100'
+                }`}
+              >
+                <ScrollText className="h-4 w-4 shrink-0" />
+                <span>Events</span>
+              </Link>
+            </nav>
+          )}
+
+          {/* Spacer pushes the reference-rail settings item to the bottom */}
           <div className="flex-1" />
 
           {showSettingsItem && (

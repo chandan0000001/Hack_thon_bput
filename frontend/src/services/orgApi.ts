@@ -55,6 +55,7 @@ export interface OrgEventRow {
   verdict: string;
   source: string;
   created_at: string;
+  analysis_result?: { risk_score?: number } | null;
 }
 
 /** ORG-DASHBOARD-P2: full event inspection payload. */
@@ -91,6 +92,12 @@ export interface OrgBlockedIndicatorRow {
   blocked_by: string | null;
   blocked_at: string;
 }
+
+/** ORG-DASHBOARD-P3: events-list filter set (server contract names). Pure
+ * implementations live in eventsListHelpers (node:test importable);
+ * re-exported for service-layer consumers. */
+import { eventsQueryParams, type EventsListFilters } from '../pages/eventsListHelpers';
+export { appendEvents, eventsQueryParams, type EventsListFilters } from '../pages/eventsListHelpers';
 
 export interface ProjectApiKey {
   id: string;
@@ -164,6 +171,20 @@ export const orgApi = {
     const query = q ? `?q=${encodeURIComponent(q)}` : '';
     const data = await apiFetch(`/orgs/${encodeURIComponent(orgId)}/blocked-indicators${query}`);
     return data.indicators || [];
+  },
+
+  // ORG-DASHBOARD-P3: filtered event list (offset pagination; server contract:
+  // event_type/severity/verdict/q + limit(1..200)/offset -> {total, events})
+  async listEvents(
+    orgId: string,
+    projectId: string,
+    filters: EventsListFilters = {},
+  ): Promise<{ total: number; events: OrgEventRow[] }> {
+    const params = eventsQueryParams(filters);
+    const data = await apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}/events${params}`
+    );
+    return { total: Number(data.total ?? 0), events: data.events || [] };
   },
 
   // List projects for an organization

@@ -23,9 +23,9 @@ describe('ORG-SETTINGS-P4 Test Suite (3 Checks)', () => {
     assert.match(shell, /<nav className="border-t border-zinc-800 p-3">/);
     // Visibility: resolved org+project only, archived project hidden
     assert.match(shell, /showSettingsItem = Boolean\(org && project && project\.status !== 'archived'\)/);
-    // No other items invented — the only sidebar Link is the settings item
+    // ORG-DASHBOARD-P3: exactly three sidebar Links — Dashboard, Events, Settings
     const links = shell.match(/<Link/g) || [];
-    assert.strictEqual(links.length, 1, `shell sidebar must contain exactly one Link, found ${links.length}`);
+    assert.strictEqual(links.length, 3, `shell sidebar must contain exactly three Links, found ${links.length}`);
   });
 
   // Check 2: settings routes hosted inside the shell; workspace route untouched
