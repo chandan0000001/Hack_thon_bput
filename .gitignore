@@ -88,3 +88,8 @@ backend/tests/data/cache/
 # Local Docker bind mounts
 volumes/
 
+# Ephemeral test & simulation scripts
+evidence/*.cjs
+evidence/sim1*.png
+
+

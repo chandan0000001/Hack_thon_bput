@@ -8,7 +8,7 @@ Verifies the 4 critical invariants of MIGRATION-FRESH-DB-FIX:
    and enables RLS across all tables.
 3. Migration idempotency: running alembic upgrade head a second time on an already-provisioned
    database succeeds with exit 0 as a clean no-op.
-4. Clean downgrade: alembic downgrade -1 drops the cyberguard schema cleanly.
+4. Clean downgrade: alembic downgrade base drops the cyberguard schema cleanly.
 """
 
 import asyncio
@@ -173,7 +173,7 @@ async def run_migration_fresh_db_tests(runner: Any) -> None:
             # Check 4: Clean Cascade Downgrade
             # -----------------------------------------------------------------
             proc_down = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "alembic", "downgrade", "-1",
+                sys.executable, "-m", "alembic", "downgrade", "base",
                 cwd=str(ROOT),
                 env=sub_env,
                 stdout=asyncio.subprocess.PIPE,
@@ -188,7 +188,7 @@ async def run_migration_fresh_db_tests(runner: Any) -> None:
 
             runner.assert_true(
                 proc_down.returncode == 0 and schema_exists == 0,
-                "Check 4: Clean cascade downgrade (alembic downgrade -1 exits 0, cyberguard schema cleanly dropped)",
+                "Check 4: Clean cascade downgrade (alembic downgrade base exits 0, cyberguard schema cleanly dropped)",
                 details=f"rc={proc_down.returncode}, schema_count={schema_exists}",
             )
 

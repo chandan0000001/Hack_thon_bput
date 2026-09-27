@@ -43,6 +43,19 @@ def analyze(payload: dict[str, Any], ctx: dict[str, Any] | None = None) -> dict[
         if any("impossible" in str(ind.get("type", "")) for ind in indicators):
             mitre.append({"id": "T1078", "name": "Valid Accounts"})
 
+        target_ip = None
+        for ev in reversed(events):
+            if isinstance(ev, dict) and ev.get("ip"):
+                target_ip = str(ev["ip"])
+                break
+        if target_ip and worst_sev in ("critical", "high"):
+            indicators.insert(0, {
+                "type": "ip",
+                "value": target_ip,
+                "severity": worst_sev,
+                "description": f"Anomalous source IP {target_ip}",
+            })
+
     return {
         "risk_score": risk_score,
         "severity": severity,
@@ -51,3 +64,4 @@ def analyze(payload: dict[str, Any], ctx: dict[str, Any] | None = None) -> dict[
         "engine": "account_takeover_detector",
         "available": True,
     }
+

@@ -136,8 +136,9 @@ async def test_03_invite_sets_org_account_type():
 
 
 @pytest.mark.asyncio
-async def test_04_signin_dual_mode_same_account_allowed(async_client):
-    """4. signin_dual_mode_same_account_allowed: same account can sign in using personal mode or org mode."""
+async def test_04_signin_realm_enforcement_org_account(async_client):
+    """4. signin_realm_enforcement_org_account: committed org row rejects personal mode with 403
+    account_type_mismatch; org mode on the same row succeeds."""
     test_id = str(uuid.uuid4())
     test_email = f"alice_org_{test_id[:8]}@example.com"
 
@@ -159,17 +160,17 @@ async def test_04_signin_dual_mode_same_account_allowed(async_client):
         mock_client.auth.sign_in_with_password.return_value = sb_res
         mock_get_client.return_value = mock_client
 
-        # Mode=personal signin succeeds
+        # Mode=personal signin is realm-rejected (403, explicit mismatch code)
         resp_personal = await async_client.post(
             "/api/v1/auth/signin",
             json={"identifier": test_email, "password": "ValidPassword123!", "mode": "personal"},
         )
-        assert resp_personal.status_code == 200, resp_personal.text
+        assert resp_personal.status_code == 403, resp_personal.text
         data_personal = resp_personal.json()
-        assert data_personal["user"]["email"] == test_email
-        assert "access_token" in data_personal
+        assert data_personal["error"] == "account_type_mismatch"
+        assert data_personal["hint"] == "use_org_mode"
 
-        # Mode=org signin also succeeds for same account
+        # Mode=org signin succeeds for the same account
         resp_org = await async_client.post(
             "/api/v1/auth/signin",
             json={"identifier": test_email, "password": "ValidPassword123!", "mode": "org"},
@@ -268,14 +269,16 @@ async def test_07_oauth_callback_dual_mode_same_account(async_client):
         db.add(user)
         await db.commit()
 
-    # GET redirect test for personal mode -> /dashboard
+    # GET redirect test for personal mode -> realm bounce to /login with the
+    # account_type_mismatch banner query (committed org row).
     resp_get_personal = await async_client.get(
         f"/api/v1/auth/callback?email={test_email}&mode=personal",
         follow_redirects=False,
     )
     assert resp_get_personal.status_code in (302, 303, 307)
     location_personal = resp_get_personal.headers.get("location", "")
-    assert "/dashboard" in location_personal
+    assert "/login" in location_personal
+    assert "error=account_type_mismatch" in location_personal
 
     # GET redirect test for org mode -> /org/select
     resp_get_org = await async_client.get(
@@ -286,13 +289,13 @@ async def test_07_oauth_callback_dual_mode_same_account(async_client):
     location_org = resp_get_org.headers.get("location", "")
     assert "/org/select" in location_org
 
-    # POST API test
+    # POST API test: personal mode on a committed org row -> 403 mismatch
     resp_post = await async_client.post(
         "/api/v1/auth/callback",
         json={"email": test_email, "mode": "personal"},
     )
-    assert resp_post.status_code == 200
-    assert resp_post.json()["mode"] == "personal"
+    assert resp_post.status_code == 403
+    assert resp_post.json()["error"] == "account_type_mismatch"
 
 
 @pytest.mark.asyncio

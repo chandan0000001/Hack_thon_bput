@@ -45,6 +45,16 @@ class PermissionDeniedError(AppError):
         super().__init__(message, code="permission_denied", status_code=status.HTTP_403_FORBIDDEN)
 
 
+class InvalidCredentialsError(AppError):
+    """Failed authentication (bad email/username or password).
+
+    Must stay 401: the frontend treats any 403 from the sign-in endpoint as a
+    realm mismatch, so credential failures must never travel as 403."""
+
+    def __init__(self, message: str = "Invalid email/username or password"):
+        super().__init__(message, code="invalid_credentials", status_code=status.HTTP_401_UNAUTHORIZED)
+
+
 class ValidationError(AppError):
     def __init__(self, message: str, details: Optional[Any] = None):
         super().__init__(message, code="validation_error", status_code=status.HTTP_400_BAD_REQUEST, details=details)

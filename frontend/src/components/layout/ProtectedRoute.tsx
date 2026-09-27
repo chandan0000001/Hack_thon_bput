@@ -7,8 +7,6 @@ export default function ProtectedRoute({ children }: { children: ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const hydrated = useAuthStore((s) => s.hydrated);
 
-  const user = useAuthStore((s) => s.user);
-
   // Wait for session restoration (Supabase getSession) before deciding.
   if (!hydrated) {
     return (

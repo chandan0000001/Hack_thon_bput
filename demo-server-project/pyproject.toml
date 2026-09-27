@@ -9,6 +9,9 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.scripts]
+demo-server = "demo_server.__main__:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

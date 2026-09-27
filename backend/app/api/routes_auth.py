@@ -20,8 +20,10 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.errors import (
+    AccountTypeMismatchError,
     ConflictError,
     EmailExistsError,
+    InvalidCredentialsError,
     PermissionDeniedError,
     UnauthorizedError,
     ValidationError,
@@ -414,11 +416,17 @@ async def signin(payload: SigninRequest) -> dict[str, Any]:
     if email is None:
         email = await resolve_email_for_identifier(identifier.lower())
         if not email:
-            raise PermissionDeniedError("Invalid email/username or password")
+            raise InvalidCredentialsError()
 
     mode = (payload.mode or "personal").strip().lower()
 
+    # Realm check: only a COMMITTED row with account_type='org' rejects
+    # personal-mode sign-in. A missing row (empty users table) never rejects —
+    # unknown emails fail at the credential check below with 401. Sign-in is
+    # read-only: no provisioning happens inside this verdict path.
     target_user = await find_user_by_email(email)
+    if target_user and mode == "personal" and target_user.get("account_type") == "org":
+        raise AccountTypeMismatchError()
 
     from app.core.security import _get_anon_client
 
@@ -427,15 +435,18 @@ async def signin(payload: SigninRequest) -> dict[str, Any]:
             {"email": email, "password": payload.password}
         )
     except Exception:
-        raise PermissionDeniedError("Invalid email/username or password")
+        raise InvalidCredentialsError()
 
     session = getattr(result, "session", None)
     sb_user = getattr(result, "user", None)
     if session is None or sb_user is None:
-        raise PermissionDeniedError("Invalid email/username or password")
+        raise InvalidCredentialsError()
 
+    # Post-check: catch rows committed between the pre-check and token issue.
     if not target_user:
         target_user = await find_user_by_email(email)
+        if target_user and mode == "personal" and target_user.get("account_type") == "org":
+            raise AccountTypeMismatchError()
 
     resolved_account_type = (target_user.get("account_type") if target_user else None) or "personal"
 
@@ -482,6 +493,17 @@ async def oauth_callback_get(
             except Exception:
                 pass
 
+    if resolved_email:
+        target_user = await find_user_by_email(resolved_email.lower())
+        if target_user:
+            # Realm check: committed org accounts bounce back to the login
+            # page with the mismatch banner instead of landing on /dashboard.
+            if resolved_mode == "personal" and target_user.get("account_type") == "org":
+                return RedirectResponse(
+                    url="/login?mode=personal&error=account_type_mismatch",
+                    status_code=status.HTTP_302_FOUND,
+                )
+
     if resolved_mode == "org":
         return RedirectResponse(url="/org/select", status_code=status.HTTP_302_FOUND)
     return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
@@ -514,6 +536,9 @@ async def oauth_callback_post(
     if resolved_email:
         target_user = await find_user_by_email(resolved_email.lower())
         if target_user:
+            # Realm check: committed org accounts reject personal-mode tokens.
+            if resolved_mode == "personal" and target_user.get("account_type") == "org":
+                raise AccountTypeMismatchError()
             return {
                 "user": {
                     "id": target_user["id"],
@@ -551,9 +576,13 @@ async def oauth_callback_post(
 
 @router.post("/verify-otp")
 async def verify_otp(payload: VerifyOtpRequest) -> dict[str, Any]:
-    """Verify one-time passcode."""
+    """Verify one-time passcode with realm enforcement."""
     email = payload.email.strip().lower()
     mode = (payload.mode or "personal").strip().lower()
+
+    target_user = await find_user_by_email(email)
+    if target_user and mode == "personal" and target_user.get("account_type") == "org":
+        raise AccountTypeMismatchError()
 
     from app.core.security import _get_anon_client
     try:

@@ -51,6 +51,26 @@ def analyze(payload: dict[str, Any], ctx: dict[str, Any] | None = None) -> dict[
         if any("exfiltration" in str(ind.get("type", "")) for ind in indicators):
             mitre.append({"id": "T1048", "name": "Exfiltration Over Alternative Protocol"})
 
+        target_ip = None
+        for f in flows:
+            if isinstance(f, dict):
+                tip = f.get("dest_ip") or f.get("dst_ip") or f.get("source_ip") or f.get("src_ip")
+                if tip:
+                    target_ip = str(tip)
+                    break
+        if not target_ip:
+            for al in api_logs:
+                if isinstance(al, dict) and al.get("source_ip"):
+                    target_ip = str(al["source_ip"])
+                    break
+        if target_ip and worst_sev in ("critical", "high"):
+            indicators.insert(0, {
+                "type": "ip",
+                "value": target_ip,
+                "severity": worst_sev,
+                "description": f"Threat indicator IP {target_ip}",
+            })
+
     return {
         "risk_score": risk_score,
         "severity": severity,
@@ -59,3 +79,4 @@ def analyze(payload: dict[str, Any], ctx: dict[str, Any] | None = None) -> dict[
         "engine": "network_threat_detector",
         "available": True,
     }
+

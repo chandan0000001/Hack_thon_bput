@@ -218,10 +218,11 @@ export default function Login() {
         navigate('/dashboard', { replace: true });
       }
     } catch (err: any) {
-      if (
-        (err instanceof AuthApiError && (err.status === 403 || err.code === 'account_type_mismatch')) ||
-        (err instanceof Error && err.message.toLowerCase().includes('organization account'))
-      ) {
+      // Only an explicit account_type_mismatch verdict means the email is
+      // realm-locked to an organization. Any other failure (e.g. 401 invalid
+      // credentials) must render as a plain error — a blanket "any 403"
+      // mapping here used to mislabel failed logins as org accounts.
+      if (err instanceof AuthApiError && err.code === 'account_type_mismatch') {
         setAuthError({
           error: 'account_type_mismatch',
           message: 'This email is registered as an organization account.',

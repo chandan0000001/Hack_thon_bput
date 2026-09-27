@@ -209,6 +209,85 @@ def cmd_replay(args: argparse.Namespace) -> int:
     return 0 if stats["replayed"] == stats["succeeded"] else 1
 
 
+def cmd_campaign_run(args: argparse.Namespace) -> int:
+    """Run an attack campaign with stage progression and verdict assertions."""
+    from .campaign import format_campaign_table, get_campaign, run_campaign
+
+    try:
+        camp = get_campaign(args.name)
+    except KeyError as exc:
+        print(f"campaign error: {exc}", file=sys.stderr)
+        return 2
+
+    config, _store, shipper = build_components()
+    try:
+        summary = run_campaign(
+            shipper,
+            camp,
+            timescale=args.timescale,
+            attacker_ip=args.attacker_ip,
+        )
+    finally:
+        shipper.close()
+
+    print(format_campaign_table(summary))
+    return 0 if summary.failed == 0 else 1
+
+
+def cmd_campaign_report(args: argparse.Namespace) -> int:
+    """Display gateway calls and closed-loop auto-enforcement report."""
+    config, store, shipper = build_components()
+    try:
+        rows = store.query(limit=args.limit)
+    finally:
+        shipper.close()
+
+    print(f"Response store report ({len(rows)} recent calls from {config.store_path}):\n")
+
+    headers = ["ID", "TS", "ACTION", "STATUS", "SEVERITY", "VERDICT", "BLOCKED_MATCH", "LAT_MS"]
+    rows_out = []
+    for r in rows:
+        resp = {}
+        if r.get("response_json"):
+            try:
+                resp = json.loads(r["response_json"])
+            except Exception:
+                pass
+        severity = resp.get("severity", "") if isinstance(resp, dict) else ""
+        verdict = resp.get("verdict", "") if isinstance(resp, dict) else ""
+        matched = "TRUE" if isinstance(resp, dict) and resp.get("blocked_indicator_matched") else "false"
+        rows_out.append([
+            str(r["id"]),
+            str(r["ts"]),
+            str(r["action"]),
+            str(r["status"]),
+            severity,
+            verdict,
+            matched,
+            str(r["latency_ms"] if r["latency_ms"] is not None else ""),
+        ])
+    widths = [max(len(h), *(len(row[i]) for row in rows_out)) if rows_out else len(h) for i, h in enumerate(headers)]
+    print("  ".join(h.ljust(w) for h, w in zip(headers, widths)))
+    print("-" * (sum(widths) + 2 * (len(headers) - 1)))
+    for row in rows_out:
+        print("  ".join(c.ljust(w) for c, w in zip(row, widths)))
+    return 0
+
+
+def cmd_campaign_list(_args: argparse.Namespace) -> int:
+    """List all available attack campaigns and stages."""
+    from .campaign import CAMPAIGNS
+
+    print("Available Attack Campaigns:\n")
+    for name, camp in sorted(CAMPAIGNS.items()):
+        print(f"  • {name}: {camp.description}")
+        print(f"    Stages ({len(camp.stages)}):")
+        for s in camp.stages:
+            print(f"      - {s.name}: action={s.action}, expected_severity={s.expected_severity}, delay={s.delay_s}s")
+        print()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
@@ -245,9 +324,26 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=None, help="override DEMO_PORT")
     p.set_defaults(func=cmd_serve)
 
+    p_camp = sub.add_parser("campaign", help="execute and report multi-stage attack campaigns")
+    camp_sub = p_camp.add_subparsers(dest="campaign_cmd", required=True)
+
+    p_crun = camp_sub.add_parser("run", help="run attack campaign")
+    p_crun.add_argument("--name", required=True, help="campaign name: cred_stuffing, exfil_spike, c2_beacon_wave")
+    p_crun.add_argument("--timescale", type=float, default=1.0, help="delay timescale (default 1.0)")
+    p_crun.add_argument("--attacker-ip", default=None, help="attacker IP override")
+    p_crun.set_defaults(func=cmd_campaign_run)
+
+    p_crep = camp_sub.add_parser("report", help="display gateway calls and verdict report")
+    p_crep.add_argument("--limit", type=int, default=20, help="limit results")
+    p_crep.set_defaults(func=cmd_campaign_report)
+
+    p_clist = camp_sub.add_parser("list", help="list available campaigns")
+    p_clist.set_defaults(func=cmd_campaign_list)
+
     args = parser.parse_args(argv)
     try:
         return args.func(args)
+
     except ConfigError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2

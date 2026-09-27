@@ -99,7 +99,6 @@ export default function ProjectSelector() {
             }
           }
         }
-
         if (!found && orgList.length > 0) {
           navigate('/org/select', { replace: true });
           return;
@@ -116,6 +115,7 @@ export default function ProjectSelector() {
         const projectList = await orgApi.listProjects(orgId);
         if (mounted) {
           setProjects(projectList);
+
 
           // Verify if activeProject belongs to this org and exists in projectList
           const currentActiveProj = useAuthStore.getState().activeProject;
