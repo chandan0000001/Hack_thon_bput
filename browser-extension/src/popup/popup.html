@@ -32,32 +32,111 @@
         <p class="state__hint">Checking connection…</p>
       </section>
 
-      <!-- Authenticated -->
-      <section id="state-authenticated" class="state" hidden>
-        <div class="check" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="40" height="40" fill="none">
-            <circle cx="12" cy="12" r="10" stroke="var(--cg-ok)" stroke-width="1.6" />
-            <path d="M8 12.3l2.6 2.6L16.2 9" stroke="var(--cg-ok)" stroke-width="1.8"
-                  stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </div>
-        <p id="auth-status" class="state__status">Authenticated</p>
-        <p id="auth-email" class="state__email cg-score">…</p>
-        <p class="state__hint">Connected to CyberGuard SOC</p>
-        <button id="btn-open-console" class="cg-btn" type="button">Open Web Console</button>
-        <button id="btn-sign-out" class="cg-btn" type="button">Sign Out</button>
-      </section>
-
       <!-- Error -->
       <section id="state-error" class="state" hidden>
         <p class="state__error">Something went wrong. Try signing in again.</p>
         <button id="btn-retry" class="cg-btn" type="button">Retry</button>
+      </section>
+
+      <!-- Authenticated: main menu -->
+      <section id="state-authenticated" class="state state--stretch" hidden>
+        <div class="identity">
+          <div class="check" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="var(--cg-ok)" stroke-width="1.6" />
+              <path d="M8 12.3l2.6 2.6L16.2 9" stroke="var(--cg-ok)" stroke-width="1.8"
+                    stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
+          <div>
+            <p id="auth-status" class="state__status">Authenticated</p>
+            <p id="auth-email" class="state__email cg-score">…</p>
+          </div>
+        </div>
+
+        <div class="cards">
+          <button class="card" id="card-url" type="button">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" stroke="var(--cg-accent)" stroke-width="1.5" />
+              <path d="M3.5 12h17M12 3c2.6 2.4 4 5.6 4 9s-1.4 6.6-4 9c-2.6-2.4-4-5.6-4-9s1.4-6.6 4-9Z"
+                    stroke="var(--cg-accent)" stroke-width="1.5" />
+            </svg>
+            <span class="card__title">Scan URL</span>
+            <span class="card__sub cg-score">/analysis/url</span>
+          </button>
+          <button class="card" id="card-email" type="button">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="14" rx="2" stroke="var(--cg-accent)" stroke-width="1.5" />
+              <path d="m4 7 8 6 8-6" stroke="var(--cg-accent)" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+            <span class="card__title">Scan Email</span>
+            <span class="card__sub cg-score">/analysis/email</span>
+          </button>
+          <button class="card" id="card-deepfake" type="button">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="14" rx="2" stroke="var(--cg-accent)" stroke-width="1.5" />
+              <circle cx="9" cy="10.5" r="2" stroke="var(--cg-accent)" stroke-width="1.5" />
+              <path d="M5 17c.8-2 2.4-3 4-3s3.2 1 4 3M15 9.5h4M15 12.5h4" stroke="var(--cg-accent)"
+                    stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+            <span class="card__title">Detect Deepfake</span>
+            <span class="card__sub cg-score">/analysis/media</span>
+          </button>
+        </div>
+
+        <button id="btn-sign-out" class="cg-btn" type="button">Sign Out</button>
+        <footer class="pointers">
+          <button class="pointer" id="ptr-connectors" type="button">Connect Mailbox for Live Monitoring ↗</button>
+          <button class="pointer" id="ptr-console" type="button">Open Web Console ↗</button>
+        </footer>
+      </section>
+
+      <!-- Tool: URL -->
+      <section id="view-url" class="state state--stretch tool" hidden>
+        <button class="back" data-back type="button">← Back</button>
+        <p class="tool__title">Scan URL</p>
+        <label class="field">
+          <span class="field__label">URL</span>
+          <input id="url-input" class="field__input cg-score" type="url" placeholder="https://…" spellcheck="false" />
+        </label>
+        <button id="btn-scan-url" class="cg-btn cg-btn--primary" type="button">Scan</button>
+        <p class="scan-error" id="url-error" hidden></p>
+        <div class="result" id="url-result" hidden></div>
+      </section>
+
+      <!-- Tool: Email -->
+      <section id="view-email" class="state state--stretch tool" hidden>
+        <button class="back" data-back type="button">← Back</button>
+        <p class="tool__title">Scan Email</p>
+        <label class="field">
+          <span class="field__label">Paste email body / headers</span>
+          <textarea id="email-input" class="field__input" rows="7"
+                    placeholder="From: suspect@evil.example&#10;Subject: Urgent: verify your account&#10;&#10;Dear user, click http://phish.example/login …"></textarea>
+        </label>
+        <button id="btn-scan-email" class="cg-btn cg-btn--primary" type="button">Scan</button>
+        <p class="scan-error" id="email-error" hidden></p>
+        <div class="result" id="email-result" hidden></div>
+      </section>
+
+      <!-- Tool: Deepfake -->
+      <section id="view-deepfake" class="state state--stretch tool" hidden>
+        <button class="back" data-back type="button">← Back</button>
+        <p class="tool__title">Detect Deepfake</p>
+        <label class="field">
+          <span class="field__label">Image file</span>
+          <input id="deepfake-input" class="field__file" type="file" accept="image/*" />
+        </label>
+        <p id="deepfake-file" class="state__hint cg-score" hidden></p>
+        <button id="btn-scan-deepfake" class="cg-btn cg-btn--primary" type="button">Scan</button>
+        <p class="scan-error" id="deepfake-error" hidden></p>
+        <div class="result" id="deepfake-result" hidden></div>
       </section>
     </main>
 
     <script src="../config.js"></script>
     <script src="../lib/browser-adapter.js"></script>
     <script src="../lib/auth.js"></script>
+    <script src="../lib/popup-views.js"></script>
     <script src="../lib/api-client.js"></script>
     <script src="popup.js"></script>
   </body>
