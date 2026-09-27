@@ -26,6 +26,21 @@ function slugifyName(name: string): string {
 export default function Login() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // EXT-P1: optional post-auth redirect target (used by /ext/auth so the
+  // extension callback tab can complete sign-in). Same-app paths only —
+  // reject anything empty or protocol-relative to prevent open redirects.
+  const nextPath = (() => {
+    const raw = searchParams.get('next');
+    if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/dashboard';
+    return raw;
+  })();
+
+  // navigate() drops any existing location.hash. The EXT-P1 callback page
+  // keeps the token handoff in the hash (fragment-only), so post-auth
+  // navigation must re-attach it or the extension handoff is lost.
+  const goTo = (path: string) => navigate(path + (window.location.hash || ''), { replace: true });
+
   const login = useAuthStore((s) => s.login);
   const signUp = useAuthStore((s) => s.signUp);
   const requestPasswordReset = useAuthStore((s) => s.requestPasswordReset);
@@ -102,10 +117,10 @@ export default function Login() {
         }
       });
     } else {
-      // Personal mode: ALWAYS land on dashboard
-      navigate('/dashboard', { replace: true });
+      // Personal mode: ALWAYS land on dashboard (or the ?next= override)
+      goTo(nextPath);
     }
-  }, [isAuthenticated, fetchOrganizations, navigate, authMode]);
+  }, [isAuthenticated, fetchOrganizations, navigate, authMode, nextPath]);
 
   // Live username availability check
   useEffect(() => {
@@ -214,8 +229,8 @@ export default function Login() {
           setStep('org-name');
         }
       } else {
-        // Personal mode: ALWAYS land on dashboard
-        navigate('/dashboard', { replace: true });
+        // Personal mode: ALWAYS land on dashboard (or the ?next= override)
+        goTo(nextPath);
       }
     } catch (err: any) {
       // Only an explicit account_type_mismatch verdict means the email is
@@ -278,7 +293,7 @@ export default function Login() {
           'Verification email sent! Please check your inbox and click the confirmation link to activate your account.'
         );
       } else {
-        navigate('/dashboard', { replace: true });
+        goTo(nextPath);
       }
     } catch (err: any) {
       if (err instanceof AuthApiError && err.status === 409 && err.code === 'email_exists') {
@@ -417,7 +432,7 @@ export default function Login() {
     try {
       await loginWithOAuth(provider, authMode);
       if (authMode === 'personal') {
-        navigate('/dashboard', { replace: true });
+        goTo(nextPath);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to sign in with ${provider}`);

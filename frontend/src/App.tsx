@@ -5,6 +5,8 @@ import ProtectedRoute from './components/layout/ProtectedRoute';
 import RoleGuard from './components/layout/RoleGuard';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
+import ExtAuthPage from './pages/ExtAuthPage';
+import ExtCallbackPage from './pages/ExtCallbackPage';
 import ResetPassword from './pages/ResetPassword';
 import EmailConnectors from './pages/EmailConnectors';
 import BlockedSenders from './pages/BlockedSenders';
@@ -78,6 +80,9 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* EXT-P1: browser-extension universal sign-in (public routes) */}
+        <Route path="/ext/auth" element={<ExtAuthPage />} />
+        <Route path="/ext/callback" element={<ExtCallbackPage />} />
         <Route path="/reset-password" element={<ResetPassword />} />
 
         {/* Org window routes */}

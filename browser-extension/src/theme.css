@@ -1,0 +1,110 @@
+/*
+ * CyberGuard website theme tokens for the extension, quoted from the
+ * frontend source so popup/panel surfaces match the web console:
+ *
+ *   frontend/src/theme.ts L43-52 (ACCENT):
+ *     primary: '#dc2626', bg: '#050505', panel: '#0a0a0a', card: '#101010',
+ *     border: '#262626', textPrimary: '#fafafa', textSecondary: '#a3a3a3'
+ *
+ *   frontend/tailwind.config.js L7-8 (fonts):
+ *     sans: ['Inter', ...]  mono: ['JetBrains Mono', 'Fira Code', 'ui-monospace', ...]
+ *
+ *   frontend/tailwind.config.js L28-34 (severity):
+ *     safe: '#e4e4e7', low: '#71717a', medium: '#f87171',
+ *     high: '#dc2626', critical: '#ef4444'
+ *
+ *   frontend/src/index.css L5-14:
+ *     :root { color-scheme: dark; }  body { background-color: #050505; }
+ *     ::selection { background-color: #dc2626; color: #fafafa; }
+ */
+:root {
+  color-scheme: dark;
+
+  --cg-bg: #050505;
+  --cg-panel: #0a0a0a;
+  --cg-card: #101010;
+  --cg-border: #262626;
+  --cg-text-primary: #fafafa;
+  --cg-text-secondary: #a3a3a3;
+
+  --cg-accent: #dc2626;
+  --cg-accent-hover: #ef4444; /* tailwind severity.critical */
+
+  --cg-sev-safe: #e4e4e7;
+  --cg-sev-low: #71717a;
+  --cg-sev-medium: #f87171;
+  --cg-sev-high: #dc2626;
+  --cg-sev-critical: #ef4444;
+
+  --cg-ok: #22c55e; /* status accent for the signed-in check (outside site palette) */
+
+  --cg-font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --cg-font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, 'SFMono-Regular', monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--cg-bg);
+  color: var(--cg-text-primary);
+  font-family: var(--cg-font-sans);
+}
+
+::selection {
+  background-color: var(--cg-accent);
+  color: var(--cg-text-primary);
+}
+
+/* Severity badge chips (mirror of SeverityBadge.tsx SEVERITY_STYLES) */
+.cg-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 9999px;
+  font-family: var(--cg-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.cg-badge--safe { background: var(--cg-sev-safe); color: #050505; }
+.cg-badge--low { background: var(--cg-sev-low); color: #fafafa; }
+.cg-badge--medium { background: var(--cg-sev-medium); color: #050505; }
+.cg-badge--high { background: var(--cg-sev-high); color: #fafafa; }
+.cg-badge--critical { background: var(--cg-sev-critical); color: #fafafa; }
+
+/* Mono score display (site convention: mono font for scores) */
+.cg-score {
+  font-family: var(--cg-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.cg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--cg-border);
+  background: var(--cg-card);
+  color: var(--cg-text-primary);
+  font-family: var(--cg-font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.cg-btn:hover { border-color: var(--cg-accent); }
+.cg-btn--primary {
+  background: var(--cg-accent);
+  border-color: var(--cg-accent);
+  color: #fafafa;
+}
+.cg-btn--primary:hover { background: var(--cg-accent-hover); }
+.cg-btn:disabled { opacity: 0.55; cursor: not-allowed; }

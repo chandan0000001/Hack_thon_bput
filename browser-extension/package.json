@@ -1,0 +1,16 @@
+{
+  "name": "cyberguard-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CyberGuard SOC browser extension (cross-browser WebExtension: Chromium + Firefox from one source)",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "icons": "node scripts/gen-icons.mjs",
+    "test": "node --test tests/",
+    "lint": "npx web-ext lint --source-dir dist/chromium && npx web-ext lint --source-dir dist/firefox"
+  },
+  "devDependencies": {
+    "web-ext": "^8.3.0"
+  }
+}

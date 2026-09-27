@@ -648,3 +648,20 @@ safety, I3 guarantees verdict consistency across interactive scans, mailbox
 scans, gateway integrations, and the real-time worker pipeline, I4 preserves
 operational trust (the "no fake provider success anywhere" rule), and I5
 preserves the forensic chain required by SOC 2 / ISO 27001-style audit review.
+
+## 2026-09-27 · Single-repo rule (EXT-REPO-FIX)
+
+**Decision:** All components live inside `Hack_thon_bput` (`backend/`,
+`frontend/`, `demo-server-project/`, `browser-extension/`). Creating sibling
+copies of the repository is forbidden; agents work only in the main repo path.
+
+**Rationale:** During EXT-P1 a `git worktree` checkout
+(`/home/srikant/hackthon/ext_p1`) was used to develop the browser extension
+off `main` while the primary tree sat dirty on another branch. The fork
+drifted (post-port bug fixes existed only in the sibling copy) and forced a
+diff-based reconciliation back into the main repo.
+
+**Consequences:** One source of truth per repo; branch/worktree workflows must
+return their work to `Hack_thon_bput` (or commit directly on a branch there)
+before any verification is reported. Sibling copies are quarantined, not kept
+in sync.

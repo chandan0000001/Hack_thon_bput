@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "CyberGuard SOC",
+  "version": "0.1.0",
+  "description": "CyberGuard SOC companion: universal sign-in and phishing-scanner bridge (P3).",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "CyberGuard SOC",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": ["storage", "alarms"],
+  "content_scripts": [
+    {
+      "matches": ["http://localhost:5173/*"],
+      "js": ["lib/path-gate.js", "content/callback-bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

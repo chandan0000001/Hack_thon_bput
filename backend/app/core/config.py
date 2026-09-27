@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str
     API_V1_PREFIX: str = "/api/v1"
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
+    # EXT-P1: browser-extension origins allowed to call the API from
+    # extension pages (popup). Comma-separated; the Chromium dev ID is pinned
+    # by browser-extension/build.mjs, the moz-extension UUID varies per
+    # Firefox install (see browser-extension/README.md).
+    EXT_CORS_ORIGINS: str = ""
 
     DATABASE_URL: str = ""
     # Service-role DSN used by Alembic migrations (bypasses RLS).
@@ -329,8 +334,9 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins_list(self) -> list[str]:
-        """Parse the comma-separated CORS_ORIGINS variable into a list."""
-        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+        """Parse CORS_ORIGINS + EXT_CORS_ORIGINS into one allow list."""
+        combined = f"{self.CORS_ORIGINS},{self.EXT_CORS_ORIGINS}"
+        return [origin.strip() for origin in combined.split(",") if origin.strip()]
 
 
 @lru_cache

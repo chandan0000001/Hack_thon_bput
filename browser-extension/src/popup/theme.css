@@ -1,0 +1,80 @@
+@import url("../theme.css");
+
+.popup {
+  width: 320px;
+  padding: 16px;
+  background: var(--cg-panel);
+}
+
+.popup__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--cg-border);
+  margin-bottom: 14px;
+}
+
+.popup__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--cg-accent);
+  color: #fafafa;
+  font-family: var(--cg-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.popup__name {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+/* display:flex above would override the [hidden] attribute — re-hide. */
+.state[hidden] {
+  display: none;
+}
+
+.state__hint {
+  margin: 0;
+  color: var(--cg-text-secondary);
+  font-size: 12.5px;
+}
+
+.state__status {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.state__email {
+  margin: 0;
+  color: var(--cg-text-secondary);
+  font-size: 12px;
+}
+
+.state__error {
+  margin: 0;
+  color: var(--cg-sev-medium);
+  font-size: 12.5px;
+}
+
+.shield,
+.check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

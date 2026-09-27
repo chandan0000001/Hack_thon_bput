@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>CyberGuard SOC</title>
+    <link rel="stylesheet" href="theme.css" />
+  </head>
+  <body>
+    <main class="popup" aria-live="polite">
+      <header class="popup__brand">
+        <span class="popup__mark" aria-hidden="true">CG</span>
+        <span class="popup__name">CyberGuard SOC</span>
+      </header>
+
+      <!-- Signed-out -->
+      <section id="state-signed-out" class="state" hidden>
+        <div class="shield" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="44" height="44" fill="none">
+            <path d="M12 2 4.5 5v6.2c0 4.9 3.2 8.4 7.5 10.3 4.3-1.9 7.5-5.4 7.5-10.3V5L12 2Z"
+                  stroke="var(--cg-accent)" stroke-width="1.6" />
+            <path d="M9 11.5l2.2 2.2L15.5 9" stroke="var(--cg-accent)" stroke-width="1.6"
+                  stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </div>
+        <p class="state__hint">Connect the extension to your CyberGuard workspace.</p>
+        <button id="btn-sign-in" class="cg-btn cg-btn--primary" type="button">Sign In to CyberGuard</button>
+        <p id="signed-out-error" class="state__error" hidden></p>
+      </section>
+
+      <!-- Loading / refreshing -->
+      <section id="state-loading" class="state" hidden>
+        <p class="state__hint">Checking connection…</p>
+      </section>
+
+      <!-- Authenticated -->
+      <section id="state-authenticated" class="state" hidden>
+        <div class="check" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="40" height="40" fill="none">
+            <circle cx="12" cy="12" r="10" stroke="var(--cg-ok)" stroke-width="1.6" />
+            <path d="M8 12.3l2.6 2.6L16.2 9" stroke="var(--cg-ok)" stroke-width="1.8"
+                  stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </div>
+        <p id="auth-status" class="state__status">Authenticated</p>
+        <p id="auth-email" class="state__email cg-score">…</p>
+        <p class="state__hint">Connected to CyberGuard SOC</p>
+        <button id="btn-open-console" class="cg-btn" type="button">Open Web Console</button>
+        <button id="btn-sign-out" class="cg-btn" type="button">Sign Out</button>
+      </section>
+
+      <!-- Error -->
+      <section id="state-error" class="state" hidden>
+        <p class="state__error">Something went wrong. Try signing in again.</p>
+        <button id="btn-retry" class="cg-btn" type="button">Retry</button>
+      </section>
+    </main>
+
+    <script src="../config.js"></script>
+    <script src="../lib/browser-adapter.js"></script>
+    <script src="../lib/auth.js"></script>
+    <script src="../lib/api-client.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
