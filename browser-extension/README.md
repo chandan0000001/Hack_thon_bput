@@ -46,11 +46,39 @@ browser-extension/
 ## Build & verify
 
 ```bash
-npm install          # web-ext (lint) only — no runtime deps
+npm install          # web-ext, jsdom, sharp (dev only — no runtime deps)
+npm run icons        # regenerate src/icons/icon-{16,32,48,128}.png from the SVG shield
 npm run build        # emits dist/chromium + dist/firefox, validates manifests
 npm test             # node --test tests/  (includes web-ext lint per target)
 npm run lint         # standalone web-ext lint, both targets
 ```
+
+## Developer load
+
+- **Chromium:** `chrome://extensions` → enable Developer mode → *Load unpacked*
+  → select `dist/chromium/`. The pinned manifest key makes the ID
+  `chrome-extension://mkhcpikficaipogflekjkoiplegbeaji` on every machine.
+- **Firefox:** `about:debugging#/runtime/this-firefox` → *Load Temporary
+  Add-on…* → pick `dist/firefox/manifest.json` (or `web-ext run --source-dir dist/firefox`).
+
+## Build for the Chrome Web Store
+
+```bash
+npm run build
+npx web-ext build --source-dir=dist/chromium --artifacts-dir=web-ext-artifacts/chromium
+# -> web-ext-artifacts/chromium/cyberguard_soc-<version>.zip
+```
+
+## Build for Firefox Add-ons (AMO)
+
+```bash
+npm run build
+npx web-ext build --source-dir=dist/firefox --artifacts-dir=web-ext-artifacts/firefox
+# -> web-ext-artifacts/firefox/cyberguard_soc-<version>.zip
+```
+
+Both zips are store-ready build outputs (gitignored). Configuration is
+injected at build time — there are no hardcoded origins in `src/`.
 
 Build config comes from `EXT_WEB_ORIGIN`, `EXT_API_BASE_URL`, `EXT_SUPABASE_URL`,
 `EXT_SUPABASE_ANON_KEY` env vars, falling back to `frontend/.env.local`
