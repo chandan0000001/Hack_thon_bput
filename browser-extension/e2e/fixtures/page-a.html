@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture A — mixed links + images</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:2rem auto}img{display:block;margin:1rem 0}</style>
+</head>
+<body>
+  <h1>Fixture A — 5 links, 2 content images, 1 tracking pixel</h1>
+  <!-- 2 lookalike / phishy links -->
+  <p><a href="http://paypa1-secure-login.example/verify-account?key=882731">Update your billing information</a></p>
+  <p><a href="http://198.51.100.23/update-billing/confirm.php">Confirm your payment</a></p>
+  <!-- 3 normal links -->
+  <p><a href="https://www.wikipedia.org/">Wikipedia</a></p>
+  <p><a href="https://developer.mozilla.org/en-US/">MDN Web Docs</a></p>
+  <p><a href="https://www.debian.org/">Debian</a></p>
+  <!-- 2 content-sized images (>200px) + 1 tracking pixel -->
+  <img src="face-real.png" width="256" height="256" alt="benign sample image">
+  <img src="face-manipulated.png" width="256" height="256" alt="manipulated sample image">
+  <img src="tracking-pixel.png" width="1" height="1" alt="">
+  <p>Expected pill: 5 links · 2 images detected (tracking pixel is far below the 200px floor).</p>
+</body>
+</html>

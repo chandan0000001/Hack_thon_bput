@@ -1,0 +1,19 @@
+From: IT Service Desk <it-servicedesk@corp-portal-notify.example>
+Subject: URGENT: Mailbox deactivation in 24 hours - action required
+
+Dear customer,
+
+Your mailbox quota has been exceeded and your account will be DEACTIVATED
+within 24 hours. You must confirm your identity immediately by visiting:
+
+    http://webmail-quota-verify.example/confirm?token=882731
+
+and entering your username and password. Accounts that fail to verify
+will be permanently closed.
+
+After confirmation, our accounting department will process the pending
+wire transfer of $1,450.00 USD to your account. Reply with your banking
+details to expedite the payment.
+
+Regards,
+IT Security Desk
