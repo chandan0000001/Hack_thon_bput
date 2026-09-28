@@ -389,5 +389,30 @@
     window.close();
   });
 
-  boot();
+  // EXT-P3: honor "Open in popup" landings — a tab opened with
+  // ?view=url&url=… (openUrlView fallback) or a pendingUrlView stashed in
+  // storage.session (action.openPopup path).
+  async function applyPrefill() {
+    if (state !== 'authenticated') return;
+    let prefill = null;
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('view') === 'url' && qs.get('url')) {
+      prefill = qs.get('url');
+    } else {
+      try {
+        const stored = await api.storage.session.get('pendingUrlView');
+        if (stored && stored.pendingUrlView) {
+          prefill = stored.pendingUrlView;
+          await api.storage.session.remove('pendingUrlView');
+        }
+      } catch (e) { /* storage.session unavailable */ }
+    }
+    if (prefill) {
+      openView('OPEN_URL');
+      const input = document.getElementById('url-input');
+      if (!input.value) input.value = prefill;
+    }
+  }
+
+  boot().then(applyPrefill);
 })();

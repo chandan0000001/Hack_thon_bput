@@ -62,7 +62,12 @@ export function buildManifest(target, cfg) {
   const base = JSON.parse(readFileSync(join(SRC, 'manifest.base.json'), 'utf8'));
   const manifest = {
     ...base,
-    content_scripts: base.content_scripts.map((cs) => ({ ...cs, matches: [`${cfg.WEB_ORIGIN}/*`] })),
+    // "__WEB_ORIGIN__" placeholders resolve to the configured site origin;
+    // literal patterns (the EXT-P3 http/https scanner) pass through.
+    content_scripts: base.content_scripts.map((cs) => ({
+      ...cs,
+      matches: cs.matches.map((m) => m.replace('__WEB_ORIGIN__', cfg.WEB_ORIGIN)),
+    })),
     host_permissions: hostPermissions(cfg),
   };
   if (target === 'chromium') {
@@ -117,7 +122,17 @@ export function validateManifest(manifest, target) {
   }
   const cs = manifest.content_scripts?.[0];
   if (!cs || cs.matches?.length !== 1 || !cs.matches[0].endsWith('/*')) {
-    problems.push('content_scripts must match the web origin');
+    problems.push('content_scripts[0] must match the web origin');
+  }
+  if (JSON.stringify(manifest.content_scripts).includes('__WEB_ORIGIN__')) {
+    problems.push('unresolved __WEB_ORIGIN__ placeholder in content_scripts');
+  }
+  const scanner = manifest.content_scripts?.[1];
+  if (!scanner || !scanner.matches?.includes('http://*/*') || !scanner.matches?.includes('https://*/*')) {
+    problems.push('scanner content script must match http/https');
+  }
+  if (!scanner?.css?.includes('content/pill.css') || !scanner?.css?.includes('content/overlay.css')) {
+    problems.push('scanner content script must inject pill.css + overlay.css');
   }
   if (!cs?.js?.includes('content/callback-bridge.js')) {
     problems.push('content script must include callback-bridge.js');

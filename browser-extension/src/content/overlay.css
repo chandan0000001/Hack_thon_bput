@@ -1,0 +1,191 @@
+/* CyberGuard extension — overlay results (scoped under #cgext-overlay-root). */
+#cgext-overlay-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 5, 5, 0.72);
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+#cgext-overlay-root .cgext-overlay__panel {
+  width: min(640px, 92vw);
+  max-height: 84vh;
+  overflow-y: auto;
+  padding: 18px;
+  border: 1px solid #262626;
+  border-radius: 14px;
+  background: #0a0a0a;
+  color: #fafafa;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.7);
+}
+
+#cgext-overlay-root .cgext-overlay__title {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+#cgext-overlay-root .cgext-overlay__summary {
+  margin: 0 0 14px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12.5px;
+  color: #dc2626;
+}
+
+#cgext-overlay-root .cgext-overlay__cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+#cgext-overlay-root .cgext-card {
+  padding: 12px;
+  border: 1px solid #262626;
+  border-radius: 10px;
+  background: #101010;
+}
+
+#cgext-overlay-root .cgext-card--failed {
+  border-color: #dc2626;
+}
+
+#cgext-overlay-root .cgext-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+#cgext-overlay-root .cgext-card__kind {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #dc2626;
+  text-transform: uppercase;
+}
+
+#cgext-overlay-root .cgext-card__input {
+  color: #a3a3a3;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+#cgext-overlay-root .cgext-card__metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+#cgext-overlay-root .cgext-card__score {
+  font-size: 26px;
+  font-weight: 700;
+  color: #fafafa;
+}
+
+#cgext-overlay-root .cgext-card__verdict {
+  font-size: 20px;
+  font-weight: 700;
+}
+#cgext-overlay-root .cgext-card__verdict.is-fake { color: #ef4444; }
+#cgext-overlay-root .cgext-card__verdict.is-real { color: #e4e4e7; }
+
+#cgext-overlay-root .cgext-card__meta {
+  color: #a3a3a3;
+  font-size: 11px;
+}
+
+#cgext-overlay-root .cgext-card__explanation {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #fafafa;
+}
+
+#cgext-overlay-root .cgext-card__label {
+  margin: 0 0 4px;
+  color: #a3a3a3;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+#cgext-overlay-root .cgext-card__section {
+  margin-top: 8px;
+}
+
+#cgext-overlay-root .cgext-card__tag {
+  display: inline-flex;
+  margin: 0 6px 4px 0;
+  padding: 2px 8px;
+  border: 1px solid #262626;
+  border-radius: 6px;
+  color: #a3a3a3;
+  font-size: 10.5px;
+  word-break: break-all;
+}
+
+#cgext-overlay-root .cgext-card__indicator {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+#cgext-overlay-root .cgext-pill-sev {
+  display: inline-flex;
+  padding: 1px 8px;
+  border-radius: 9999px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+}
+#cgext-overlay-root .cgext-pill-sev.cg-badge--safe { background: #e4e4e7; color: #050505; }
+#cgext-overlay-root .cgext-pill-sev.cg-badge--low { background: #71717a; color: #fafafa; }
+#cgext-overlay-root .cgext-pill-sev.cg-badge--medium { background: #f87171; color: #050505; }
+#cgext-overlay-root .cgext-pill-sev.cg-badge--high { background: #dc2626; color: #fafafa; }
+#cgext-overlay-root .cgext-pill-sev.cg-badge--critical { background: #ef4444; color: #fafafa; }
+
+#cgext-overlay-root .cgext-card__error {
+  margin: 0;
+  color: #f87171;
+  font-size: 12px;
+}
+
+#cgext-overlay-root .cgext-card__open {
+  margin-top: 10px;
+  padding: 5px 12px;
+  border: 1px solid #dc2626;
+  border-radius: 8px;
+  background: none;
+  color: #fafafa;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#cgext-overlay-root .cgext-card__open:hover {
+  background: #dc2626;
+}
+
+#cgext-overlay-root .cgext-overlay__close {
+  display: block;
+  margin-left: auto;
+  padding: 7px 18px;
+  border: 1px solid #262626;
+  border-radius: 8px;
+  background: #101010;
+  color: #fafafa;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#cgext-overlay-root .cgext-overlay__close:hover {
+  border-color: #dc2626;
+}

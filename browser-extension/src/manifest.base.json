@@ -22,9 +22,15 @@
   "permissions": ["storage", "alarms"],
   "content_scripts": [
     {
-      "matches": ["http://localhost:5173/*"],
+      "matches": ["__WEB_ORIGIN__/*"],
       "js": ["lib/path-gate.js", "content/callback-bridge.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["lib/detect.js", "content/pill.js", "content/overlay.js", "content/scanner.js"],
+      "css": ["content/pill.css", "content/overlay.css"],
+      "run_at": "document_idle"
     }
   ]
 }

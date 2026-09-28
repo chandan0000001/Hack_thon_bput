@@ -5,7 +5,20 @@ shared source in `src/`. P1 ships the universal auth flow; P2 adds the three
 analyzers (Scan URL, Scan Email, Detect Deepfake) calling the website's
 `/analysis/url`, `/analysis/email` and `/analysis/media` contracts with the
 stored Bearer token (401 → background refresh → retry → sign-out on failure).
-The mailbox-scanner bridge arrives in P3.
+
+P3 adds the on-page scanner (`lib/detect.js` + `content/scanner.js`): a
+MutationObserver debounced to 500ms detects links/URLs, webmail bodies
+(Gmail `.ii`, Outlook `[aria-label="Message body"]`, ProtonMail
+`.message-content`) and >200×200 images on every http(s) page. Detection is
+local-only — a floating pill (`content/pill.js`) shows
+"{N} links · {M} emails · {K} images detected — [Analyze?]" and nothing is
+sent until the click. The batch goes to the background
+(`ANALYZE_BATCH` → api-client → `BATCH_RESULTS`) and the results overlay
+(`content/overlay.js`, summary + per-detection cards, [Open in popup]
+re-opens the popup's URL view pre-filled). Settings in `chrome.storage.local`:
+`scan_url` / `scan_email` / `scan_image`, `scan_allowlist` (default empty =
+all domains), `scan_max_detections` (default 20). Web stores and iframes are
+excluded.
 
 ## Layout
 
@@ -24,9 +37,10 @@ browser-extension/
                        path-gate.js (exact /ext/callback enforcement)
     theme.css          website design tokens (quoted from frontend/src/theme.ts,
                        tailwind.config.js, index.css)
-  tests/               node --test suite (40 checks, 13 files)
+  tests/               node --test suite (48 checks, 20 files)
   e2e/                 playwright-auth.mjs (P1 live auth walkthrough)
                        playwright-analyzers.mjs (P2 analyzer walkthrough, mocked API)
+                       playwright-scanner.mjs (P3 scanner walkthrough, mock API server)
 ```
 
 ## Build & verify

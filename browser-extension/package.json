@@ -11,6 +11,7 @@
     "lint": "npx web-ext lint --source-dir dist/chromium && npx web-ext lint --source-dir dist/firefox"
   },
   "devDependencies": {
+    "jsdom": "^30.1.1",
     "web-ext": "^8.3.0"
   }
 }

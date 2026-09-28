@@ -10,11 +10,19 @@
  *   refresh         — alarm scheduled at expires_at - 60s via lib/auth.js
  *   EXT_AUTH_GET / EXT_AUTH_REFRESH / EXT_AUTH_SIGNOUT — popup helpers
  *
+ * EXT-P3 batch analysis (content scanner):
+ *   ANALYZE_BATCH   — content pill clicked; runs the three analyzers via
+ *                     lib/api-client.js against the stored session and
+ *                     returns {ok, results[]}
+ *   OPEN_URL_VIEW   — overlay "Open in popup": action.openPopup() when the
+ *                     browser allows it, else popup.html in a new tab with
+ *                     ?view=url&url=… pre-fill
+ *
  * Tokens live only in storage.local (fragment handoff only, never query
  * strings, never server logs).
  */
-/* global importScripts, crypto */
-importScripts('config.js', 'lib/browser-adapter.js', 'lib/auth.js');
+/* global importScripts, crypto, FormData, Blob */
+importScripts('config.js', 'lib/browser-adapter.js', 'lib/auth.js', 'lib/api-client.js');
 
 const api = CyberGuardExt.api;
 const CFG = globalThis.EXT_CONFIG;
@@ -125,6 +133,76 @@ async function doRefresh() {
   }
 }
 
+// --- EXT-P3: batch analysis --------------------------------------------------
+
+// The api client in the worker context reads the session straight from
+// storage.local and reuses the same refresh/sign-out flow as the popup.
+CyberGuardExt.apiClient.configure({
+  getAuth: async () => getAuth(),
+  refresh: async () => {
+    const res = await doRefresh();
+    return res && res.ok ? res.auth : null;
+  },
+  signOut: async () => signOut(),
+});
+
+function dataUrlToBlob(dataUrl) {
+  const [head, b64] = String(dataUrl).split(',');
+  const mime = /:(.*?);/.exec(head);
+  const bytes = atob(b64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i += 1) arr[i] = bytes.charCodeAt(i);
+  return new Blob([arr], { type: (mime && mime[1]) || 'application/octet-stream' });
+}
+
+async function analyzeBatch(msg) {
+  const results = [];
+  const jobs = [];
+  for (const url of [].concat((msg && msg.urls) || [])) {
+    jobs.push(
+      CyberGuardExt.apiClient
+        .analyzeUrl(CFG.API_BASE_URL, url)
+        .then((data) => results.push({ kind: 'url', input: url, ok: true, data }))
+        .catch((err) => results.push({ kind: 'url', input: url, ok: false, error: String((err && err.message) || err) }))
+    );
+  }
+  for (const email of [].concat((msg && msg.emails) || [])) {
+    jobs.push(
+      CyberGuardExt.apiClient
+        .analyzeEmail(CFG.API_BASE_URL, email)
+        .then((data) => results.push({ kind: 'email', input: `${String(email).slice(0, 80)}…`, ok: true, data }))
+        .catch((err) => results.push({ kind: 'email', input: `${String(email).slice(0, 80)}…`, ok: false, error: String((err && err.message) || err) }))
+    );
+  }
+  for (const image of [].concat((msg && msg.images) || [])) {
+    const input = (image && image.src) || 'image';
+    jobs.push(
+      (async () => {
+        if (!image || !image.dataUrl) throw new Error('image not fetchable from page');
+        const form = new FormData();
+        form.append('file', dataUrlToBlob(image.dataUrl), 'detected-image');
+        const data = await CyberGuardExt.apiClient.analyzeDeepfakeForm(CFG.API_BASE_URL, form);
+        return results.push({ kind: 'image', input, ok: true, data });
+      })().catch((err) => results.push({ kind: 'image', input, ok: false, error: String((err && err.message) || err) }))
+    );
+  }
+  await Promise.all(jobs);
+  return { ok: true, results };
+}
+
+async function openUrlView(msg) {
+  const url = String((msg && msg.url) || '');
+  if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'invalid url' };
+  // action.openPopup() is gesture-gated and silently unreliable across
+  // browsers, so the deterministic path is the popup page itself in a new
+  // tab: ?view=url&url=… triggers the same pre-filled URL view (popup.js).
+  const getURL = api.raw.runtime && api.raw.runtime.getURL
+    ? api.raw.runtime.getURL('popup/popup.html')
+    : 'popup/popup.html';
+  await api.tabs.create({ url: `${getURL}?view=url&url=${encodeURIComponent(url)}` });
+  return { ok: true, via: 'tab' };
+}
+
 api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     switch (msg && msg.type) {
@@ -140,6 +218,10 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return doRefresh();
       case 'EXT_AUTH_SIGNOUT':
         return signOut();
+      case 'ANALYZE_BATCH':
+        return analyzeBatch(msg);
+      case 'OPEN_URL_VIEW':
+        return openUrlView(msg);
       default:
         return { ok: false, error: 'unknown_message' };
     }
@@ -159,4 +241,4 @@ if (api.alarms && api.alarms.onAlarm) {
   if (auth && auth.refresh_token) scheduleRefresh(auth);
 })();
 
-globalThis.CyberGuardBackground = { handleExtAuth, startAuth, doRefresh, signOut, scheduleRefresh, randomNonce };
+globalThis.CyberGuardBackground = { handleExtAuth, startAuth, doRefresh, signOut, scheduleRefresh, randomNonce, analyzeBatch, openUrlView };

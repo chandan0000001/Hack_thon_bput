@@ -96,14 +96,19 @@
     });
   }
 
-  /** POST /analysis/media (multipart 'file') -> media dict (authenticity_score etc.). */
-  async function analyzeDeepfake(baseUrl, file) {
-    const form = new FormData();
-    form.append('file', file);
+  /** POST /analysis/media with a prebuilt FormData (background batch path). */
+  async function analyzeDeepfakeForm(baseUrl, form) {
     return authedFetch(`${baseUrl}/analysis/media`, {
       method: 'POST',
       body: form,
     });
+  }
+
+  /** POST /analysis/media (multipart 'file') -> media dict (authenticity_score etc.). */
+  async function analyzeDeepfake(baseUrl, file) {
+    const form = new FormData();
+    form.append('file', file);
+    return analyzeDeepfakeForm(baseUrl, form);
   }
 
   /** GET /auth/me -> identity payload (email, active_role, ...). */
@@ -129,6 +134,7 @@
     analyzeUrl,
     analyzeEmail,
     analyzeDeepfake,
+    analyzeDeepfakeForm,
     // exposed for tests
     _authedFetch: authedFetch,
   };
