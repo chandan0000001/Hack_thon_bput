@@ -618,6 +618,30 @@ def upgrade() -> None:
     bind.execute(text("""CREATE INDEX ix_cyberguard_org_events_organization_id ON cyberguard.org_events (organization_id)"""))
     bind.execute(text("""CREATE INDEX ix_cyberguard_org_events_project_id ON cyberguard.org_events (project_id)"""))
     bind.execute(text("""CREATE INDEX ix_cyberguard_org_events_created_at ON cyberguard.org_events (created_at)"""))
+    # MEMBER-INVITE-P1 (mirrors 0026_org_member_invitations): fresh DBs stop at
+    # this squash baseline (alembic env.py fresh-DB optimization), so the
+    # invitations table must exist here too.
+    bind.execute(text("""CREATE TABLE cyberguard.organization_invitations (
+	id VARCHAR(36) NOT NULL,
+	organization_id VARCHAR(36) NOT NULL,
+	email VARCHAR(255) NOT NULL,
+	role VARCHAR(20) NOT NULL,
+	token_hash VARCHAR(128) NOT NULL,
+	invited_by VARCHAR(64) NOT NULL,
+	expires_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT (now() + interval '7 days'),
+	accepted_at TIMESTAMP WITH TIME ZONE,
+	status VARCHAR(20) NOT NULL DEFAULT 'pending',
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+	PRIMARY KEY (id),
+	CONSTRAINT organization_invitations_role_check CHECK (role IN ('admin', 'analyst', 'viewer')),
+	CONSTRAINT organization_invitations_status_check CHECK (status IN ('pending', 'accepted', 'expired', 'revoked')),
+	CONSTRAINT organization_invitations_token_hash_key UNIQUE (token_hash),
+	FOREIGN KEY(organization_id) REFERENCES cyberguard.org_organizations (id) ON DELETE CASCADE,
+	FOREIGN KEY(invited_by) REFERENCES cyberguard.users (id) ON DELETE CASCADE
+)"""))
+    bind.execute(text("""CREATE INDEX ix_cyberguard_organization_invitations_org_email ON cyberguard.organization_invitations (organization_id, email)"""))
+    bind.execute(text("""CREATE INDEX ix_cyberguard_organization_invitations_token_hash ON cyberguard.organization_invitations (token_hash)"""))
+    bind.execute(text("""CREATE INDEX ix_cyberguard_organization_invitations_organization_id ON cyberguard.organization_invitations (organization_id)"""))
     bind.execute(text("""CREATE TABLE cyberguard.security_events (
 	project_id VARCHAR(36), 
 	id VARCHAR(36) NOT NULL, 
@@ -731,7 +755,8 @@ def upgrade() -> None:
         "connector_oauth_states", "connector_operation_logs", "connector_settings",
         "email_connector_accounts", "enforcement_policies", "events",
         "gmail_accounts", "incident_alerts", "incident_events", "incidents",
-        "job_queue", "media_files", "notification_logs", "org_api_keys",
+        "job_queue", "media_files", "notification_logs", "organization_invitations",
+        "org_api_keys",
         "org_blocked_indicators", "org_events", "org_members", "org_organizations",
         "org_projects", "processed_emails", "quarantined_items", "recommended_actions",
         "response_catalog", "response_executions", "scan_results", "security_events",
@@ -788,6 +813,11 @@ def upgrade() -> None:
         CREATE POLICY org_blocked_indicators_admin_insert ON {SCHEMA}.org_blocked_indicators FOR INSERT TO {target_roles} WITH CHECK ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
         CREATE POLICY org_blocked_indicators_admin_update ON {SCHEMA}.org_blocked_indicators FOR UPDATE TO {target_roles} USING ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin') WITH CHECK ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
         CREATE POLICY org_blocked_indicators_admin_delete ON {SCHEMA}.org_blocked_indicators FOR DELETE TO {target_roles} USING ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
+
+        CREATE POLICY org_invitations_admin_select ON {SCHEMA}.organization_invitations FOR SELECT TO {target_roles} USING ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
+        CREATE POLICY org_invitations_admin_insert ON {SCHEMA}.organization_invitations FOR INSERT TO {target_roles} WITH CHECK ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
+        CREATE POLICY org_invitations_admin_update ON {SCHEMA}.organization_invitations FOR UPDATE TO {target_roles} USING ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin') WITH CHECK ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
+        CREATE POLICY org_invitations_admin_delete ON {SCHEMA}.organization_invitations FOR DELETE TO {target_roles} USING ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
     """)
 
     # Security Plane (Owner OR Org-member)

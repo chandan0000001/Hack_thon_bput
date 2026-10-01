@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.errors import ComingSoonError, PermissionDeniedError, UnauthorizedError
 from app.core.security import CurrentUser, ORG_COMING_SOON, bearer_scheme, get_current_user
-from app.db.models import OrgApiKey, OrgBlockedIndicator, OrgEvent, OrgMember, OrgOrganization, OrgProject, User
+from app.db.models import OrgApiKey, OrgBlockedIndicator, OrgEvent, OrgInvitation, OrgMember, OrgOrganization, OrgProject, User
 from app.db.session import get_session, set_session_user
 
 logger = logging.getLogger("cyberguard.orgs")
@@ -82,6 +82,10 @@ class InviteMemberRequest(BaseModel):
 
 class UpdateMemberRoleRequest(BaseModel):
     role: str = Field(..., pattern="^(admin|analyst|viewer)$")
+
+
+class AcceptInvitationRequest(BaseModel):
+    token: str = Field(..., min_length=16, max_length=256)
 
 
 class CreateProjectRequest(BaseModel):
@@ -441,46 +445,16 @@ async def add_or_invite_member(
     user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    await _get_org_and_role(org_id, user.id, session, min_role="admin")
-    email = req.email.strip().lower()
+    """Invite a member (MEMBER-INVITE-P1): creates a single-use token
+    invitation instead of a direct org_members row — no user row is
+    pre-created, the invitee claims membership via POST /invitations/accept."""
+    from app.services.invitation_service import create_invitation, invitation_to_dict
 
-    # Find or stub user via service-role (bypasses RLS on users table)
-    from app.db.admin import find_user_by_email, precreate_user_for_invite
-
-    target_user_info = await find_user_by_email(email)
-    if not target_user_info:
-        target_user_info = await precreate_user_for_invite(email)
-
-    target_user_id = target_user_info["id"]
-    target_user_email = target_user_info["email"]
-
-    # Check if already member
-    m_stmt = select(OrgMember).where(
-        OrgMember.organization_id == org_id,
-        OrgMember.user_id == target_user_id,
+    org, _ = await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    invitation, raw_token = await create_invitation(
+        session, org, req.email, req.role, invited_by=user.id
     )
-    existing = (await session.execute(m_stmt)).scalar_one_or_none()
-    if existing:
-        raise HTTPException(status_code=400, detail="User is already a member of this organization")
-
-    member = OrgMember(
-        id=str(uuid.uuid4()),
-        organization_id=org_id,
-        user_id=target_user_id,
-        role=req.role,
-        joined_at=datetime.now(timezone.utc),
-    )
-    session.add(member)
-    await session.commit()
-
-    return {
-        "id": member.id,
-        "organization_id": member.organization_id,
-        "user_id": member.user_id,
-        "email": target_user_email,
-        "role": member.role,
-        "joined_at": member.joined_at.isoformat(),
-    }
+    return invitation_to_dict(invitation, include_token=raw_token)
 
 
 @router.patch("/orgs/{org_id}/members/{member_id}")
@@ -492,10 +466,21 @@ async def update_member_role(
     user: CurrentUser = Depends(get_org_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    """Role change (MEMBER-INVITE-P1 hardening):
+    - the owner's own member row is immutable;
+    - nobody can demote themselves out of admin;
+    - only the owner can demote another admin."""
+    org, _ = await _get_org_and_role(org_id, user.id, session, min_role="admin")
     member = await session.get(OrgMember, member_id)
     if not member or member.organization_id != org_id:
         raise HTTPException(status_code=404, detail="Member not found")
+
+    if member.user_id == org.owner_id:
+        raise HTTPException(status_code=400, detail="Cannot change the organization owner's role")
+    if member.user_id == user.id and req.role != "admin":
+        raise HTTPException(status_code=400, detail="Admins cannot demote themselves")
+    if member.role == "admin" and req.role != "admin" and org.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the organization owner can demote admins")
 
     member.role = req.role
     await session.commit()
@@ -521,6 +506,84 @@ async def remove_member(
     await session.delete(member)
     await session.commit()
     return {"status": "deleted"}
+
+
+# ─────────────────────────────────────────────────────────────
+# 1b. Invitation Endpoints (MEMBER-INVITE-P1)
+# ─────────────────────────────────────────────────────────────
+
+
+@router.get("/orgs/{org_id}/invitations")
+@router.get("/org/{org_id}/invitations")
+async def list_invitations(
+    org_id: str,
+    invitation_status: Optional[str] = Query(None, pattern="^(pending|accepted|expired|revoked)$"),
+    user: CurrentUser = Depends(get_org_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """List invitations (admin only). Lazily flips past-expiry pending rows to
+    'expired' so the listing reflects reality."""
+    from app.services.invitation_service import _is_expired, invitation_to_dict
+
+    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    now = datetime.now(timezone.utc)
+
+    stmt = select(OrgInvitation).where(OrgInvitation.organization_id == org_id)
+    if invitation_status:
+        stmt = stmt.where(OrgInvitation.status == invitation_status)
+    stmt = stmt.order_by(desc(OrgInvitation.created_at))
+    rows = (await session.execute(stmt)).scalars().all()
+
+    changed = False
+    for inv in rows:
+        if inv.status == "pending" and _is_expired(inv, now):
+            inv.status = "expired"
+            changed = True
+    if changed:
+        await session.commit()
+
+    return {"invitations": [invitation_to_dict(inv) for inv in rows]}
+
+
+@router.delete("/orgs/{org_id}/invitations/{invitation_id}")
+@router.delete("/org/{org_id}/invitations/{invitation_id}")
+async def revoke_invitation(
+    org_id: str,
+    invitation_id: str,
+    user: CurrentUser = Depends(get_org_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Revoke a pending invitation (admin only). Already-accepted or
+    already-revoked invitations cannot be revoked again."""
+    await _get_org_and_role(org_id, user.id, session, min_role="admin")
+    invitation = await session.get(OrgInvitation, invitation_id)
+    if not invitation or invitation.organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    if invitation.status == "accepted":
+        raise HTTPException(status_code=409, detail="Invitation has already been accepted")
+    if invitation.status == "revoked":
+        raise HTTPException(status_code=409, detail="Invitation was already revoked")
+
+    invitation.status = "revoked"
+    await session.commit()
+    return {"id": invitation.id, "status": "revoked"}
+
+
+@router.post("/invitations/accept")
+@router.post("/invitation/accept")
+async def accept_invitation(
+    req: AcceptInvitationRequest,
+    user: CurrentUser = Depends(get_org_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Redeem a pending invitation with its raw token. Requires authentication;
+    the authenticated email must match the invited email. The DB work runs on
+    the service role because the acceptor is not yet a member (RLS would
+    reject the org_members insert)."""
+    from app.services.invitation_service import accept_invitation as accept_invitation_svc
+
+    result = await accept_invitation_svc(req.token, user.id, user.email)
+    return result
 
 
 # ─────────────────────────────────────────────────────────────

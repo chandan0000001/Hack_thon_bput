@@ -7,10 +7,10 @@ Verifies the 10 critical invariants of ORG-IDENTITY-FIX:
 4. POST /auth/register-org duplicate email (exists as personal user) -> 409 {"error":"email_exists","hint":"sign_in_then_create_org"}, ZERO new rows.
 5. POST /orgs unauthenticated -> 401 Unauthorized (not 403, not 500).
 6. POST /orgs authenticated (valid JWT) -> 201, attaches new org to caller, owner_id=user.id, ZERO new user rows.
-7. Invite member with existing personal email -> OrgMember created pointing to existing user, ZERO new user rows, status untouched.
-8. Invite member with unknown email -> stub user created status='invited', OrgMember attached to stub.
-9. Personal register on invited stub email -> 409 {"error":"email_exists","hint":"check_invite"}.
-10. First login on invited stub email claims row -> status becomes 'active', OrgMember intact, user logged in.
+7. Invite existing personal email -> pending token invitation created, ZERO new user rows, no direct membership.
+8. Invite unknown email -> pending invitation (only the SHA-256 hash stored), NO stub user row.
+9. Personal register on invited (stub-less) email -> 200/201, user self-registers normally.
+10. Invited user redeems token via POST /invitations/accept -> membership with invited role, invitation accepted; replay -> 409.
 """
 
 import asyncio
@@ -282,8 +282,11 @@ async def _run_org_identity_body(runner) -> None:
         )
 
         # -------------------------------------------------------------------
-        # Check 7: Invite member with existing personal email -> OrgMember created, ZERO new user rows, status untouched
+        # Check 7: Invite existing personal email -> token invitation created,
+        # ZERO new user rows, NO org_members row yet, status pending
         # -------------------------------------------------------------------
+        from app.db.models import OrgInvitation
+
         async with _get_admin_session_maker()() as db:
             users_before_7 = (await db.execute(select(func.count(User.id)))).scalar()
 
@@ -292,6 +295,7 @@ async def _run_org_identity_body(runner) -> None:
             json={"email": personal_email, "role": "analyst"},
             headers=org_admin_headers,
         )
+        d7 = r7.json() if r7.status_code in (200, 201) else {}
 
         async with _get_admin_session_maker()() as db:
             users_after_7 = (await db.execute(select(func.count(User.id)))).scalar()
@@ -299,61 +303,73 @@ async def _run_org_identity_body(runner) -> None:
             p_mem = (await db.execute(
                 select(OrgMember).where(OrgMember.organization_id == org_id, OrgMember.user_id == p_user.id)
             )).scalar_one_or_none()
+            inv7 = (await db.execute(
+                select(OrgInvitation).where(
+                    OrgInvitation.organization_id == org_id, OrgInvitation.email == personal_email
+                )
+            )).scalar_one_or_none()
 
         runner.assert_true(
             r7.status_code in (200, 201)
+            and bool(d7.get("token"))  # raw token returned once
             and users_after_7 == users_before_7
-            and p_mem is not None
-            and p_mem.role == "analyst"
-            and p_user.status == "active",
-            "Check 7: Invite member with existing personal email -> OrgMember created pointing to existing user, ZERO new user rows, status untouched",
+            and p_mem is None  # invitation flow: no direct membership
+            and p_user.status == "active"
+            and inv7 is not None
+            and inv7.status == "pending"
+            and inv7.role == "analyst",
+            "Check 7: Invite existing personal email -> pending invitation created, ZERO new user rows, no direct membership",
         )
 
         # -------------------------------------------------------------------
-        # Check 8: Invite member with unknown email -> stub user created status='invited', OrgMember attached
+        # Check 8: Invite unknown email -> pending invitation, NO stub user row
         # -------------------------------------------------------------------
         r8 = await ac.post(
             f"/api/v1/orgs/{org_id}/members",
             json={"email": invited_email, "role": "viewer"},
             headers=org_admin_headers,
         )
+        d8 = r8.json() if r8.status_code in (200, 201) else {}
+        invite_token = d8.get("token")
 
         async with _get_admin_session_maker()() as db:
             stub_user = (await db.execute(select(User).where(User.email == invited_email))).scalar_one_or_none()
-            stub_mem = (await db.execute(
-                select(OrgMember).where(OrgMember.organization_id == org_id, OrgMember.user_id == stub_user.id)
-            )).scalar_one_or_none() if stub_user else None
+            inv8 = (await db.execute(
+                select(OrgInvitation).where(
+                    OrgInvitation.organization_id == org_id, OrgInvitation.email == invited_email
+                )
+            )).scalar_one_or_none()
 
         runner.assert_true(
             r8.status_code in (200, 201)
-            and stub_user is not None
-            and stub_user.status == "invited"
-            and stub_mem is not None
-            and stub_mem.role == "viewer",
-            "Check 8: Invite member with unknown email -> stub user created status='invited', OrgMember attached to stub",
+            and bool(invite_token)
+            and stub_user is None  # stub-user flow replaced: no user row pre-created
+            and inv8 is not None
+            and inv8.status == "pending"
+            and inv8.role == "viewer"
+            and len(inv8.token_hash) == 64,  # only the SHA-256 hash is stored
+            "Check 8: Invite unknown email -> pending invitation (hash stored), NO stub user row",
         )
 
         # -------------------------------------------------------------------
-        # Check 9: Personal register on invited stub email -> 409 hint='check_invite'
+        # Check 9: Personal register on invited (stub-less) email -> succeeds normally
         # -------------------------------------------------------------------
         r9 = await ac.post(
             "/api/v1/auth/register",
             json={
                 "email": invited_email,
                 "password": "Password123!",
-                "name": "Invited Claim Attempt",
+                "name": "Invited User Self-Signup",
             },
         )
-        d9 = r9.json() if r9.status_code == 409 else {}
         runner.assert_true(
-            r9.status_code == 409
-            and d9.get("error") == "email_exists"
-            and d9.get("hint") == "check_invite",
-            "Check 9: Personal register on invited stub email -> 409 {\"error\":\"email_exists\",\"hint\":\"check_invite\"}",
+            r9.status_code in (200, 201),
+            f"Check 9: Personal register on invited email (no stub exists) -> 200/201 (got {r9.status_code})",
         )
 
         # -------------------------------------------------------------------
-        # Check 10: First login on invited stub email claims row -> status='active', OrgMember intact
+        # Check 10: Invited user signs in and redeems the token -> membership
+        # created with invited role, invitation consumed
         # -------------------------------------------------------------------
         fake_user_id = f"sb-invited-{suffix}"
         fake_auth.identities[invited_email] = {
@@ -366,26 +382,47 @@ async def _run_org_identity_body(runner) -> None:
         invited_token = f"sb-token-{fake_user_id}"
         fake_auth.tokens[invited_token] = fake_user_id
 
-        r10 = await ac.get(
-            "/api/v1/auth/me",
+        r10 = await ac.post(
+            "/api/v1/invitations/accept",
+            json={"token": invite_token},
             headers={"Authorization": f"Bearer {invited_token}"},
         )
-        d10 = r10.json() if r10.status_code == 200 else {}
+        d10 = r10.json() if r10.status_code in (200, 201) else {}
 
         async with _get_admin_session_maker()() as db:
             claimed_user = (await db.execute(select(User).where(User.email == invited_email))).scalar_one_or_none()
             claimed_mem = (await db.execute(
                 select(OrgMember).where(OrgMember.organization_id == org_id, OrgMember.user_id == claimed_user.id)
             )).scalar_one_or_none() if claimed_user else None
+            inv10 = (await db.execute(
+                select(OrgInvitation).where(
+                    OrgInvitation.organization_id == org_id, OrgInvitation.email == invited_email
+                )
+            )).scalar_one_or_none()
 
         runner.assert_true(
-            r10.status_code == 200
-            and len(d10.get("memberships", [])) >= 1
+            r10.status_code in (200, 201)
+            and d10.get("organization_id") == org_id
+            and d10.get("role") == "viewer"
+            and claimed_mem is not None
+            and claimed_mem.role == "viewer"
             and claimed_user is not None
             and claimed_user.status == "active"
-            and claimed_mem is not None
-            and claimed_mem.role == "viewer",
-            "Check 10: First login on invited stub email claims row -> status becomes 'active', OrgMember intact, user logged in",
+            and inv10 is not None
+            and inv10.status == "accepted"
+            and inv10.accepted_at is not None,
+            "Check 10: Invited user redeems token -> org_members row created with invited role, invitation accepted",
+        )
+
+        # Check 10b: the redeemed token is single-use -> replay rejected
+        r10b = await ac.post(
+            "/api/v1/invitations/accept",
+            json={"token": invite_token},
+            headers={"Authorization": f"Bearer {invited_token}"},
+        )
+        runner.assert_true(
+            r10b.status_code == 409,
+            f"Check 10b: Replay of accepted invitation token -> 409 (got {r10b.status_code})",
         )
 
 

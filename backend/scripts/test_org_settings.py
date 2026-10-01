@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 
 from app.core.security import CurrentUser, get_current_user
-from app.db.models import OrgApiKey, OrgBlockedIndicator, OrgEvent, OrgProject, User
+from app.db.models import OrgApiKey, OrgBlockedIndicator, OrgEvent, OrgMember, OrgProject, User
 from app.db.session import async_session_maker
 from app.main import app
 
@@ -91,11 +91,20 @@ async def _run_org_settings_body(runner) -> None:
             assert r_org.status_code == 201, r_org.text
             org_id = r_org.json()["id"]
 
-            r_member = await client.post(
-                f"/api/v1/orgs/{org_id}/members",
-                json={"email": analyst_user.email, "role": "analyst"},
-            )
-            assert r_member.status_code == 201, r_member.text
+            # MEMBER-INVITE-P1: the members POST now issues a token invitation
+            # instead of creating the membership — seed the analyst membership
+            # directly (service role: RLS blocks cross-user writes).
+            from datetime import datetime, timezone
+
+            async with admin_maker() as db:
+                db.add(OrgMember(
+                    id=str(uuid.uuid4()),
+                    organization_id=org_id,
+                    user_id=analyst_id,
+                    role="analyst",
+                    joined_at=datetime.now(timezone.utc),
+                ))
+                await db.commit()
 
             r_p1 = await client.post(
                 f"/api/v1/orgs/{org_id}/projects",
@@ -417,11 +426,19 @@ async def _run_member_email_body(runner) -> None:
             assert r_org.status_code == 201, r_org.text
             org_id = r_org.json()["id"]
 
-            r_member = await client.post(
-                f"/api/v1/orgs/{org_id}/members",
-                json={"email": analyst_user.email, "role": "analyst"},
-            )
-            assert r_member.status_code == 201, r_member.text
+            # MEMBER-INVITE-P1: members POST now issues invitations — seed the
+            # analyst membership directly (service role: RLS blocks cross-user writes).
+            from datetime import datetime, timezone
+
+            async with admin_maker() as db:
+                db.add(OrgMember(
+                    id=str(uuid.uuid4()),
+                    organization_id=org_id,
+                    user_id=analyst_id,
+                    role="analyst",
+                    joined_at=datetime.now(timezone.utc),
+                ))
+                await db.commit()
 
             # Check 1: admin list shows real emails for self AND others
             try:

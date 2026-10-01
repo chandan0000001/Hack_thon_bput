@@ -107,6 +107,29 @@ class OrgMember(Base):
     user: Mapped["User"] = relationship("User", back_populates="memberships", foreign_keys=[user_id])
 
 
+class OrgInvitation(Base):
+    """Token-based member invitation (MEMBER-INVITE-P1).
+
+    Only the SHA-256 token_hash is stored; the raw token is returned once at
+    creation. status: pending | accepted | expired | revoked.
+    """
+
+    __tablename__ = "organization_invitations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("org_organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # admin | analyst | viewer
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    invited_by: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | accepted | expired | revoked
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+
+
 class OrgProject(Base):
     __tablename__ = "org_projects"
     __table_args__ = (

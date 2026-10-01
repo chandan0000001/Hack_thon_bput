@@ -1079,6 +1079,14 @@ async def run_tests():
     from scripts.test_org_dashboard import run_org_dashboard_tests
     await run_org_dashboard_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 52. MEMBER-INVITE-P1 — Token-based invitations (create/validate/accept/
+    #     revoke + admin-demotion guard)
+    # -----------------------------------------------------------------------
+    print("\n[Suite 52] MEMBER-INVITE-P1 — Token-Based Invitations")
+    from scripts.test_member_invitations import run_member_invitation_tests
+    await run_member_invitation_tests(runner)
+
     return runner.report()
 
 

@@ -240,17 +240,42 @@ async def _run_org_auth_fix_body(runner) -> None:
         # -------------------------------------------------------------------
         # Check 8: revoke member -> their org access is gone immediately (RLS blocks)
         # -------------------------------------------------------------------
-        # Add analyst as member
-        r_add_mem = await ac.post(
-            f"/api/v1/orgs/{org_id}/members",
-            headers=owner_headers,
-            json={"email": analyst_email, "role": "analyst"},
-        )
+        # Seed analyst membership directly (MEMBER-INVITE-P1: the members POST
+        # now issues a token invitation instead of creating the membership).
+        analyst_user_id = f"user-{analyst_email.split('@')[0]}"
+        from datetime import datetime, timezone
+
+        from app.db.admin import _get_admin_session_maker
+        from app.db.models import OrgMember, User as UserModel
+
+        async with _get_admin_session_maker()() as db:
+            db.add(UserModel(
+                id=analyst_user_id,
+                email=analyst_email,
+                full_name="Seeded Analyst",
+                account_type="org",
+                is_single_user=False,
+            ))
+            db.add(OrgMember(
+                id=str(uuid.uuid4()),
+                organization_id=org_id,
+                user_id=analyst_user_id,
+                role="analyst",
+                joined_at=datetime.now(timezone.utc),
+            ))
+            await db.commit()
+        async with _get_admin_session_maker()() as db:
+            tbl = ("cyberguard.org_members"
+                   if "postgresql" in str(db.bind.dialect.name) else "org_members")
+            membership_id = (
+                await db.execute(text(
+                    f"SELECT id FROM {tbl} WHERE organization_id = :o AND user_id = :u"
+                ).bindparams(o=org_id, u=analyst_user_id))
+            ).scalar_one()
         runner.assert_true(
-            r_add_mem.status_code == 201,
-            f"Check 8.1: Member added successfully with role='analyst' (got {r_add_mem.status_code})",
+            bool(membership_id),
+            f"Check 8.1: Analyst membership seeded (id={membership_id})",
         )
-        membership_id = r_add_mem.json()["id"]
 
         # Analyst can view dashboard -> 200
         r_analyst_dash = await ac.get(f"/api/v1/orgs/{org_id}/dashboard", headers=analyst_headers)
