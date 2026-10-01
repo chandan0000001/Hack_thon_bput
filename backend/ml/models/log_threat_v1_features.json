@@ -1,0 +1,85 @@
+{
+  "version": "log_threat_v1",
+  "trained_at": "2026-09-27T13:22:07.050393+00:00",
+  "csv_path": "/home/srikant/hackthon/Hack_thon_bput/data/datasets/log_threat/log_threat_unified.csv",
+  "csv_sha256": "0f614a1af1f2420c9173cc34818a3fcdf736bf0ff19ce6c6430bcfd43b8c2d75",
+  "seed": 1337,
+  "benign_ratio": 3,
+  "split": {
+    "ratios": [
+      0.8,
+      0.1,
+      0.1
+    ],
+    "key": "split_key",
+    "grouped": true
+  },
+  "n_features_total": 1294,
+  "n_text_features": 1282,
+  "vectorizer_params": {
+    "ngram_range": [
+      1,
+      2
+    ],
+    "max_features": 10000,
+    "min_df": 2,
+    "analyzer": "word (tokenizer=str.split on normalized tokens)"
+  },
+  "numeric_feature_names": [
+    "line_length",
+    "num_tokens",
+    "avg_token_len",
+    "digit_ratio",
+    "has_ip",
+    "has_port",
+    "has_username",
+    "has_time",
+    "hour_of_day",
+    "day_of_week",
+    "has_block_id",
+    "is_pure_numeric_seq"
+  ],
+  "labels": [
+    "benign",
+    "suspicious",
+    "malicious"
+  ],
+  "model_params": {
+    "objective": "multi:softprob",
+    "tree_method": "hist",
+    "max_depth": 6,
+    "learning_rate": 0.1,
+    "n_estimators": 400,
+    "best_iteration": 74
+  },
+  "metrics": {
+    "accuracy": 0.9714,
+    "macro_f1": 0.7532,
+    "per_class": {
+      "benign": {
+        "precision": 0.9767,
+        "recall": 0.9942,
+        "f1-score": 0.9853,
+        "support": 10789.0
+      },
+      "suspicious": {
+        "precision": 0.8125,
+        "recall": 1.0,
+        "f1-score": 0.8966,
+        "support": 26.0
+      },
+      "malicious": {
+        "precision": 0.625,
+        "recall": 0.2707,
+        "f1-score": 0.3777,
+        "support": 351.0
+      }
+    }
+  },
+  "eval_samples_exact_matches": "6/10",
+  "sizes": {
+    "train": 26300,
+    "val": 10857,
+    "test": 11166
+  }
+}
