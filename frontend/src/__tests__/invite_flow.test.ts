@@ -58,6 +58,14 @@ describe('MEMBER-INVITE-P2 Test Suite (7 Checks)', () => {
   it('2 accept errors: 404 invalid, 410 expired, 403 mismatch, generic fallback', () => {
     assert.deepStrictEqual(mapAcceptError(404, ''), { kind: 'invalid', text: 'Invalid or used invitation link.' });
     assert.deepStrictEqual(mapAcceptError(410, ''), { kind: 'expired', text: 'This invitation has expired.' });
+    // 403 surfaces the backend detail, which names the invited address
+    assert.deepStrictEqual(
+      mapAcceptError(403, 'This invitation was issued to a@b.test. Sign in with that account to accept it.'),
+      {
+        kind: 'mismatch',
+        text: 'This invitation was issued to a@b.test. Sign in with that account to accept it.',
+      },
+    );
     assert.deepStrictEqual(mapAcceptError(403, ''), {
       kind: 'mismatch',
       text: 'This invitation was sent to a different email address.',

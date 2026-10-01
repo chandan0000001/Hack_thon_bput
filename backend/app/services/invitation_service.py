@@ -197,9 +197,14 @@ async def accept_invitation(token: str, user_id: str, user_email: str) -> dict:
         clean_invited_email = _normalize_email(invitation.email)
         if _normalize_email(user_email) != clean_invited_email:
             await session.commit()
+            # Name the invited address — the #1 confusion is accepting while
+            # signed in as the inviting admin (a different account).
             raise HTTPException(
                 status_code=403,
-                detail="This invitation was issued to a different email address",
+                detail=(
+                    f"This invitation was issued to {clean_invited_email}. "
+                    "Sign in with that account to accept it."
+                ),
             )
 
         # Idempotent-ish: an existing membership consumes the invitation.

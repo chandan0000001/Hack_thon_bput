@@ -4,7 +4,9 @@
 export type AcceptErrorKind = 'invalid' | 'expired' | 'mismatch' | 'generic';
 
 /** Map the backend accept-flow failures to user-facing copy (F2):
- * 404 invalid/used, 410 expired/revoked, 403 email mismatch. */
+ * 404 invalid/used, 410 expired/revoked, 403 email mismatch. For 403 the
+ * backend names the invited address ("issued to X. Sign in with that
+ * account…") — prefer it so the user knows which identity to switch to. */
 export function mapAcceptError(status: number | undefined, message: string): {
   kind: AcceptErrorKind;
   text: string;
@@ -12,7 +14,10 @@ export function mapAcceptError(status: number | undefined, message: string): {
   if (status === 404) return { kind: 'invalid', text: 'Invalid or used invitation link.' };
   if (status === 410) return { kind: 'expired', text: 'This invitation has expired.' };
   if (status === 403) {
-    return { kind: 'mismatch', text: 'This invitation was sent to a different email address.' };
+    return {
+      kind: 'mismatch',
+      text: message || 'This invitation was sent to a different email address.',
+    };
   }
   return { kind: 'generic', text: message || 'Failed to accept the invitation.' };
 }
