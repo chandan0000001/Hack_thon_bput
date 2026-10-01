@@ -1087,6 +1087,14 @@ async def run_tests():
     from scripts.test_member_invitations import run_member_invitation_tests
     await run_member_invitation_tests(runner)
 
+    # -----------------------------------------------------------------------
+    # 53. MEMBER-INVITE-P3 — Invitation email service (dev mode, SMTP path,
+    #     accept_url wiring, no-rollback-on-failure)
+    # -----------------------------------------------------------------------
+    print("\n[Suite 53] MEMBER-INVITE-P3 — Invitation Email Service")
+    from scripts.test_invite_email import run_invite_email_tests
+    await run_invite_email_tests(runner)
+
     return runner.report()
 
 

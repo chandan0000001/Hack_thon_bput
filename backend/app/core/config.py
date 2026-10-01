@@ -165,6 +165,19 @@ class Settings(BaseSettings):
     NOTIFICATION_SMTP_USERNAME: str = ""
     NOTIFICATION_SMTP_PASSWORD: str = ""
 
+    # --- Member invitation emails (MEMBER-INVITE-P3) ---
+    # Empty SMTP_HOST = dev mode: the invitation email (with the raw accept
+    # link) is logged to the console instead of sent, so developers can
+    # complete the flow without a mail server.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASS: str = ""
+    FROM_EMAIL: str = "invites@cyberguard.local"
+    # Frontend origin used to build invitation accept links:
+    #   {FRONTEND_URL}/auth/accept-invite?token=...
+    FRONTEND_URL: str = "http://localhost:5173"
+
     # Multi-Provider Orchestration (Groq, Gemini, OpenRouter)
     LLM_PROVIDERS: str = "groq,gemini,openrouter"
     LLM_COOLDOWN_SECONDS: int = 60

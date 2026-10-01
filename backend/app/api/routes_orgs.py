@@ -447,14 +447,20 @@ async def add_or_invite_member(
 ):
     """Invite a member (MEMBER-INVITE-P1): creates a single-use token
     invitation instead of a direct org_members row — no user row is
-    pre-created, the invitee claims membership via POST /invitations/accept."""
+    pre-created, the invitee claims membership via POST /invitations/accept.
+    MEMBER-INVITE-P3: the invitation email is sent (or logged in dev mode);
+    delivery status is reported but never fails the invite."""
     from app.services.invitation_service import create_invitation, invitation_to_dict
 
     org, _ = await _get_org_and_role(org_id, user.id, session, min_role="admin")
-    invitation, raw_token = await create_invitation(
+    invitation, raw_token, email_status = await create_invitation(
         session, org, req.email, req.role, invited_by=user.id
     )
-    return invitation_to_dict(invitation, include_token=raw_token)
+    payload = invitation_to_dict(invitation, include_token=raw_token)
+    payload["email_sent"] = email_status.get("sent", False)
+    if not payload["email_sent"]:
+        payload["email_note"] = email_status.get("reason", "email not sent")
+    return payload
 
 
 @router.patch("/orgs/{org_id}/members/{member_id}")

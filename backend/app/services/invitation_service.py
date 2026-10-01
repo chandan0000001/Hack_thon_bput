@@ -25,6 +25,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.db.admin import _get_admin_session_maker, find_user_by_email
 from app.db.models import OrgInvitation, OrgMember, OrgOrganization
 
@@ -77,13 +78,20 @@ async def create_invitation(
     email: str,
     role: str,
     invited_by: str,
-) -> tuple[OrgInvitation, str]:
-    """Create a pending invitation for ``email``; returns (row, raw_token).
+) -> tuple[OrgInvitation, str, dict]:
+    """Create a pending invitation for ``email``; returns (row, raw_token, email_status).
 
     The raw token is returned exactly once — only the hash is stored. Caller
     must run inside an admin-authorized RLS session (the insert policy is
     admin-only).
+
+    MEMBER-INVITE-P3: after the record commits, the invitation email is sent
+    (or logged in dev mode). A delivery failure NEVER rolls the invitation
+    back — the admin can resend or the invitee can still redeem the token
+    from the create response.
     """
+    from app.services.email_service import send_invitation_email
+
     clean_email = _normalize_email(email)
     now = datetime.now(timezone.utc)
 
@@ -117,7 +125,18 @@ async def create_invitation(
     await session.commit()
     await session.refresh(invitation)
     logger.info("invitation %s created for org %s (%s as %s)", invitation.id, org.id, clean_email, role)
-    return invitation, raw_token
+
+    accept_url = (
+        f"{get_settings().FRONTEND_URL.rstrip('/')}"
+        f"/auth/accept-invite?token={raw_token}"
+    )
+    try:
+        email_status = await send_invitation_email(clean_email, org.name, role, accept_url)
+    except Exception as exc:  # noqa: BLE001 - email must never roll back the invite
+        logger.error("invitation email step failed for %s (invitation kept): %s", clean_email, exc)
+        email_status = {"sent": False, "reason": f"email step failed: {type(exc).__name__}"}
+
+    return invitation, raw_token, email_status
 
 
 async def _load_by_token(session: AsyncSession, token: str) -> OrgInvitation:
