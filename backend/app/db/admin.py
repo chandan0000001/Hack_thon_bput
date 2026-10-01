@@ -73,8 +73,9 @@ async def resolve_email_for_identifier(identifier: str) -> Optional[str]:
 async def find_user_by_email(email: str) -> Optional[dict]:
     """Resolve an account by email (service-role lookup).
 
-    RLS on ``users`` hides other accounts from the app role, so org admin
-    member-invites resolve invitees through the service role. Returns
+    RLS on ``users`` hides other accounts from the app role, so org-level
+    email checks (invitation duplicate/membership guards, auth register
+    duplicates) resolve accounts through the service role. Returns
     {id, email, full_name, status, username} or None.
     """
     from app.db.models import User
@@ -93,69 +94,6 @@ async def find_user_by_email(email: str) -> Optional[dict]:
             "account_type": getattr(user, "account_type", "personal") or "personal",
             "username": user.username,
         }
-
-
-async def precreate_user_for_invite(email: str) -> dict:
-    """Pre-create a stub user row with status='invited' for a member invite so
-    they can join and claim the account on first login (service-role write).
-    Handles race conditions gracefully."""
-    import uuid as _uuid
-    from sqlalchemy.exc import IntegrityError
-    from app.db.models import User
-
-    clean_email = (email or "").strip().lower()
-    async with _get_admin_session_maker()() as session:
-        result = await session.execute(select(User).where(User.email == clean_email).limit(1))
-        user = result.scalar_one_or_none()
-        if user is not None:
-            return {
-                "id": user.id,
-                "email": user.email,
-                "full_name": user.full_name,
-                "status": getattr(user, "status", "active") or "active",
-                "account_type": getattr(user, "account_type", "org") or "org",
-                "username": user.username,
-            }
-
-        user = User(
-            id=str(_uuid.uuid4()),
-            email=clean_email,
-            full_name=clean_email.split("@")[0],
-            status="invited",
-            account_type="org",
-            is_single_user=False,
-        )
-        session.add(user)
-        try:
-            await session.commit()
-        except IntegrityError:
-            await session.rollback()
-            result = await session.execute(select(User).where(User.email == clean_email).limit(1))
-            user = result.scalar_one()
-
-        return {
-            "id": user.id,
-            "email": user.email,
-            "full_name": user.full_name,
-            "status": getattr(user, "status", "active") or "active",
-            "account_type": getattr(user, "account_type", "org") or "org",
-            "username": user.username,
-        }
-
-
-async def claim_invited_stub(old_user_id: str, new_user_id: str) -> None:
-    """Migrate an invited stub user row and its memberships to the authenticated user ID."""
-    from sqlalchemy import update
-    from app.db.models import OrgMember, User
-
-    async with _get_admin_session_maker()() as session:
-        await session.execute(
-            update(OrgMember).where(OrgMember.user_id == old_user_id).values(user_id=new_user_id)
-        )
-        await session.execute(
-            update(User).where(User.id == old_user_id).values(id=new_user_id, status="active")
-        )
-        await session.commit()
 
 
 # --- Connector OAuth state (service-role; the Gmail callback carries no

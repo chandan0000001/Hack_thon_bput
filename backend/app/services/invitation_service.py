@@ -1,7 +1,7 @@
 """Token-based organization member invitations (MEMBER-INVITE-P1).
 
-Replaces the stub-user flow (``precreate_user_for_invite`` + first-login
-claim) with single-use, expiring, hashed invitations:
+Replaced the retired stub-user flow (pre-created ``status='invited'`` rows
+claimed on first login) with single-use, expiring, hashed invitations:
 
 - The raw token (``secrets.token_urlsafe(32)``) is shown ONCE at creation;
   only its SHA-256 hash is persisted.
@@ -9,7 +9,7 @@ claim) with single-use, expiring, hashed invitations:
 - ``accept_invitation`` runs on the service role: the acceptor is by
   definition not yet a member, so ``org_members`` admin-insert RLS (and the
   admin-only invitation policies) would reject the write — the same pattern
-  as ``claim_invited_stub`` and project deletion.
+  as project deletion.
 - No user row is pre-created. The invitee signs up / signs in with the
   invited email; ``get_current_user`` JIT-provisions the local row, then the
   accept endpoint joins the org.

@@ -7,7 +7,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from app.db.admin import find_user_by_email, precreate_user_for_invite, claim_invited_stub
+from app.db.admin import find_user_by_email
 from app.db.models import OrgOrganization, OrgMember, User
 from app.db.session import async_session_maker
 from app.main import app
@@ -106,33 +106,46 @@ async def test_02_register_org_sets_org_account_type(async_client):
 
 
 @pytest.mark.asyncio
-async def test_03_invite_sets_org_account_type():
-    """3. invite_sets_org_account_type: pre-created invite stubs have account_type='org' and preserve it upon claim."""
+async def test_03_invite_jit_org_account_type_preserved():
+    """3. invite_jit_org_account_type_preserved: MEMBER-INVITE-P4 — the stub-user
+    flow is gone; an org-mode JIT/legacy row keeps account_type='org' and a
+    legacy 'invited' status flips to 'active' on first login."""
     test_id = str(uuid.uuid4())
     invite_email = f"invited_{test_id[:8]}@example.com"
 
-    stub_info = await precreate_user_for_invite(invite_email)
-    assert stub_info is not None
-    assert stub_info["account_type"] == "org"
-    assert stub_info["status"] == "invited"
+    # Legacy invited row (pre-P1 stubs) — the only source of status='invited' now.
+    async with async_session_maker() as db:
+        db.add(User(
+            id=test_id,
+            email=invite_email,
+            username=f"invited{test_id[:6]}",
+            account_type="org",
+            status="invited",
+            is_single_user=False,
+        ))
+        await db.commit()
+
+    sb_res = _make_mock_sb_response(test_id, invite_email)
+    with patch("app.core.security._get_anon_client") as mock_get_client:
+        mock_client = MagicMock()
+        mock_client.auth.get_user.return_value = sb_res
+        mock_get_client.return_value = mock_client
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            resp = await ac.get(
+                "/api/v1/auth/me",
+                headers={"Authorization": f"Bearer test-token-{test_id}"},
+            )
+        assert resp.status_code == 200, resp.text
 
     async with async_session_maker() as db:
-        res = await db.execute(select(User).where(User.id == stub_info["id"]))
-        stub_user = res.scalar_one_or_none()
-        assert stub_user is not None
-        assert stub_user.account_type == "org"
-        assert stub_user.status == "invited"
-
-    # Claim invited stub
-    new_auth_id = str(uuid.uuid4())
-    await claim_invited_stub(old_user_id=stub_info["id"], new_user_id=new_auth_id)
-
-    async with async_session_maker() as db:
-        res = await db.execute(select(User).where(User.id == new_auth_id))
-        claimed_user = res.scalar_one_or_none()
-        assert claimed_user is not None
-        assert claimed_user.account_type == "org"
-        assert claimed_user.status == "active"
+        res = await db.execute(select(User).where(User.id == test_id))
+        user = res.scalar_one_or_none()
+        assert user is not None
+        assert user.account_type == "org"
+        assert user.status == "active"
 
 
 @pytest.mark.asyncio

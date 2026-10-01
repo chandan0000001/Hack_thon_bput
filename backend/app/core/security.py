@@ -17,6 +17,7 @@ from fastapi import Depends, Header, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import and_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from supabase import Client, create_client
 
@@ -169,18 +170,20 @@ async def get_current_user(
     user_query = await db.execute(select(User).where(User.id == user_id))
     user = user_query.scalar_one_or_none()
     if user is None and email:
-        from app.db.admin import claim_invited_stub, find_user_by_email
+        # Same-email local row (legacy id drift): ADOPT it as the identity
+        # instead of JIT-creating a duplicate. The service-role lookup is
+        # required because the app-role session is RLS-blinded for other
+        # users' rows (users_select is self-row-only).
+        from app.db.admin import find_user_by_email
 
         admin_info = await find_user_by_email(email)
         if admin_info:
-            stub_id = admin_info["id"]
-            if stub_id != user_id:
-                await claim_invited_stub(old_user_id=stub_id, new_user_id=user_id)
-            user_query = await db.execute(select(User).where(User.id == user_id))
+            # Re-stamp the RLS identity to the adopted row BEFORE selecting —
+            # users_select is self-row-only, so the row is invisible while the
+            # GUC still carries the Supabase id.
+            await set_session_user(db, admin_info["id"])
+            user_query = await db.execute(select(User).where(User.id == admin_info["id"]))
             user = user_query.scalar_one_or_none()
-        else:
-            email_query = await db.execute(select(User).where(User.email == email))
-            user = email_query.scalar_one_or_none()
 
     if user is None:
         # OAuth / first-login JIT row: auto-generate a unique username.
@@ -206,6 +209,12 @@ async def get_current_user(
             if user is None and email:
                 user_query = await db.execute(select(User).where(User.email == email))
                 user = user_query.scalar_one_or_none()
+
+    if user is None:
+        # The JIT insert collided with a row this session cannot see under RLS
+        # and neither fallback reselect found it — fail closed with a clear
+        # error instead of a NoneType crash downstream.
+        raise PermissionDeniedError("Account provisioning failed; please retry sign-in")
     else:
         if not user.email and email:
             user.email = email

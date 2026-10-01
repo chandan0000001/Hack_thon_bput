@@ -18,6 +18,7 @@ import {
 } from '../pages/acceptInvitationHelpers.ts';
 
 const orgApiPath = path.resolve('src/services/orgApi.ts');
+const generalPath = path.resolve('src/pages/ProjectSettingsGeneral.tsx');
 const acceptPagePath = path.resolve('src/pages/AcceptInvitationPage.tsx');
 const pendingPath = path.resolve('src/components/PendingInvitations.tsx');
 const apiPath = path.resolve('src/services/api.ts');
@@ -34,7 +35,7 @@ class ApiError extends Error {
   }
 }
 
-describe('MEMBER-INVITE-P2 Test Suite (6 Checks)', () => {
+describe('MEMBER-INVITE-P2 Test Suite (7 Checks)', () => {
   // Check 1: API client methods + backend response shapes
   it('1 api: inviteMember/listInvitations/revokeInvitation/acceptInvitation hit the invitation endpoints', () => {
     const api = fs.readFileSync(orgApiPath, 'utf8');
@@ -156,5 +157,43 @@ describe('MEMBER-INVITE-P2 Test Suite (6 Checks)', () => {
     assert.match(authError, /hint === 'check_invite'/);
     assert.match(authError, /Open the invitation link you received to accept it\./);
     assert.doesNotMatch(authError, /Check your email or sign in to accept\./);
+  });
+
+  // Check 7 (MEMBER-INVITE-P4): Leave Organization button — non-owner only,
+  // DELETE own membership row, redirect to /org/select on success.
+  it('7 leave org: owner excluded, removes own membership, redirects to /org/select', async () => {
+    const src = fs.readFileSync(generalPath, 'utf8');
+    // visibility gate: needs own member row and must not be the owner
+    assert.match(src, /const myMember = members\.find\(\(m\) => m\.user_id === user\?\.id\);/);
+    assert.match(src, /const canLeave = Boolean\(org && myMember && myMember\.user_id !== org\.owner_id\);/);
+    assert.match(src, /\{canLeave && \([\s\S]{0,600}?data-testid="leave-org-btn"/);
+    // confirm modal copy + button
+    assert.match(src, /Are you sure you want to leave \{org\?\.name \|\| 'this organization'\}\? You will lose/);
+    assert.match(src, /data-testid="confirm-leave-btn"/);
+    // action: DELETE own membership row, then redirect to the org selector
+    assert.match(src, /await orgApi\.removeMember\(orgId, myMember\.id\);/);
+    assert.match(src, /navigate\('\/org\/select'\);/);
+    // inline failure surfacing
+    assert.match(src, /data-testid="leave-error"/);
+
+    // logic simulation: owner row hidden, member row visible + removable
+    const members = [
+      { id: 'm1', user_id: 'u-owner' },
+      { id: 'm2', user_id: 'u-me' },
+    ];
+    const owner_id = 'u-owner';
+    const me = 'u-me';
+    const myMember = members.find((m) => m.user_id === me)!;
+    const canLeave = Boolean(myMember && myMember.user_id !== owner_id);
+    assert.strictEqual(canLeave, true);
+    const ownerCanLeave = Boolean(members.find((m) => m.user_id === owner_id)! &&
+      members.find((m) => m.user_id === owner_id)!.user_id !== owner_id);
+    assert.strictEqual(ownerCanLeave, false);
+    const deleted: string[] = [];
+    const removeMember = async (_orgId: string, memberId: string) => {
+      deleted.push(memberId);
+    };
+    await removeMember('org-1', myMember.id);
+    assert.deepStrictEqual(deleted, ['m2']);
   });
 });

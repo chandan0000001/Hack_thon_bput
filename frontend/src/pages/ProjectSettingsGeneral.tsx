@@ -6,6 +6,7 @@ import {
   Check,
   Copy,
   Loader2,
+  LogOut,
   Trash2,
   UserPlus,
   Users,
@@ -96,6 +97,11 @@ export default function ProjectSettingsGeneral({
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleteMsg, setDeleteMsg] = useState<Flash>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // MEMBER-INVITE-P4: leave organization state
+  const [leaveOpen, setLeaveOpen] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const [leaveMsg, setLeaveMsg] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -197,6 +203,26 @@ export default function ProjectSettingsGeneral({
       });
     } finally {
       setDeleting(false);
+    }
+  };
+
+  // MEMBER-INVITE-P4: the current user's membership row (owner never sees the
+  // leave control; the backend also blocks removing the organization owner).
+  const myMember = members.find((m) => m.user_id === user?.id);
+  const canLeave = Boolean(org && myMember && myMember.user_id !== org.owner_id);
+
+  const confirmLeave = async () => {
+    if (!myMember) return;
+    setLeaving(true);
+    setLeaveMsg(null);
+    try {
+      await orgApi.removeMember(orgId, myMember.id);
+      navigate('/org/select');
+    } catch (err) {
+      setLeaveMsg(err instanceof ApiError ? err.message : 'Failed to leave organization');
+      setLeaveOpen(false);
+    } finally {
+      setLeaving(false);
     }
   };
 
@@ -419,6 +445,32 @@ export default function ProjectSettingsGeneral({
             </tbody>
           </table>
         </div>
+
+        {/* MEMBER-INVITE-P4: leave organization (hidden for the owner) */}
+        {canLeave && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2" data-testid="leave-org-section">
+            <p className="text-[11px] text-zinc-500">
+              No longer part of this organization? You can remove yourself.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setLeaveMsg(null);
+                setLeaveOpen(true);
+              }}
+              data-testid="leave-org-btn"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-400"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              <span>Leave organization</span>
+            </button>
+          </div>
+        )}
+        {leaveMsg && (
+          <p data-testid="leave-error" className="mt-3 text-xs text-red-400">
+            {leaveMsg}
+          </p>
+        )}
       </section>
 
       {/* ── G3: Danger zone (admin only) ────────────────────────────────── */}
@@ -488,6 +540,38 @@ export default function ProjectSettingsGeneral({
               >
                 {removing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                 <span>Remove</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Leave organization confirm modal (MEMBER-INVITE-P4) ───────────── */}
+      {leaveOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-2xl border border-red-500/30 bg-zinc-900 p-6 shadow-2xl">
+            <h3 className="text-sm font-semibold text-zinc-100">Leave organization</h3>
+            <p className="mt-2 text-xs text-zinc-400">
+              Are you sure you want to leave {org?.name || 'this organization'}? You will lose
+              access to all projects.
+            </p>
+            <div className="mt-5 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setLeaveOpen(false)}
+                className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-zinc-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmLeave}
+                disabled={leaving}
+                data-testid="confirm-leave-btn"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-red-500 disabled:opacity-60"
+              >
+                {leaving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                <span>Leave</span>
               </button>
             </div>
           </div>
