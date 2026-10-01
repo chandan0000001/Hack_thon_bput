@@ -6,14 +6,15 @@ import {
   Check,
   Copy,
   Loader2,
-  Shield,
   Trash2,
   UserPlus,
   Users,
 } from 'lucide-react';
-import { orgApi, type OrgMemberRow, type OrgInfo } from '../services/orgApi';
+import { orgApi, type OrgMemberRow, type OrgInfo, type CreatedInvitation } from '../services/orgApi';
 import { ApiError } from '../services/http';
 import { useAuthStore } from '../store/authStore';
+import InviteMemberModal from '../components/InviteMemberModal';
+import PendingInvitations from '../components/PendingInvitations';
 import type { Project } from '../types';
 
 type Flash = { ok: boolean; text: string } | null;
@@ -83,10 +84,8 @@ export default function ProjectSettingsGeneral({
 
   // G2: access card state
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [inviteRole, setInviteRole] = useState<string>('viewer');
   const [inviteMsg, setInviteMsg] = useState<Flash>(null);
-  const [inviting, setInviting] = useState(false);
+  const [inviteRefresh, setInviteRefresh] = useState(0);
   const [removeTarget, setRemoveTarget] = useState<OrgMemberRow | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeMsg, setRemoveMsg] = useState<Flash>(null);
@@ -161,24 +160,9 @@ export default function ProjectSettingsGeneral({
     }
   };
 
-  const submitInvite = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setInviting(true);
-    setInviteMsg(null);
-    try {
-      const added = await orgApi.addMember(orgId, inviteEmail.trim(), inviteRole);
-      setMembers((rows) => [...rows, added]);
-      setInviteOpen(false);
-      setInviteEmail('');
-      setInviteRole('viewer');
-    } catch (err) {
-      setInviteMsg({
-        ok: false,
-        text: err instanceof ApiError ? err.message : 'Failed to add member',
-      });
-    } finally {
-      setInviting(false);
-    }
+  const submitInvite = async (invitation: CreatedInvitation) => {
+    setInviteMsg({ ok: true, text: `Invitation sent to ${invitation.email}` });
+    setInviteRefresh((n) => n + 1);
   };
 
   const confirmRemove = async () => {
@@ -357,6 +341,12 @@ export default function ProjectSettingsGeneral({
           </p>
         )}
 
+        {inviteMsg && (
+          <p data-testid="invite-flash" className={`mb-3 text-xs ${inviteMsg.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+            {inviteMsg.text}
+          </p>
+        )}
+
         <div className="overflow-hidden rounded-lg border border-zinc-800">
           <table className="w-full text-left text-xs">
             <thead className="bg-zinc-950/60">
@@ -460,72 +450,16 @@ export default function ProjectSettingsGeneral({
         </section>
       )}
 
+      {/* ── Pending invitations (admin only) ──────────────────────────────── */}
+      {isAdmin && <PendingInvitations orgId={orgId} refreshSignal={inviteRefresh} />}
+
       {/* ── Invite modal ──────────────────────────────────────────────────── */}
       {inviteOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl">
-            <div className="mb-4 flex items-center gap-2">
-              <Shield className="h-4 w-4 text-red-400" />
-              <h3 className="text-sm font-semibold text-zinc-100">Add member</h3>
-            </div>
-            <form onSubmit={submitInvite} className="space-y-4">
-              <div>
-                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-                  Email
-                </label>
-                <input
-                  type="email"
-                  required
-                  autoFocus
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  placeholder="analyst@company.com"
-                  data-testid="invite-email-input"
-                  className="w-full rounded-lg border border-zinc-700/60 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-red-500/60"
-                />
-              </div>
-              <div>
-                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-                  Role
-                </label>
-                <select
-                  value={inviteRole}
-                  onChange={(e) => setInviteRole(e.target.value)}
-                  data-testid="invite-role-select"
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-300 outline-none"
-                >
-                  {ROLE_OPTIONS.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {inviteMsg && !inviteMsg.ok && (
-                <p data-testid="invite-error" className="text-xs text-red-400">
-                  {inviteMsg.text}
-                </p>
-              )}
-              <div className="flex items-center justify-end gap-3 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setInviteOpen(false)}
-                  className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-zinc-800"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={inviting || !inviteEmail.trim()}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-red-500 disabled:opacity-60"
-                >
-                  {inviting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  <span>Add member</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <InviteMemberModal
+          orgId={orgId}
+          onClose={() => setInviteOpen(false)}
+          onInvited={submitInvite}
+        />
       )}
 
       {/* ── Remove member confirm modal ───────────────────────────────────── */}

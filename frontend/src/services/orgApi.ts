@@ -38,6 +38,34 @@ export interface OrgMemberRow {
 
 export type ApiKeyRole = 'master' | 'viewer';
 
+/** MEMBER-INVITE-P2: row of GET /orgs/{id}/invitations (token_hash never leaves the backend). */
+export interface Invitation {
+  id: string;
+  organization_id: string;
+  email: string;
+  role: 'admin' | 'analyst' | 'viewer';
+  status: 'pending' | 'accepted' | 'expired' | 'revoked';
+  invited_by: string;
+  expires_at: string;
+  accepted_at: string | null;
+  created_at: string;
+}
+
+/** MEMBER-INVITE-P1: POST /orgs/{id}/members response — the raw token is
+ * returned exactly once and only ever lives in this payload. */
+export interface CreatedInvitation extends Invitation {
+  token: string;
+}
+
+/** POST /invitations/accept response. */
+export interface AcceptanceResult {
+  organization_id: string;
+  organization_name: string;
+  role: 'admin' | 'analyst' | 'viewer';
+  member_id: string;
+  joined_at: string;
+}
+
 /** ORG-DASHBOARD-P1: seed shape of GET .../counters/initial (then realtime-only deltas). */
 export interface OrgCounters {
   total_24h: number;
@@ -212,11 +240,34 @@ export const orgApi = {
     return data.members || [];
   },
 
-  // Add/invite a member (admin only)
-  async addMember(orgId: string, email: string, role: string): Promise<OrgMemberRow> {
+  // Invite a member (admin only) — MEMBER-INVITE-P1: issues a single-use
+  // token invitation; the raw `token` in the response is plaintext-once.
+  async inviteMember(orgId: string, email: string, role: string): Promise<CreatedInvitation> {
     return apiFetch(`/orgs/${encodeURIComponent(orgId)}/members`, {
       method: 'POST',
       body: JSON.stringify({ email, role }),
+    });
+  },
+
+  // List organization invitations (admin only)
+  async listInvitations(orgId: string): Promise<Invitation[]> {
+    const data = await apiFetch(`/orgs/${encodeURIComponent(orgId)}/invitations`);
+    return data.invitations || [];
+  },
+
+  // Revoke a pending invitation (admin only)
+  async revokeInvitation(orgId: string, invitationId: string): Promise<void> {
+    await apiFetch(
+      `/orgs/${encodeURIComponent(orgId)}/invitations/${encodeURIComponent(invitationId)}`,
+      { method: 'DELETE' }
+    );
+  },
+
+  // Redeem an invitation token (authenticated; email must match the invite)
+  async acceptInvitation(token: string): Promise<AcceptanceResult> {
+    return apiFetch('/invitations/accept', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
     });
   },
 

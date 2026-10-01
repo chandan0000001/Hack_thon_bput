@@ -15,9 +15,6 @@ import type {
   Severity,
   ThreatModule,
   User,
-  Organization,
-  OrganizationMember,
-  OrganizationRole,
   UserContext,
 
   EmailConnectorAccount,
@@ -323,88 +320,6 @@ export async function addAlert(_alert: Alert): Promise<void> {
   return notAvailable('addAlert');
 }
 
-// ---------------------------------------------------------------------------
-// Organizations & Team Member Management
-// ---------------------------------------------------------------------------
-
-export async function listOrganizations(): Promise<Organization[]> {
-  const rows = await apiFetch('/organizations');
-  return Array.isArray(rows) ? (rows as Organization[]) : [];
-}
-
-export async function createOrganization(name: string): Promise<Organization> {
-  const org = await apiFetch('/organizations', {
-    method: 'POST',
-    body: JSON.stringify({ name }),
-  });
-  await useAuthStore.getState().fetchUserContext();
-  return org as Organization;
-}
-
-export async function getOrganization(orgId: string): Promise<Organization> {
-  const org = await apiFetch(`/organizations/${orgId}`);
-  return org as Organization;
-}
-
-export async function listOrganizationMembers(orgId: string): Promise<OrganizationMember[]> {
-  const rows = await apiFetch(`/organizations/${orgId}/members`);
-  if (!Array.isArray(rows)) return [];
-  return rows.map((r: any) => ({
-    id: r.id,
-    organizationId: r.organization_id,
-    userId: r.user_id,
-    email: r.email,
-    fullName: r.full_name,
-    role: r.role as OrganizationRole,
-    joinedAt: r.joined_at,
-  }));
-}
-
-export async function addOrganizationMember(
-  orgId: string,
-  email: string,
-  role: OrganizationRole
-): Promise<OrganizationMember> {
-  const res = await apiFetch(`/organizations/${orgId}/members`, {
-    method: 'POST',
-    body: JSON.stringify({ email, role }),
-  });
-  return {
-    id: res.id,
-    organizationId: res.organization_id,
-    userId: res.user_id,
-    email: res.email,
-    fullName: res.full_name,
-    role: res.role as OrganizationRole,
-    joinedAt: res.joined_at,
-  };
-}
-
-export async function updateOrganizationMemberRole(
-  orgId: string,
-  targetUserId: string,
-  role: OrganizationRole
-): Promise<OrganizationMember> {
-  const res = await apiFetch(`/organizations/${orgId}/members/${targetUserId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ role }),
-  });
-  return {
-    id: res.id,
-    organizationId: res.organization_id,
-    userId: res.user_id,
-    email: res.email,
-    fullName: res.full_name,
-    role: res.role as OrganizationRole,
-    joinedAt: res.joined_at,
-  };
-}
-
-export async function removeOrganizationMember(orgId: string, targetUserId: string): Promise<void> {
-  await apiFetch(`/organizations/${orgId}/members/${targetUserId}`, {
-    method: 'DELETE',
-  });
-}
 
 
 // ---------------------------------------------------------------------------

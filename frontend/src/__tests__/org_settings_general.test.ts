@@ -5,6 +5,7 @@ import path from 'node:path';
 
 const generalPath = path.resolve('src/pages/ProjectSettingsGeneral.tsx');
 const apiPath = path.resolve('src/services/orgApi.ts');
+const modalPath = path.resolve('src/components/InviteMemberModal.tsx');
 
 // Stand-in matching the ApiError shape used by the page (importing the real
 // module would drag the whole supabase/authStore chain into the node runner).
@@ -92,31 +93,43 @@ describe('ORG-SETTINGS-P3 Test Suite (6 Checks)', () => {
     assert.match(adminBranch[0], /data-testid="project-name-input"/);
   });
 
-  // Check 4: invite modal adds row; duplicate (409) shows inline error
-  it('4 invite: POST members appends row; 409 error renders inline in modal', async () => {
+  // Check 4: invite modal sends invitation; "Invitation sent" flash + pending list refresh
+  it('4 invite: POST issues invitation; flash shown; 4xx renders inline in modal', async () => {
     const src = fs.readFileSync(generalPath, 'utf8');
-    assert.match(src, /data-testid="invite-email-input"/);
-    assert.match(src, /data-testid="invite-role-select"/);
-    assert.match(src, /orgApi\.addMember\(orgId, inviteEmail\.trim\(\), inviteRole\)/);
-    assert.match(src, /setMembers\(\(rows\) => \[\.\.\.rows, added\]\)/);
-    assert.match(src, /data-testid="invite-error"/);
-    // api method hits the members endpoint
+    // modal extracted to its own component (MEMBER-INVITE-P2)
+    assert.match(src, /import InviteMemberModal from '\.\.\/components\/InviteMemberModal';/);
+    assert.match(src, /<InviteMemberModal\s*\n?\s*orgId=\{orgId\}/);
+    // success flash in the members section + pending list refresh signal
+    assert.match(src, /data-testid="invite-flash"/);
+    assert.match(src, /Invitation sent to \$\{invitation\.email\}/);
+    assert.match(src, /setInviteRefresh\(\(n\) => n \+ 1\)/);
+    assert.match(src, /<PendingInvitations orgId=\{orgId\} refreshSignal=\{inviteRefresh\} \/>/);
+    // api method hits the members endpoint and returns the invitation (token plaintext-once)
     const api = fs.readFileSync(apiPath, 'utf8');
-    assert.match(api, /async addMember\(orgId: string, email: string, role: string\)/);
+    assert.match(api, /async inviteMember\(orgId: string, email: string, role: string\)/);
+    assert.match(api, /interface CreatedInvitation extends Invitation \{\n  token: string;\n\}/);
+    const modal = fs.readFileSync(modalPath, 'utf8');
+    assert.match(modal, /data-testid="invite-email-input"/);
+    assert.match(modal, /data-testid="invite-error"/);
+    assert.match(modal, /onInvited\(invitation\);\n      onClose\(\);/);
 
-    // logic simulation: first invite succeeds, duplicate 409 surfaces inline
-    const rows: { user_id: string }[] = [{ user_id: 'u1' }];
-    const addMember = async (email: string) => {
-      if (email === 'dup@x.test') throw new ApiError('User is already a member of this organization', 409);
-      const added = { user_id: 'u2' };
-      rows.push(added);
-      return added;
+    // logic simulation: successful invite -> flash text + refresh; 4xx stays inline in modal
+    const inviteMember = async (email: string) => {
+      if (email === 'dup@x.test') throw new ApiError('A pending invitation for this email already exists', 409);
+      if (email === 'member@x.test') throw new ApiError('User is already a member of this organization', 400);
+      return { email, token: 'raw-token' };
     };
+    let flash: string | null = null;
+    let refreshes = 0;
     let modalError: string | null = null;
-    await addMember('new@x.test').then((added) => rows.push(added)).catch((e) => { modalError = e.message; });
-    assert.strictEqual(rows.length, 3);
+    await inviteMember('new@x.test').then((inv) => {
+      flash = `Invitation sent to ${inv.email}`;
+      refreshes += 1;
+    });
+    assert.match(flash!, /Invitation sent to new@x\.test/);
+    assert.strictEqual(refreshes, 1);
     try {
-      await addMember('dup@x.test');
+      await inviteMember('member@x.test');
     } catch (e: any) {
       modalError = (e as ApiError).message;
     }

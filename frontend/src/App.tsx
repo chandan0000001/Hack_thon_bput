@@ -5,6 +5,7 @@ import ProtectedRoute from './components/layout/ProtectedRoute';
 import RoleGuard from './components/layout/RoleGuard';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
+import AcceptInvitationPage from './pages/AcceptInvitationPage';
 import ExtAuthPage from './pages/ExtAuthPage';
 import ExtCallbackPage from './pages/ExtCallbackPage';
 import ResetPassword from './pages/ResetPassword';
@@ -80,6 +81,9 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* MEMBER-INVITE-P2: invitation redemption (public; page handles the
+            auth bounce to /login?mode=org&next=… itself) */}
+        <Route path="/auth/accept-invite" element={<AcceptInvitationPage />} />
         {/* EXT-P1: browser-extension universal sign-in (public routes) */}
         <Route path="/ext/auth" element={<ExtAuthPage />} />
         <Route path="/ext/callback" element={<ExtCallbackPage />} />

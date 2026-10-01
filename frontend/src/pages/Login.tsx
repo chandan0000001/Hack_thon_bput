@@ -108,6 +108,12 @@ export default function Login() {
     const effectiveMode = storedOAuthMode || (authMode === 'org' ? 'org' : 'personal');
 
     if (effectiveMode === 'org') {
+      // MEMBER-INVITE-P2: an explicit ?next= hop (e.g. back to the
+      // accept-invitation page) wins over the default org-selector landing.
+      if (nextPath !== '/dashboard') {
+        goTo(nextPath);
+        return;
+      }
       fetchOrganizations().then((orgs) => {
         if (orgs.length > 0) {
           navigate('/org/select', { replace: true });

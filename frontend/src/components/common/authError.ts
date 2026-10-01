@@ -39,7 +39,9 @@ export function formatAuthError(
     message = 'This email already has an account. Sign in to create or join an organization.';
     actionText = customActionText || 'Sign in';
   } else if (hint === 'check_invite') {
-    message = 'You have a pending organization invitation! Check your email or sign in to accept.';
+    // MEMBER-INVITE-P2: legacy stub invites are gone; acceptance happens via
+    // the single-use link (/auth/accept-invite?token=…), not by re-registering.
+    message = 'You may have a pending organization invitation. Open the invitation link you received to accept it.';
     actionText = customActionText || 'Sign in';
   } else if (hint === 'use_org_mode' || (typeof errorInfo !== 'string' && errorInfo.error === 'account_type_mismatch')) {
     message = 'This email is registered as an organization account.';
