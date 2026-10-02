@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.errors import AppError, NotFoundError, PermissionDeniedError
 from app.core.security import CurrentUser, get_current_user
-from app.db.models import GmailAccount, JobQueue, ProcessedEmail
+from app.db.models import GmailAccount, JobQueue, ProcessedEmail, ScanResult as DBScanResult
 from app.db.session import get_db
 from app.schemas.connectors import (
     ConnectorAccountRead,
@@ -573,6 +573,10 @@ class ProcessedEmailItem(BaseModel):
     classification: Optional[str] = None
     enforcement_status: Optional[str] = None
     enforcement_detail: Optional[str] = None
+    severity: Optional[str] = None
+    recommended_action: Optional[str] = None
+    provider_operation_status: Optional[str] = None
+    engines: list[dict] = []
     created_at: datetime
     updated_at: datetime
 
@@ -617,6 +621,20 @@ async def get_ingestion_activity(
     recent_emails = []
     total_phishing = 0
     total_quarantined = 0
+
+    # Batch-load stored scan details so live rows carry the same verdict
+    # metadata (severity, engine breakdown, action) as the manual scan
+    # results preview. Scores stored in scan_details are 0.0-1.0.
+    scan_ids = [pe.scan_result_id for pe in pe_rows if pe.scan_result_id]
+    scan_details_by_id: dict[str, dict] = {}
+    if scan_ids:
+        sr_rows = (
+            await db.execute(select(DBScanResult).where(DBScanResult.id.in_(scan_ids)))
+        ).scalars().all()
+        for sr in sr_rows:
+            if isinstance(sr.scan_details, dict):
+                scan_details_by_id[sr.id] = sr.scan_details
+
     for pe in pe_rows:
         signals = pe.signals or {}
         enf_status = signals.get("enforcement_status")
@@ -631,6 +649,20 @@ async def get_ingestion_activity(
         if enf_status in ("quarantined", "success"):
             total_quarantined += 1
 
+        details = scan_details_by_id.get(pe.scan_result_id) if pe.scan_result_id else None
+        engines = []
+        severity = None
+        if details:
+            severity = details.get("severity")
+            for name, er in (details.get("engine_results") or {}).items():
+                if isinstance(er, dict) and er.get("score") is not None:
+                    engines.append({"engine": name, "score": er.get("score")})
+        recommended_action = (
+            "quarantine" if pe.classification == "phishing"
+            else "flag_for_review" if pe.classification == "suspicious"
+            else "none"
+        )
+
         recent_emails.append(
             ProcessedEmailItem(
                 id=pe.id,
@@ -643,6 +675,10 @@ async def get_ingestion_activity(
                 classification=pe.classification,
                 enforcement_status=enf_status,
                 enforcement_detail=enf_detail,
+                severity=severity,
+                recommended_action=recommended_action,
+                provider_operation_status=enf_status,
+                engines=engines,
                 created_at=pe.created_at,
                 updated_at=pe.updated_at,
             )

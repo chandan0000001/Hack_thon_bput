@@ -175,24 +175,27 @@ async def email_analysis_job(ctx: dict[str, Any], processed_email_id: str) -> di
                                         if sr_row and sr_row.scan_details:
                                             explanation_text = sr_row.scan_details.get("explanation", explanation_text)
 
+                                    # ScanResult contract: overall_score / FeatureAnalysis.score
+                                    # are 0.0-1.0 (schemas/scan_results.py) — UI renders x100.
+                                    enforcement_score = round(min(1.0, pe_row.risk_score or 0.0), 3)
                                     scan_pydantic = PydanticScanResult(
                                         message_id=pe_row.gmail_message_id,
                                         subject=pe_row.subject,
                                         sender=pe_row.sender,
                                         overall_severity="critical" if (pe_row.risk_score or 0) >= 0.7 else "high",
-                                        overall_score=int((pe_row.risk_score or 0.0) * 100),
+                                        overall_score=enforcement_score,
                                         overall_explanation=explanation_text,
                                         feature_analyses=[
                                             FeatureAnalysis(
                                                 engine="heuristics",
                                                 severity="critical" if (pe_row.risk_score or 0) >= 0.7 else "high",
-                                                score=int((pe_row.risk_score or 0.0) * 100),
+                                                score=enforcement_score,
                                                 explanation=explanation_text,
                                             ),
                                             FeatureAnalysis(
                                                 engine="ml_model",
                                                 severity="critical" if (pe_row.risk_score or 0) >= 0.7 else "high",
-                                                score=int((pe_row.risk_score or 0.0) * 100),
+                                                score=enforcement_score,
                                                 explanation="ML classifier high threat probability",
                                             ),
                                         ],

@@ -518,6 +518,10 @@ export interface ProcessedEmailActivity {
   classification: string | null;
   enforcement_status: string | null;
   enforcement_detail: string | null;
+  severity: string | null;
+  recommended_action: string | null;
+  provider_operation_status: string | null;
+  engines: Array<{ engine: string; score: number }>;
   created_at: string;
   updated_at: string;
 }

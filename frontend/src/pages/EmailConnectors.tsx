@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import PageHeader from '../components/common/PageHeader';
 import VerboseResultPanel from '../components/common/VerboseResultPanel';
+import EmailAnalysisResultCard from '../components/common/EmailAnalysisResultCard';
 import * as api from '../services/api';
 import { formatLocal } from '../utils/datetime';
 import type {
@@ -45,14 +46,6 @@ const STATUS_STYLES: Record<string, string> = {
   reauth_required: 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30',
   revoked: 'bg-zinc-800 text-zinc-400 ring-1 ring-zinc-700',
   error: 'bg-red-500/10 text-red-400 ring-1 ring-red-500/30',
-};
-
-const SEVERITY_BADGE: Record<string, string> = {
-  critical: 'bg-red-500/15 text-red-400 ring-1 ring-red-500/40',
-  high: 'bg-orange-500/10 text-orange-400 ring-1 ring-orange-500/40',
-  medium: 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/40',
-  low: 'bg-yellow-500/10 text-yellow-500 ring-1 ring-yellow-500/40',
-  safe: 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30',
 };
 
 const PROVIDER_STATUS_STYLES: Record<string, string> = {
@@ -717,72 +710,27 @@ export default function EmailConnectors() {
         ) : (
           <div className="divide-y divide-zinc-800/80 overflow-x-auto">
             {activity.recent_emails.map((email) => {
-              const isPhish = email.classification === 'phishing' || (email.risk_score !== null && email.risk_score >= 0.7);
-              const isSus = email.classification === 'suspicious';
+              const severity =
+                email.severity ||
+                (email.classification === 'phishing' || (email.risk_score ?? 0) >= 0.7
+                  ? 'critical'
+                  : email.classification === 'suspicious'
+                    ? 'medium'
+                    : 'safe');
               return (
-                <div key={email.id} className="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between text-xs transition hover:bg-zinc-800/30">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-zinc-200 truncate max-w-md">
-                        {email.subject || '(No Subject)'}
-                      </span>
-                      <span className="text-zinc-500 font-mono text-[11px]">from {email.sender || 'Unknown'}</span>
-                      <span className="text-zinc-600 text-[10px]">· {formatWhen(email.received_at || email.created_at)}</span>
-                    </div>
-                    {email.enforcement_detail && (
-                      <p className="mt-1 text-[11px] text-zinc-400 truncate max-w-2xl">
-                        💡 {email.enforcement_detail}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                    {/* Pipeline Stage Badge */}
-                    <span className={`rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${
-                      email.processing_status === 'completed'
-                        ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30'
-                        : email.processing_status === 'analyzing' || email.processing_status === 'fetching'
-                        ? 'bg-blue-500/10 text-blue-400 ring-1 ring-blue-500/30 animate-pulse'
-                        : 'bg-zinc-800 text-zinc-400'
-                    }`}>
-                      {email.processing_status}
-                    </span>
-
-                    {/* Threat / Risk Badge */}
-                    {email.risk_score !== null && (
-                      <span className={`rounded px-2 py-0.5 font-mono font-semibold text-[10px] ${
-                        isPhish
-                          ? 'bg-red-500/15 text-red-400 ring-1 ring-red-500/40'
-                          : isSus
-                          ? 'bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/40'
-                          : 'bg-emerald-500/10 text-emerald-400'
-                      }`}>
-                        Score: {Math.round(email.risk_score * 100)}% ({email.classification || 'safe'})
-                      </span>
-                    )}
-
-                    {/* SOAR Action Badge */}
-                    {email.enforcement_status && (
-                      <span className={`rounded px-2 py-0.5 font-mono text-[10px] font-semibold ${
-                        email.enforcement_status === 'quarantined' || email.enforcement_status === 'success'
-                          ? 'bg-red-500/20 text-red-300 ring-1 ring-red-500/50'
-                          : email.enforcement_status === 'skipped_trusted_sender'
-                          ? 'bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/40'
-                          : email.enforcement_status === 'review_recommended'
-                          ? 'bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/40'
-                          : 'bg-zinc-800 text-zinc-400'
-                      }`}>
-                        {email.enforcement_status === 'skipped_trusted_sender'
-                          ? 'Action: Skipped (Trusted Sender)'
-                          : email.enforcement_status === 'quarantined' || email.enforcement_status === 'success'
-                          ? 'Action: Quarantined'
-                          : email.enforcement_status === 'review_recommended'
-                          ? 'Action: Review Recommended'
-                          : `Action: ${email.enforcement_status}`}
-                      </span>
-                    )}
-                  </div>
-                </div>
+                <EmailAnalysisResultCard
+                  key={email.id}
+                  severity={severity}
+                  subject={email.subject || '(No Subject)'}
+                  sender={email.sender || 'Unknown'}
+                  receivedAt={email.received_at || email.created_at}
+                  score={email.risk_score}
+                  engines={email.engines}
+                  recommendedAction={email.recommended_action}
+                  providerOperationStatus={email.provider_operation_status}
+                  processingStatus={email.processing_status}
+                  enforcementDetail={email.enforcement_detail}
+                />
               );
             })}
           </div>
@@ -817,28 +765,17 @@ export default function EmailConnectors() {
               {[...scanResults]
                 .sort((a, b) => b.overall_score - a.overall_score)
                 .map((result) => (
-                  <button
+                  <EmailAnalysisResultCard
                     key={result.message_id}
-                    type="button"
+                    severity={result.overall_severity}
+                    subject={result.subject || '(no subject)'}
+                    sender={result.sender}
+                    score={result.overall_score}
+                    engines={result.feature_analyses.map((f) => ({ engine: f.engine, score: f.score }))}
+                    recommendedAction={result.recommended_action}
+                    providerOperationStatus={result.provider_operation_status}
                     onClick={() => openAnalysis(scannedConnector, result.message_id)}
-                    className="flex w-full flex-wrap items-center gap-3 px-5 py-3.5 text-left transition hover:bg-zinc-900"
-                  >
-                    <span
-                      className={`rounded px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider ${
-                        SEVERITY_BADGE[result.overall_severity] ?? SEVERITY_BADGE.safe
-                      }`}
-                    >
-                      {result.overall_severity}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">
-                      {result.subject || '(no subject)'}
-                      <span className="ml-2 text-xs text-zinc-500">— {result.sender}</span>
-                    </span>
-                    <span className="font-mono text-xs text-zinc-500">{Math.round(result.overall_score * 100)}/100</span>
-                    <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-600">
-                      action: {result.recommended_action} · {result.provider_operation_status}
-                    </span>
-                  </button>
+                  />
                 ))}
             </div>
           )}

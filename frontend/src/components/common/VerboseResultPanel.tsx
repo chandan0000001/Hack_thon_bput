@@ -1,5 +1,6 @@
 import { AlertTriangle, CheckCircle2, Hourglass, ShieldCheck } from 'lucide-react';
 import type { FeatureAnalysis, ScanResult } from '../../types';
+import { normalizeScorePct } from '../../utils/score';
 
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'safe'] as const;
 
@@ -24,7 +25,7 @@ const ACTION_LABELS: Record<string, string> = {
  */
 export default function VerboseResultPanel({ scan }: { scan: ScanResult }) {
   const severityStyle = SEVERITY_STYLES[scan.overall_severity] ?? SEVERITY_STYLES.safe;
-  const scorePct = Math.round((scan.overall_score ?? 0) * 100);
+  const scorePct = normalizeScorePct(scan.overall_score);
   const deferred = scan.provider_operation_status === 'deferred_to_phase_4';
 
   const sortedAnalyses = [...scan.feature_analyses].sort(
@@ -126,7 +127,7 @@ function FeatureBlock({ analysis }: { analysis: FeatureAnalysis }) {
             {analysis.severity}
           </span>
         </div>
-        <span className="font-mono text-xs text-zinc-500">score {(analysis.score * 100).toFixed(0)}/100</span>
+        <span className="font-mono text-xs text-zinc-500">score {normalizeScorePct(analysis.score)}/100</span>
       </div>
 
       <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-zinc-400">{analysis.explanation}</p>

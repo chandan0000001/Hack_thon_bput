@@ -73,7 +73,8 @@ export default function QuarantineQueue() {
               id: event.scan_result_id,
               subject: event.subject || 'Threat Analysis Completed',
               verdict: event.severity || event.classification || 'phishing',
-              score: Math.round((event.risk_score || 0) * 100),
+              // ScanResult.overall_score is 0.0-1.0 (UI renders x100)
+              score: event.risk_score || 0,
               indicators: [],
               mitre_attack_tags: [],
             } as any)

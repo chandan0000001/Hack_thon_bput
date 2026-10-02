@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import PageHeader from '../components/common/PageHeader';
 import { SEVERITY_STYLES } from '../components/common/VerboseResultPanel';
+import { normalizeScorePct } from '../utils/score';
 import * as api from '../services/api';
 import type { SecurityEventRecord } from '../types';
 
@@ -244,7 +245,7 @@ export default function SecurityHistory() {
                 </span>
               )}
               {selected.score !== null && (
-                <span className="font-mono text-xs text-zinc-400">score {Math.round((selected.score ?? 0) * 100)}/100</span>
+                <span className="font-mono text-xs text-zinc-400">score {normalizeScorePct(selected.score)}/100</span>
               )}
             </div>
 
