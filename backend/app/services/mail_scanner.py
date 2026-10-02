@@ -26,7 +26,7 @@ from app.services.domain_intelligence import live_enrich_url
 from app.services.impersonation_detector import analyze_impersonation_heuristics
 from app.services.ml_inference import blend_scores, split_ml_indicator
 from app.services.phishing_detector import analyze_email_heuristics
-from app.services.scoring_service import SEVERITY_WEIGHTS, calculate_score, get_severity
+from app.services.scoring_service import SEVERITY_WEIGHTS, calculate_score, get_recommended_action, get_severity
 from app.services.url_detector import analyze_url_heuristics
 
 logger = logging.getLogger("cyberguard.mail_scanner")
@@ -201,12 +201,10 @@ def _attachment_analysis(message: NormalizedMessage) -> FeatureAnalysis | None:
     )
 
 
-def _recommendation(overall_severity: str) -> str:
-    if overall_severity in ("critical", "high"):
-        return "quarantine"
-    if overall_severity == "medium":
-        return "flag_for_review"
-    return "none"
+def _recommendation(overall_score: int) -> str:
+    """EMAIL-ACTION-MATRIX: the 4-tier action derives from the 0-100 score
+    (pass < 0.30 <= notify < 0.60 <= quarantine < 0.85 <= block)."""
+    return get_recommended_action(overall_score / 100.0)
 
 
 def _overall_explanation(message: NormalizedMessage, analyses: list[FeatureAnalysis], score: int, severity: str) -> str:
@@ -244,9 +242,9 @@ async def scan_message(message: NormalizedMessage) -> ScanResult:
 
     overall_score = calculate_score(raw_indicators)
     overall_severity = get_severity(overall_score)
-    recommended_action = _recommendation(overall_severity)
+    recommended_action = _recommendation(overall_score)
 
-    if recommended_action == "none":
+    if recommended_action in ("none", "pass"):
         provider_operation_status = OPERATION_NONE_REQUIRED
         provider_operation_detail = "No provider action required for this verdict."
     else:

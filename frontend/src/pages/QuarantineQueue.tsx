@@ -67,7 +67,7 @@ export default function QuarantineQueue() {
         provider_message_id: event.processed_email_id,
         sender_email: event.sender || 'Analyzing sender...',
         reason: event.classification || 'email_analyzed',
-        severity: (event.severity || (event.risk_score >= 0.8 ? 'critical' : event.risk_score >= 0.5 ? 'high' : 'medium')) as string,
+        severity: (event.severity || (event.risk_score >= 0.85 ? 'critical' : event.risk_score >= 0.6 ? 'high' : event.risk_score >= 0.3 ? 'medium' : 'safe')) as string,
         scan_result: event.scan_result_id
           ? ({
               id: event.scan_result_id,

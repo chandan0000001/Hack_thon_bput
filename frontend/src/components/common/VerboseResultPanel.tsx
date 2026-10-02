@@ -13,7 +13,11 @@ export const SEVERITY_STYLES: Record<string, string> = {
 };
 
 const ACTION_LABELS: Record<string, string> = {
+  pass: 'Pass',
+  notify: 'Notify',
   quarantine: 'Quarantine',
+  block: 'Quarantine + Block sender',
+  // Legacy values (rows stored before the 4-tier action matrix):
   flag_for_review: 'Flag for manual review',
   none: 'No action required',
 };

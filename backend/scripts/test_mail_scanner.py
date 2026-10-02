@@ -180,8 +180,8 @@ async def run_mail_scanner_tests(runner: TestRunner) -> None:
     # ------------------------------------------------------------------
     print("\n[Suite 12.3] Honest Phase-4 deferral")
     runner.assert_true(
-        result.recommended_action == "quarantine",
-        f"Critical message recommends quarantine (got {result.recommended_action})",
+        result.recommended_action in ("quarantine", "block"),
+        f"Critical message recommends an enforce tier (got {result.recommended_action})",
     )
     runner.assert_true(
         result.provider_operation_status == "deferred_to_phase_4",
@@ -206,7 +206,10 @@ async def run_mail_scanner_tests(runner: TestRunner) -> None:
         clean_result.overall_severity in ("safe", "low"),
         f"Benign mail stays safe/low (got {clean_result.overall_severity})",
     )
-    runner.assert_true(clean_result.recommended_action == "none", "Benign mail recommends no action")
+    runner.assert_true(
+        clean_result.recommended_action == "pass",
+        f"Benign mail recommends pass (got {clean_result.recommended_action})",
+    )
     runner.assert_true(
         clean_result.provider_operation_status == "no_action_required",
         "Benign mail honestly reports no action required",

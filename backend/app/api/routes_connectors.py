@@ -43,6 +43,7 @@ from app.services.email_providers.base import EmailProviderError
 from app.services.email_providers.gmail import gmail_provider
 from app.services.email_providers.registry import get_registry
 from app.services.mail_scanner import scan_message
+from app.services.scoring_service import get_recommended_action
 from app.services.trusted_senders import annotate_scan_with_trust, is_sender_trusted
 from app.services.security_history_service import record_event
 
@@ -657,11 +658,8 @@ async def get_ingestion_activity(
             for name, er in (details.get("engine_results") or {}).items():
                 if isinstance(er, dict) and er.get("score") is not None:
                     engines.append({"engine": name, "score": er.get("score")})
-        recommended_action = (
-            "quarantine" if pe.classification == "phishing"
-            else "flag_for_review" if pe.classification == "suspicious"
-            else "none"
-        )
+        # EMAIL-ACTION-MATRIX: derive the 4-tier action from the stored score
+        recommended_action = get_recommended_action(pe.risk_score or 0.0)
 
         recent_emails.append(
             ProcessedEmailItem(

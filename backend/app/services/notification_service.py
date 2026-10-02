@@ -36,6 +36,9 @@ NOTIFY_EVENT_TYPES = {
     "delete",
     "sender_expiry",
     "sender_release",
+    # EMAIL-ACTION-MATRIX MEDIUM tier: suspicious mail delivered to the
+    # inbox must warn the user regardless of severity band.
+    "suspicious_email",
 }
 
 _EVENT_TITLES = {
@@ -45,12 +48,15 @@ _EVENT_TITLES = {
     "delete": "Message deleted",
     "sender_expiry": "Sender block expired",
     "sender_release": "Sender unblocked",
+    "suspicious_email": "Suspicious email delivered",
 }
 
 
 def _wants_notification(event_type: str, severity: str | None) -> bool:
     if event_type not in NOTIFY_EVENT_TYPES:
         return False
+    if event_type == "suspicious_email":
+        return True
     if severity is None or severity in ("high", "critical"):
         return True
     # Non-message lifecycle events (sender_expiry) notify regardless of severity.

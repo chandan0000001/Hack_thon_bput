@@ -21,7 +21,7 @@ export function shouldAutoScrollToTop(
 ): boolean {
   const isCritical =
     event.severity === 'critical' ||
-    (typeof event.risk_score === 'number' && event.risk_score >= 0.8);
+    (typeof event.risk_score === 'number' && event.risk_score >= 0.85);
   return Boolean(isCritical && scrollY < 120);
 }
 

@@ -18,10 +18,12 @@ from app.db.models import (
     ConnectorOperationLog,
     ConnectorSettings,
     EmailConnectorAccount,
+    OrgBlockedIndicator,
     QuarantinedItem,
 )
 from app.schemas.email import NormalizedMessage
 from app.schemas.scan_results import ScanResult
+from app.services.scoring_service import ACTION_BLOCK, ACTION_NOTIFY, ACTION_PASS
 from app.services.security_history_service import record_event
 from app.services.audit_service import log_action
 from app.services.connectors.token_manager import TokenRefreshError, get_valid_access_token
@@ -62,6 +64,49 @@ def corroboration_check(scan: ScanResult) -> tuple[bool, str]:
 def _sender_email(from_header: str) -> str:
     _, addr = parseaddr(from_header or "")
     return (addr or from_header or "").strip().lower()
+
+
+async def _record_org_block_indicators(
+    db: AsyncSession, owner_user_id: str, sender_email: str, scan: ScanResult
+) -> None:
+    """CRITICAL tier 'pure block' (EMAIL-ACTION-MATRIX): persist the sender's
+    email and domain into the owner's org blocklist (org_blocked_indicators)
+    so gateway ingestion matches them regardless of mailbox filters. Best
+    effort — never fails the enforcement flow."""
+    try:
+        from app.services.org_context import resolve_org_id
+
+        organization_id = await resolve_org_id(db, owner_user_id)
+        if not organization_id:
+            return
+        rows = [{"indicator_type": "email", "indicator_value": sender_email}]
+        if "@" in sender_email:
+            rows.append({
+                "indicator_type": "domain",
+                "indicator_value": sender_email.rsplit("@", 1)[-1],
+            })
+        for row in rows:
+            existing = await db.execute(
+                select(OrgBlockedIndicator).where(
+                    OrgBlockedIndicator.organization_id == organization_id,
+                    OrgBlockedIndicator.indicator_type == row["indicator_type"],
+                    OrgBlockedIndicator.indicator_value == row["indicator_value"],
+                )
+            )
+            if existing.scalar_one_or_none() is None:
+                db.add(
+                    OrgBlockedIndicator(
+                        organization_id=organization_id,
+                        indicator_type=row["indicator_type"],
+                        indicator_value=row["indicator_value"],
+                        reason=f"Auto-blocked: {scan.overall_severity} email from {sender_email}",
+                        blocked_by="action_engine",
+                    )
+                )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - blocklist persistence is best effort
+        await db.rollback()
+        logger.warning("org_blocked_indicators persistence failed (non-fatal): %s", exc)
 
 
 async def get_or_create_settings(db: AsyncSession, connector: EmailConnectorAccount) -> ConnectorSettings:
@@ -116,9 +161,38 @@ async def enforce_scan_result(
     """
     settings = await get_or_create_settings(db, connector)
 
-    if scan.recommended_action == "none":
+    if scan.recommended_action in ("none", ACTION_PASS):
         scan.provider_operation_status = "no_action_required"
         scan.provider_operation_detail = "No enforcement action was recommended for this verdict."
+        return scan
+
+    if scan.recommended_action == ACTION_NOTIFY:
+        # MEDIUM tier: delivered to the inbox; the user is warned (the
+        # realtime worker sends the notification email). No provider write.
+        scan.provider_operation_status = "notified"
+        scan.provider_operation_detail = (
+            "Medium-risk verdict: the message was delivered to the inbox and "
+            "the user was notified about the suspicious content. No mailbox "
+            "action was taken."
+        )
+        await record_event(
+            db,
+            owner_user_id=connector.owner_user_id,
+            event_type="enforcement_decision",
+            actor_type="system",
+            connector=connector,
+            provider_message_id=message.provider_message_id,
+            sender_email=_sender_email(message.sender),
+            subject=message.subject,
+            severity=scan.overall_severity,
+            score=scan.overall_score,
+            action_requested=ACTION_NOTIFY,
+            action_performed="none",
+            operation_status="notified",
+            operation_detail="action matrix MEDIUM tier: delivered + user notified, no mailbox change",
+        )
+        await _log(db, connector, "enforcement", "success",
+                   f"Notify tier for {scan.message_id}: delivered, user warned")
         return scan
 
     if not settings.auto_quarantine_enabled:
@@ -166,41 +240,45 @@ async def enforce_scan_result(
                    f"Trusted sender {sender}: recommend-only for {scan.message_id}")
         return scan
 
-    # Corroborated auto-enforcement (Deliverable 2): without critical overall
-    # AND >=2 engines at high+, the recommendation stays review-only.
-    met, reason = corroboration_check(scan)
-    if not met:
-        scan.provider_operation_status = "review_recommended"
-        scan.provider_operation_detail = (
-            f"corroboration_missing ({reason}). Auto-enforcement withheld: the "
-            "recommendation is advisory only — review it in Security History. "
-            "Nothing was changed in the mailbox."
-        )
-        await record_event(
-            db,
-            owner_user_id=connector.owner_user_id,
-            event_type="enforcement_decision",
-            actor_type="system",
-            connector=connector,
-            provider_message_id=message.provider_message_id,
-            sender_email=sender,
-            subject=message.subject,
-            severity=scan.overall_severity,
-            score=scan.overall_score,
-            explanation=scan.overall_explanation,
-            action_requested=scan.recommended_action,
-            action_performed="none",
-            operation_status="corroboration_missing",
-            operation_detail=f"corroboration_missing ({reason}); recommend-only",
-        )
-        await log_action(
-            db, user_id=connector.owner_user_id, actor_type="system",
-            action="auto_enforcement_skipped", resource=message.provider_message_id,
-            details=f"corroboration_missing ({reason}); recommend-only",
-        )
-        await _log(db, connector, "enforcement", "success",
-                   f"corroboration_missing for {scan.message_id}: {reason}")
-        return scan
+    # Corroborated auto-enforcement (Deliverable 2), scoped to the BLOCK tier:
+    # sender blocking still requires a critical overall AND >=2 engines at
+    # high+. The QUARANTINE tier is reversible (release actions exist) and is
+    # governed directly by the 4-tier score matrix, so it enforces without
+    # this gate.
+    if scan.recommended_action == ACTION_BLOCK:
+        met, reason = corroboration_check(scan)
+        if not met:
+            scan.provider_operation_status = "review_recommended"
+            scan.provider_operation_detail = (
+                f"corroboration_missing ({reason}). Auto-enforcement withheld: the "
+                "recommendation is advisory only — review it in Security History. "
+                "Nothing was changed in the mailbox."
+            )
+            await record_event(
+                db,
+                owner_user_id=connector.owner_user_id,
+                event_type="enforcement_decision",
+                actor_type="system",
+                connector=connector,
+                provider_message_id=message.provider_message_id,
+                sender_email=sender,
+                subject=message.subject,
+                severity=scan.overall_severity,
+                score=scan.overall_score,
+                explanation=scan.overall_explanation,
+                action_requested=scan.recommended_action,
+                action_performed="none",
+                operation_status="corroboration_missing",
+                operation_detail=f"corroboration_missing ({reason}); recommend-only",
+            )
+            await log_action(
+                db, user_id=connector.owner_user_id, actor_type="system",
+                action="auto_enforcement_skipped", resource=message.provider_message_id,
+                details=f"corroboration_missing ({reason}); recommend-only",
+            )
+            await _log(db, connector, "enforcement", "success",
+                       f"corroboration_missing for {scan.message_id}: {reason}")
+            return scan
 
     try:
         # Phase 6: resolve the provider through the neutral contract — the
@@ -243,10 +321,11 @@ async def enforce_scan_result(
         await db.refresh(item)
 
         # 2. Block the sender via a provider filter (once per sender) — only
-        # if the provider actually supports sender rules.
+        # on the BLOCK tier (critical per the 4-tier matrix) and only if the
+        # provider actually supports sender rules.
         rule_id: str | None = None
         rule_note = ""
-        if scan.overall_severity in ("critical", "high") and caps.get("supports_sender_rules"):
+        if scan.recommended_action == ACTION_BLOCK and caps.get("supports_sender_rules"):
             existing = await db.execute(
                 select(BlockedSender).where(
                     BlockedSender.connector_id == connector.id,
@@ -289,6 +368,11 @@ async def enforce_scan_result(
         # Keep the stored review snapshot consistent with the final outcome.
         item.scan_result_json = scan.model_dump(mode="json")
         await db.commit()
+
+        # BLOCK tier 'pure block': record sender email + domain in the org
+        # blocklist (best effort, after the provider ops succeeded).
+        if scan.recommended_action == ACTION_BLOCK:
+            await _record_org_block_indicators(db, connector.owner_user_id, sender, scan)
 
         # Security history (Phase 5): the real provider operations just performed.
         await record_event(
@@ -377,14 +461,18 @@ async def enforce_scan_results(
     if not settings.auto_quarantine_enabled:
         outs = []
         for _, scan in pairs:
-            if scan.recommended_action != "none":
+            if scan.recommended_action not in ("none", ACTION_PASS, ACTION_NOTIFY):
                 scan.provider_operation_status = "skipped_auto_enforcement_disabled"
                 scan.provider_operation_detail = (
                     "Auto-enforcement is disabled for this connector in Settings; "
                     "the recommendation is advisory only."
                 )
             else:
-                scan.provider_operation_status = "no_action_required"
+                scan.provider_operation_status = (
+                    "no_action_required"
+                    if scan.recommended_action in ("none", ACTION_PASS)
+                    else "notified"
+                )
             outs.append(scan)
         return outs
     return [await enforce_scan_result(db, connector, message, scan) for message, scan in pairs]

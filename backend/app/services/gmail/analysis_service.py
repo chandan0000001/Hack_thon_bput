@@ -34,6 +34,7 @@ from app.services.realtime_notifier import notify_email_processed
 from app.services.scoring_service import (
     SEVERITY_WEIGHTS,
     calculate_score,
+    get_recommended_action,
     get_severity,
 )
 from app.services.se_pattern_engine import (
@@ -182,6 +183,32 @@ def monotonic_blend(heuristic: float, ml: Optional[float]) -> float:
     return round(max(heuristic, blended), 3)
 
 
+def weighted_blend(heuristic: float, ml: Optional[float]) -> float:
+    """Reliable weighted blend (EMAIL-ACTION-MATRIX P1):
+    final_score = (max_heuristic_score * 0.6) + (ml_score * 0.4).
+
+    Replaces the monotonic max for the FINAL email risk score: a single 1.0 ML
+    probability over a 0.62 heuristic now lands at 0.772 (High) instead of
+    saturating at 1.0 (Critical). Result is strictly clamped to 0.0-1.0.
+    """
+    if ml is None:
+        return round(min(1.0, max(0.0, heuristic)), 3)
+    return round(min(1.0, max(0.0, heuristic * 0.6 + ml * 0.4)), 3)
+
+
+def blend_engine_scores(
+    combined_heur: float,
+    text_heur: float,
+    url_heur: float,
+    impers_heur: float,
+    max_ml: Optional[float],
+) -> float:
+    """Final email risk score: weighted blend of the strongest heuristic
+    engine and the strongest ML probability (all inputs 0.0-1.0)."""
+    max_heuristic_score = max(combined_heur, text_heur, url_heur, impers_heur)
+    return weighted_blend(max_heuristic_score, max_ml)
+
+
 def _indicator_weight(indicator: dict[str, Any]) -> float:
     sev = str(indicator.get("severity", "")).lower()
     return float(SEVERITY_WEIGHTS.get(sev, indicator.get("weight", 0)))
@@ -280,6 +307,7 @@ async def process_email_analysis(
     url_indicators: list[dict[str, Any]] = []
     ml_url_scores: list[float] = []
     url_scores: list[float] = []
+    url_heur_scores: list[float] = []
 
     for url in urls:
         u_inds = analyze_url_heuristics(url)
@@ -293,8 +321,10 @@ async def process_email_analysis(
         url_indicators.extend(u_inds)
         ml_url_scores.append(u_ml_score)
         url_scores.append(u_final)
+        url_heur_scores.append(u_heur_score)
 
     url_score = max(url_scores) if url_scores else 0.0
+    url_heur_score = max(url_heur_scores) if url_heur_scores else 0.0
     url_model = max(ml_url_scores) if ml_url_scores else 0.0
 
     # --- C. Impersonation Analysis ---
@@ -408,9 +438,13 @@ async def process_email_analysis(
     all_ml_probs.extend([p for p in ml_url_scores if p > 0.0])
     max_ml = max(all_ml_probs) if all_ml_probs else None
 
-    blended_risk = monotonic_blend(combined_heur_score, max_ml)
-    # Ensure individual critical engine verdicts are preserved
-    risk_score = round(min(1.0, max(blended_risk, text_score, url_score, impers_score)), 3)
+    # EMAIL-ACTION-MATRIX P1: the final score is a weighted blend of the
+    # strongest heuristic engine and the strongest ML probability —
+    # NOT the monotonic max, which let one 1.0 ML score saturate the email
+    # to critical even when every other engine was safe.
+    risk_score = blend_engine_scores(
+        combined_heur_score, text_heur_score, url_heur_score, impers_score, max_ml
+    )
 
     # --- E. Attachment scanning (ATTACH-SCAN Phase 4) --------------------
     # Metadata was captured at fetch time (scan_status "pending"); here the
@@ -458,6 +492,10 @@ async def process_email_analysis(
         classification = "safe"
 
     severity = get_severity(round(risk_score * 100))
+    # EMAIL-ACTION-MATRIX P2: the 4-tier enforcement action derives from the
+    # corrected score (pass/notify/quarantine/block) and is persisted so the
+    # worker, the activity feed, and the UI all agree on it.
+    recommended_action = get_recommended_action(risk_score)
 
     # 7. Build Signals Dictionary & Indicators Summary
     all_raw_indicators = (
@@ -510,6 +548,7 @@ async def process_email_analysis(
         },
         "confidence": confidence_info.get("confidence") or "normal",
         "impersonation": round(impers_score, 4),
+        "recommended_action": recommended_action,
         "indicators_summary": indicators_summary,
     })
 
@@ -567,6 +606,7 @@ async def process_email_analysis(
         scan_details={
             "severity": severity,
             "risk_score": risk_score,
+            "recommended_action": recommended_action,
             "indicators": top_indicators,
             "explanation": explanation_text,
             "engine_results": engine_results,
@@ -621,6 +661,7 @@ async def process_email_analysis(
         "processed_email_id": str(processed_email.id),
         "risk_score": risk_score,
         "classification": classification,
+        "recommended_action": recommended_action,
         "scan_result_id": str(scan_result.id),
         "status": "completed",
     }

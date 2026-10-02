@@ -10,7 +10,11 @@ export interface EngineSummary {
 }
 
 const ACTION_LABELS: Record<string, string> = {
+  pass: 'Pass',
+  notify: 'Notify',
   quarantine: 'Quarantine',
+  block: 'Quarantine + Block sender',
+  // Legacy values (rows stored before the 4-tier action matrix):
   flag_for_review: 'Flag for manual review',
   none: 'No action required',
   clean: 'No action required',
@@ -20,6 +24,9 @@ const PROVIDER_STATUS_LABELS: Record<string, string> = {
   quarantined: 'Quarantined',
   success: 'Action succeeded',
   clean: 'Delivered to inbox',
+  notified: 'User notified',
+  notify_recommended: 'Notify (advisory)',
+  no_action_required: 'No action required',
   skipped_trusted_sender: 'Skipped (trusted sender)',
   review_recommended: 'Review recommended',
   enforcement_error: 'Enforcement error',
@@ -112,6 +119,14 @@ export default function EmailAnalysisResultCard({
         >
           {severity}
         </span>
+        {recommendedAction === 'block' && (
+          <span
+            title="Critical verdict: the sender was added to the org blocklist and a provider filter auto-quarantines future mail from them"
+            className="rounded bg-red-500/20 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-red-300 ring-1 ring-red-500/50"
+          >
+            Sender blocked
+          </span>
+        )}
         <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">
           {subject || '(no subject)'}
           {sender ? <span className="ml-2 text-xs text-zinc-500">— {sender}</span> : null}

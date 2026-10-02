@@ -154,7 +154,22 @@ async def email_analysis_job(ctx: dict[str, Any], processed_email_id: str) -> di
                     from app.db.session import current_user_id
                     current_user_id.set(pe_row.owner_user_id)
 
-                    if result.get("classification") == "phishing" or (result.get("risk_score") or 0.0) >= 0.7:
+                    # EMAIL-ACTION-MATRIX P2: the 4-tier matrix replaces the
+                    # old "phishing or >= 0.7" gate.
+                    #   pass       (<0.30) -> deliver, nothing to do
+                    #   notify  (0.30-0.59) -> deliver + email-warning to user
+                    #   quarantine (0.60-0.84) -> quarantine, no sender block
+                    #   block      (>=0.85) -> quarantine + block sender
+                    from app.services.scoring_service import (
+                        ACTION_BLOCK,
+                        ACTION_NOTIFY,
+                        ACTION_QUARANTINE,
+                        get_recommended_action,
+                    )
+                    risk_value = pe_row.risk_score or 0.0
+                    action_tier = get_recommended_action(risk_value)
+
+                    if action_tier in (ACTION_QUARANTINE, ACTION_BLOCK):
                         try:
                             from app.db.models import EmailConnectorAccount, ScanResult as DBScanResult
                             from app.schemas.email import NormalizedMessage
@@ -177,29 +192,33 @@ async def email_analysis_job(ctx: dict[str, Any], processed_email_id: str) -> di
 
                                     # ScanResult contract: overall_score / FeatureAnalysis.score
                                     # are 0.0-1.0 (schemas/scan_results.py) — UI renders x100.
-                                    enforcement_score = round(min(1.0, pe_row.risk_score or 0.0), 3)
+                                    enforcement_score = round(min(1.0, risk_value), 3)
+                                    # QUARANTINE tier enforces at high severity; BLOCK tier
+                                    # at critical (which also satisfies the corroboration
+                                    # gate that sender blocking still requires).
+                                    tier_severity = "critical" if action_tier == ACTION_BLOCK else "high"
                                     scan_pydantic = PydanticScanResult(
                                         message_id=pe_row.gmail_message_id,
                                         subject=pe_row.subject,
                                         sender=pe_row.sender,
-                                        overall_severity="critical" if (pe_row.risk_score or 0) >= 0.7 else "high",
+                                        overall_severity=tier_severity,
                                         overall_score=enforcement_score,
                                         overall_explanation=explanation_text,
                                         feature_analyses=[
                                             FeatureAnalysis(
                                                 engine="heuristics",
-                                                severity="critical" if (pe_row.risk_score or 0) >= 0.7 else "high",
+                                                severity=tier_severity,
                                                 score=enforcement_score,
                                                 explanation=explanation_text,
                                             ),
                                             FeatureAnalysis(
                                                 engine="ml_model",
-                                                severity="critical" if (pe_row.risk_score or 0) >= 0.7 else "high",
+                                                severity=tier_severity,
                                                 score=enforcement_score,
                                                 explanation="ML classifier high threat probability",
                                             ),
                                         ],
-                                        recommended_action="quarantine",
+                                        recommended_action=action_tier,
                                         provider_operation_status="pending",
                                     )
                                     norm_msg = NormalizedMessage(
@@ -236,6 +255,41 @@ async def email_analysis_job(ctx: dict[str, Any], processed_email_id: str) -> di
                                 await db.commit()
                             except Exception:
                                 pass
+                    elif action_tier == ACTION_NOTIFY:
+                        # MEDIUM tier: the message stays in the inbox; warn the
+                        # user through the existing notification pipeline
+                        # (DB-log backend by default, SMTP when configured).
+                        try:
+                            from app.services.notification_service import maybe_notify
+
+                            score_100 = round(risk_value * 100)
+                            await maybe_notify(
+                                db,
+                                owner_user_id=pe_row.owner_user_id,
+                                event_type="suspicious_email",
+                                severity=pe_row.severity or "medium",
+                                sender_email=pe_row.sender,
+                                subject=pe_row.subject,
+                                operation_detail=(
+                                    f"Suspicious content detected (score {score_100}/100). "
+                                    "The message was delivered to your inbox — review it before "
+                                    "clicking links or opening attachments."
+                                ),
+                            )
+                            updated_signals = dict(pe_row.signals or {})
+                            updated_signals["enforcement_status"] = "notified"
+                            updated_signals["enforcement_detail"] = (
+                                f"Suspicious email (score {score_100}/100) delivered to inbox; "
+                                "user notification sent."
+                            )
+                            pe_row.signals = updated_signals
+                            await db.commit()
+                            logger.info(
+                                "Notify-tier warning sent for message %s (score %s/100)",
+                                pe_row.gmail_message_id, score_100,
+                            )
+                        except Exception as notify_exc:  # noqa: BLE001 - non-fatal
+                            logger.warning("Notify-tier warning failed (non-fatal): %s", notify_exc)
                     else:
                         updated_signals = dict(pe_row.signals or {})
                         updated_signals["enforcement_status"] = "clean"
