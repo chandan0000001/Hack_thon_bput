@@ -150,11 +150,12 @@ Model artifact selection is governed by `ml/models/calibration.json` (hot-reload
 
 | Aspect | v3 / v3.1 | v4 |
 | --- | --- | --- |
-| Dataset size | ~100k rows, but benign side partly **synthetic augmentation** (tracking-param + brand-secondary generators); malicious = 50k feed URLs | **100k+ fully real URLs** (URLhaus + Phishing.Database + Umbrella top-1M, optional PhiUSIIL); no synthetic rows |
-| Small-sample caveat | Generalization limited by augmentation-shaped benign distribution — model fit the generator's fingerprints | Real-world benign diversity (top-1M + PhiUSIIL) removes generator overfit; **caveat resolved** |
-| Split | 80/20 stratified on label only | 80/10/10 stratified on **(label, source)** — test holds out infrastructure unseen from every source; `train_url_v3.py` additionally offers **domain-grouped** (`--split domain`, zero registrable-domain overlap across the holdout, enforced by a leakage audit) and **temporal** (`--split temporal`, train on the past / test on the future via feed order) splits |
-| Imbalance handling | `scale_pos_weight` (same) | `scale_pos_weight` (same principle, computed per-split) + documented SMOTE rejection rationale |
-| Hyperparameters | Fixed (`300 × depth-6, lr 0.05`) | Tuned via Optuna TPE on validation ROC-AUC (GridSearchCV fallback) |
-| Features | 19 (`FEATURE_COLUMNS_V3`) | 19 by default (feature lock); optionally **29** via `--schema v4` (`FEATURE_COLUMNS_V4` — IDN/homoglyph/brand-typo/rank extension, prepared in `ml/url_features_v3.py`) |
-| Artifact | `url_xgb_v3.pkl` / `url_xgb_v3.1.pkl` | `url_xgb_v4.pkl` (same joblib XGBClassifier `predict_proba` interface) |
-| Regression gate | Medium/PayPal-benign vs lookalike/IP-phish gate | Same gate retained in `train_url_v4.py` — v4 must keep benign marketing URLs benign |
+| Dataset size | ~100k rows, benign side partly synthetic augmentation; malicious = 50k feed URLs | ~155k rows: same real-feed phishing + NEW benign shapes (enterprise subdomains, OAuth/SSO hosts, CDN assets) + NEW phishing shapes the feed lacks (IDN/punycode lookalikes, shortener-wrapped, open-redirect chains) |
+| Small-sample caveat | Generalization limited by augmentation-shaped benign distribution | External eval of v3.1 showed its dominant FP class was REAL enterprise subdomains (FPR 33% on held-out top-1M); v4 trains explicit benign examples of exactly that shape |
+| Split | 80/20 stratified on label only (leaks attacker domains — inflated metrics) | **Domain-grouped** (GroupShuffleSplit, zero registrable-domain overlap, enforced by leakage audit) — see `train_url_v4.py` and `eval_url_models.py --splits domain temporal` |
+| Imbalance handling | `scale_pos_weight` | `scale_pos_weight` (same principle, computed per-split) |
+| Hyperparameters | Fixed (`300 × depth-6, lr 0.05`) | Fixed (same `make_model` config as v3 for comparability; Optuna search left as future work) |
+| Features | 19 (`FEATURE_COLUMNS_V3`) | **29** (`FEATURE_COLUMNS_V4`): + IDN/punycode, mixed-script, homoglyph fold, brand typo distance vs ~39 stems, exact-leet flag, brand-in-subdomain flag, top-1M rank proxy, extended suspicious TLDs |
+| Artifact | `url_xgb_v3.pkl` / `url_xgb_v3.1.pkl` | `url_xgb_v4.pkl` (same joblib XGBClassifier `predict_proba` interface; schema bound per version in `ml_inference.URL_MODEL_REGISTRY`) |
+| Regression gate | Medium/PayPal-benign vs lookalike/IP-phish gate | Same gate + v4 gates: OAuth/SSO benign hosts, enterprise subdomains, punycode homoglyph attacks (`run_gates` in `train_url_v4.py`) |
+| Domain-grouped holdout | — (v3.1 never measured) | FPR 0.83%, PR-AUC 0.987, ECE 0.039 (v4 initial run; see `ml/models/url_v4_metrics.json`) |

@@ -121,11 +121,28 @@ def email_model_artifact() -> str:
     return "email_phishing_xgb_v2.pkl" if email_model_version() == "v2" else "email_phishing_xgb.pkl"
 
 
-URL_V3_ARTIFACTS = {
-    "v4": "url_xgb_v4.pkl",
-    "v3.1": "url_xgb_v3.1.pkl",
-    "v3": "url_xgb_v3.pkl",
+# URL model registry — version -> (artifact filename, feature schema).
+# The schema is BOUND to the version here so training/inference can never
+# drift: predict_url() extracts exactly the columns the artifact was trained
+# on (v3/v3.1 = 19-column FEATURE_COLUMNS_V3; v4 = 29-column
+# FEATURE_COLUMNS_V4 incl. IDN/homoglyph/brand-typo/rank). Before this
+# registry, "v4" was served the v3 19-feature vector — an XGBoost shape
+# mismatch that the exception handler swallowed into silent heuristics-only
+# mode.
+URL_MODEL_REGISTRY: dict[str, dict] = {
+    "v4": {"artifact": "url_xgb_v4.pkl", "schema": "v4"},
+    "v3.1": {"artifact": "url_xgb_v3.1.pkl", "schema": "v3"},
+    "v3": {"artifact": "url_xgb_v3.pkl", "schema": "v3"},
 }
+
+# Kept for backwards compatibility with external references.
+URL_V3_ARTIFACTS = {version: spec["artifact"] for version, spec in URL_MODEL_REGISTRY.items()}
+
+
+def url_feature_schema() -> str:
+    """Feature schema of the actively calibrated URL model ('v3' or 'v4')."""
+    spec = URL_MODEL_REGISTRY.get(url_model_version())
+    return spec["schema"] if spec else "v1"
 
 
 def url_model_version() -> str:
@@ -153,18 +170,18 @@ def url_model_artifact() -> str:
     if bundle is not None:
         return bundle[1]
     version = url_model_version()
-    if version in URL_V3_ARTIFACTS:
-        return URL_V3_ARTIFACTS[version]
+    if version in URL_MODEL_REGISTRY:
+        return URL_MODEL_REGISTRY[version]["artifact"]
     return "url_xgb_v2.pkl" if version == "v2" else "url_xgb.pkl"
 
 
 def _load_url_model():
     base = models_dir()
     version = url_model_version()
-    if version in URL_V3_ARTIFACTS:
+    if version in URL_MODEL_REGISTRY:
         try:
-            model = joblib.load(base / URL_V3_ARTIFACTS[version])
-            return model, URL_V3_ARTIFACTS[version]
+            model = joblib.load(base / URL_MODEL_REGISTRY[version]["artifact"])
+            return model, URL_MODEL_REGISTRY[version]["artifact"]
         except Exception as exc:
             logger.warning("url model %s unavailable — falling back to v2: %s", version, exc)
     if version in URL_V3_ARTIFACTS or version == "v2":
@@ -478,6 +495,8 @@ def extract_url_features(url: str, version: str = "v2") -> np.ndarray:
                       is_hex32_like, is_short_id, is_homepage, is_other.
     v3 (19): reputation + split entropy/length features, see
              ml/url_features_v3.py FEATURE_COLUMNS_V3.
+    v4 (29): v3 frozen columns + IDN/homoglyph/brand-typo/rank extension
+             (FEATURE_COLUMNS_V4) — selected by URL_MODEL_REGISTRY.
     """
     from urllib.parse import urlparse
 
@@ -486,6 +505,17 @@ def extract_url_features(url: str, version: str = "v2") -> np.ndarray:
         from app.core.url_reputation import top1m_domain_set
 
         return np.array(vectorize_v3(extract_url_features_v3(url, top1m_domain_set())), dtype=np.float64)
+
+    if version == "v4":
+        # 29-column extension schema (FEATURE_COLUMNS_V4) — the first 19
+        # columns are the frozen v3 vector; the extension adds IDN/homoglyph/
+        # brand-typo/rank features (see ml/url_features_v3.py).
+        from ml.url_features_v3 import extract_url_features_v4, vectorize_v4
+        from app.core.url_reputation import top1m_domain_set
+
+        return np.array(
+            vectorize_v4(extract_url_features_v4(url, top1m_domain_set())), dtype=np.float64
+        )
 
     try:
         parsed = urlparse(url)
@@ -563,15 +593,25 @@ def predict_email(text: str) -> float | None:
 
 
 def predict_url(url: str) -> float | None:
-    """Probability (0-1) that the URL is malicious."""
+    """Probability (0-1) that the URL is malicious.
+
+    Feature extraction is bound to the calibrated version via
+    URL_MODEL_REGISTRY — v3/v3.1 get the 19-feature vector, v4 the 29-feature
+    extension. A registry miss falls back to artifact-name sniffing so
+    ad-hoc artifacts keep working.
+    """
     bundle = get_url_model()
     if bundle is None:
         return None
     try:
         model, artifact = bundle
-        # v4 reuses the v3 19-feature schema (same module, FEATURE_COLUMNS_V3).
-        ver = "v3" if ("v3" in artifact or "v4" in artifact) \
-            else ("v2" if "v2" in artifact else "v1")
+        spec = URL_MODEL_REGISTRY.get(url_model_version())
+        if spec and spec["artifact"] == artifact:
+            ver = spec["schema"]
+        elif "v3" in artifact or "v4" in artifact:
+            ver = "v3"  # legacy fallback: pre-registry v3 artifacts only
+        else:
+            ver = "v2" if "v2" in artifact else "v1"
         features = extract_url_features(url, version=ver).reshape(1, -1)
         return float(model.predict_proba(features)[0][1])
     except Exception as exc:
@@ -645,6 +685,53 @@ def blend_scores(heuristic_score: int, ml_probability: float) -> int:
     return max(heuristic_score, blended)
 
 
+# URL ML confidence floor — piecewise-linear anchors (ml_probability -> minimum
+# final 0-100 score). Rationale: the generic blend (0.45h + 0.55ml) caps a
+# 0.99-probability URL at 54/100 ("medium") when the URL looks lexically clean,
+# so a near-certain model verdict could never reach the enforcement tiers. The
+# floor keeps blending monotonic (ML still never lowers a heuristic verdict)
+# while guaranteeing high-confidence ML maps into the action-matrix bands.
+# Anchors are re-validated by ml/scripts/eval_url_models.py against
+# external datasets (adjust so the 0.9+ region stays in the high-precision
+# regime of the PR curve).
+URL_ML_FLOOR_ANCHORS: list[tuple[float, float]] = [
+    (0.00, 0.0),
+    (0.50, 0.0),
+    (0.70, 45.0),
+    (0.80, 60.0),
+    (0.90, 75.0),
+    (0.97, 88.0),
+    (1.00, 95.0),
+]
+
+
+def _ml_confidence_floor(ml_probability: float) -> int:
+    """Interpolated floor for the URL policy; 0 below the first active anchor."""
+    p = max(0.0, min(1.0, float(ml_probability)))
+    floor = 0.0
+    for (p0, s0), (p1, s1) in zip(URL_ML_FLOOR_ANCHORS, URL_ML_FLOOR_ANCHORS[1:]):
+        if p >= p1:
+            floor = s1
+        elif p > p0:
+            floor = s0 + (s1 - s0) * (p - p0) / (p1 - p0)
+            break
+    return round(floor)
+
+
+def blend_scores_url(heuristic_score: int, ml_probability: float) -> int:
+    """URL-specific hybrid policy: generic blend + ML confidence floor.
+
+    final = max(heuristic, 0.45*heuristic + 0.55*ml*100, floor(ml))
+
+    The floor dominates only when the model is confident and the URL looks
+    lexically clean — exactly the evasion regime the generic blend handled
+    worst. Monotonic in both inputs; never lowers the heuristic verdict.
+    """
+    blended = round(0.45 * heuristic_score + 0.55 * ml_probability * 100)
+    blended = max(0, min(100, blended))
+    return max(int(heuristic_score), blended, _ml_confidence_floor(ml_probability))
+
+
 def ml_indicator(artifact: str, probability: float) -> dict:
     """Indicator documenting an ML contribution (severity from the band).
     Carries the numeric probability so callers can blend without re-parsing."""
@@ -672,12 +759,20 @@ def split_ml_indicator(indicators: list[dict]) -> tuple[list[dict], float | None
     return heuristic, probability
 
 
-def score_with_ml(indicators: list[dict]) -> tuple[int, int, float | None]:
+def score_with_ml(indicators: list[dict], policy: str | None = None) -> tuple[int, int, float | None]:
     """Return (heuristic_score, hybrid_score, ml_probability) for a detector's
-    indicator list. hybrid == heuristic when no ML probability is present."""
+    indicator list. hybrid == heuristic when no ML probability is present.
+
+    `policy` selects the blend: the default is the generic cross-module blend;
+    "url" applies the URL confidence floor (blend_scores_url) so a high ML
+    probability cannot be masked by quiet URL heuristics.
+    """
     from app.services.scoring_service import calculate_score
 
     heuristic_indicators, probability = split_ml_indicator(indicators)
     heuristic_score = calculate_score(heuristic_indicators)
-    hybrid_score = blend_scores(heuristic_score, probability) if probability is not None else heuristic_score
+    if probability is None:
+        return heuristic_score, heuristic_score, None
+    blend = blend_scores_url if policy == "url" else blend_scores
+    hybrid_score = blend(heuristic_score, probability)
     return heuristic_score, hybrid_score, probability

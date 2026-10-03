@@ -1,387 +1,342 @@
-"""train_url_v4.py — Step 3 of the URL v4 retrain pipeline.
+"""train_url_v4.py — the 29-feature extension model (cascaded Stage 1).
 
-Retrains the CYBERGUARD malicious-URL detector on 100k+ real-world URLs
-(XGBoost v4) while keeping the EXACT v3 19-feature schema — the artifact is a
-drop-in replacement for url_xgb_v3.pkl in app/services/ml_inference.py.
+SUPERSEDES the previous plan in this file (a 19-feature "drop-in" retrain fed
+by fetch_url_data.py -> preprocess_url_v4.py -> url_v4_processed.csv). That
+pipeline never ran (no url_datasets/ CSV was ever produced) and the external
+audits in ml/scripts/eval_url_models.py showed its premise — a feature lock at
+19 columns — is exactly what the serving v3.1 model is missing: the 19-feature
+schema cannot see punycode/IDN at all, and its benign corpus lacked real
+enterprise subdomain shapes, which the external eval flagged as the dominant
+false-positive class (FPR 33% on held-out top-1M domains).
 
-Pipeline:
-  1. Load ml/data/url_datasets/url_v4_processed.csv (19 features + label).
-  2. 80/10/10 Train/Validation/Test split, stratified on (label, source):
-     each split keeps every collection source in proportion, so the test set
-     contains phishing infrastructure the model never saw from ANY source —
-     no source-level leakage between train and test.
-  3. Hyperparameter search (Optuna when installed, GridSearchCV fallback)
-     over max_depth / learning_rate / n_estimators / subsample (+ regularizers),
-     maximising validation ROC-AUC.
-  4. Refit the best config on Train+Validation with
-     scale_pos_weight = n_negative / n_positive (class imbalance).
-  5. Evaluate once on the held-out test set; print Accuracy / Precision /
-     Recall / F1 / ROC-AUC / PR-AUC.
-  6. Save backend/ml/models/url_xgb_v4.pkl (joblib, XGBClassifier exposing
-     predict_proba — the exact interface predict_url() calls) and a metrics
-     JSON next to the other model cards, plus the feature-importance plot.
+Differences from v3.1 (all evidence-driven):
+
+  FP class 1 — multi-hyphen enterprise subdomains
+    (workflows-frontend-livechat.corporatetools.com scored 0.97 on the v3.1
+    external eval): the benign corpus was bare registrable domains, so
+    hyphen-heavy subdomains of REAL top-1M organizations look phishy.
+    -> new benign generators: enterprise subdomains, accounts./auth./sso.
+       OAuth/OIDC hosts, CDN/static asset hosts.
+
+  FP class 2 — IDN/homoglyph and brand impersonation blindness
+    -> FEATURE_COLUMNS_V4 (IDN, punycode count, mixed-script, homoglyph fold,
+       brand typo distance vs ~39 stems, top-1M rank proxy, extended TLDs).
+
+  FN class — shortener/open-redirect phish
+    the daily feed contains almost no wrapped/redirected URLs.
+    -> synthetic shortener-wrapped and open-redirect phishing.
+
+Split: DOMAIN-GROUPED (no registrable domain spans train/test) — the
+stratified holdout metrics that made v3.1 look near-perfect are inflated by
+domain leakage and are no longer the gate.
 
 Run from the backend directory:
     uv run python ml/scripts/train_url_v4.py
 """
 
-from __future__ import annotations
-
-import json
-import logging
+import random
+import string
 import sys
 from pathlib import Path
-
-import joblib
-import numpy as np
-import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
-from sklearn.model_selection import GridSearchCV, train_test_split
-from xgboost import XGBClassifier
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BACKEND_DIR))
 
-from ml.url_features_v3 import FEATURE_COLUMNS_V3  # noqa: E402
+import json
 
-PROCESSED_CSV_PATH = BACKEND_DIR / "ml" / "data" / "url_datasets" / "url_v4_processed.csv"
-MODELS_DIR = BACKEND_DIR / "ml" / "models"
+import joblib
+import pandas as pd
+from sklearn.metrics import roc_auc_score
+
+from ml.scripts.train_url_v3 import (
+    MODELS_DIR,
+    SEED,
+    build_benign_urls,
+    build_brand_secondary_urls,
+    domain_grouped_split,
+    fetch_real_phishing_urls,
+    leakage_report,
+    load_top1m_domains,
+    make_model,
+    registrable_of_url,
+)
+from ml.url_features_v3 import (
+    FEATURE_COLUMNS_V4,
+    extract_url_features_v4,
+    load_top1m_rank_map,
+    vectorize_v4,
+)
+from ml.scripts.eval_url_models import full_metrics
+
 MODEL_PATH = MODELS_DIR / "url_xgb_v4.pkl"
 METRICS_PATH = MODELS_DIR / "url_v4_metrics.json"
-PLOTS_DIR = BACKEND_DIR / "docs" / "plots"
-PLOT_PATH = PLOTS_DIR / "url_v4_feature_importance.png"
 
-SEED = 42
-# Fixed regularisation/search-independent params (v3 parity + scale).
-BASE_PARAMS: dict = {
-    "objective": "binary:logistic",
-    "eval_metric": "auc",
-    "tree_method": "hist",
-    "n_jobs": -1,
-    "random_state": SEED,
-}
-# Hyperparameter grid — the four requested axes plus the two regularisers
-# that matter most at 100k+ rows (colsample / min_child_weight fight noise fit).
-GRID_PARAMS: dict[str, list] = {
-    "max_depth": [4, 6, 8],
-    "learning_rate": [0.03, 0.05, 0.1],
-    "n_estimators": [300, 600],
-    "subsample": [0.8, 1.0],
-    "colsample_bytree": [0.8, 1.0],
-    "min_child_weight": [1, 5],
-}
-OPTUNA_N_TRIALS = 40
-OPTUNA_CV_SPLITS = 3
+N_BENIGN_ENTERPRISE = 20_000
+N_BENIGN_OAUTH = 8_000
+N_BENIGN_CDN = 7_000
+N_PHISH_SYNTH_V4 = 12_000
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-7s %(message)s",
-    datefmt="%H:%M:%S",
-)
-log = logging.getLogger("train_url_v4")
+SUBDOMAIN_STEMS = ["portal", "app", "svc", "api", "mail", "docs", "static",
+                   "assets", "cdn", "img", "media", "support", "status"]
+OAUTH_STEMS = ["accounts", "auth", "login", "sso", "id", "signin"]
+OAUTH_PATHS = [
+    "/auth/realms/master/protocol/openid-connect/auth",
+    "/o/oauth2/v2/auth",
+    "/authorize",
+    "/oauth2/authorize",
+    "/signin",
+    "/login",
+]
+OAUTH_QUERIES = [
+    "?client_id={a}&response_type=code&scope=openid%20profile%20email&redirect_uri=https%3A%2F%2Fapp.{d}%2Fcb&state={b}",
+    "?response_type=code&client_id={a}&prompt=login&state={b}",
+    "?redirect_uri=https%3A%2F%2Fwww.{d}%2Fcallback&scope=email",
+]
+
+# Phishing shapes underrepresented in the daily feed.
+SHORTENERS = ["bit.ly", "tinyurl.com", "t.co", "is.gd", "cutt.ly", "rb.gy", "shorturl.at"]
+BRAND_TARGETS = ["apple", "paypal", "microsoft", "netflix", "coinbase", "instagram"]
+REDIRECT_PARAMS = ["url", "next", "redirect", "dest", "continue", "return", "target", "goto"]
 
 
-# ---------------------------------------------------------------------------
-# 1. Data loading & splitting
-# ---------------------------------------------------------------------------
-
-def load_processed(path: Path) -> pd.DataFrame:
-    """Load the processed CSV and enforce the feature lock."""
-    frame = pd.read_csv(path)
-    present = [c for c in frame.columns if c in FEATURE_COLUMNS_V3]
-    if len(present) != len(FEATURE_COLUMNS_V3):
-        raise ValueError(
-            f"processed CSV is missing features: {sorted(set(FEATURE_COLUMNS_V3) - set(present))} "
-            "(run preprocess_url_v4.py)"
-        )
-    return frame
+def _alnum(rng: random.Random, n: int) -> str:
+    return "".join(rng.choice(string.ascii_lowercase + string.digits) for _ in range(n))
 
 
-def stratify_key(frame: pd.DataFrame) -> pd.Series:
-    """Combined (label, source) stratum for source-aware stratified splitting.
+def _word(rng: random.Random) -> str:
+    return rng.choice(["spring", "digest", "weekly", "launch", "promo", "notes", "hub", "live"])
 
-    If the processed CSV carries no `source` column (older raw data), fall back
-    to label-only stratification — still stratified, just not source-aware.
+
+def build_enterprise_subdomain_urls(rng: random.Random, top1m: set) -> list[str]:
+    """Benign multi-hyphen enterprise subdomains of real top-1M organizations.
+
+    Directly targets the dominant external FP class: real infrastructure like
+    workflows-frontend-livechat.corporatetools.com must never score phishy.
     """
-    if "source" in frame.columns:
-        return frame["label"].astype(str) + ":" + frame["source"].astype(str)
-    return frame["label"].astype(str)
+    pool = sorted(top1m)
+    urls = []
+    for _ in range(N_BENIGN_ENTERPRISE):
+        base = rng.choice(pool)
+        if base.startswith("www."):
+            base = base[4:]
+        parts = rng.sample(SUBDOMAIN_STEMS, rng.randint(1, 2))
+        if rng.random() < 0.4:
+            parts.append(_alnum(rng, rng.randint(2, 5)))
+        elif rng.random() < 0.5:
+            parts.append(_word(rng))
+        host = "-".join(parts) + "." + base
+        path = rng.choice(["", "", "/", f"/{rng.choice(['status', 'health', 'api/v1', 'en', 'home'])}"])
+        urls.append(f"https://{host}{path}")
+    return list(dict.fromkeys(urls))
 
 
-def make_splits(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray,
-                                              np.ndarray, np.ndarray, np.ndarray]:
-    """80/10/10 split into X/y train, validation and test numpy arrays.
+def build_oauth_sso_urls(rng: random.Random, top1m: set) -> list[str]:
+    """Benign OAuth/OIDC/login URLs on subdomains of real top-1M domains.
 
-    Arrays (not DataFrames) are used end-to-end so the pickled XGBClassifier
-    carries no feature_names — the production inference path calls
-    predict_proba() with a bare numpy row (ml_inference.predict_url), which
-    would emit a feature-name-mismatch warning otherwise.
+    Credential-path keywords on a legitimate host are the classic heuristic
+    FP; explicit benign examples teach the difference from fake-login phish.
     """
-    X = frame[FEATURE_COLUMNS_V3].to_numpy(dtype=np.float64)
-    y = frame["label"].to_numpy(dtype=np.int64)
-    strata = stratify_key(frame)
-
-    # Split on indices so the second-stage stratification uses the strata of
-    # exactly the rows that survived the first split.
-    indices = np.arange(len(frame))
-    idx_train_val, idx_test = train_test_split(
-        indices, test_size=0.10, stratify=strata, random_state=SEED)
-    # Stratified 1/9 of the full data = 10% validation within train_val.
-    val_fraction = 1.0 / 9.0
-    idx_train, idx_val = train_test_split(
-        idx_train_val, test_size=val_fraction,
-        stratify=strata.iloc[idx_train_val], random_state=SEED)
-
-    X_train, y_train = X[idx_train], y[idx_train]
-    X_val, y_val = X[idx_val], y[idx_val]
-    X_test, y_test = X[idx_test], y[idx_test]
-    log.info(
-        "splits: train %s / validation %s / test %s "
-        "(train+val malicious share %.1f%%, test malicious share %.1f%%)",
-        f"{len(y_train):,}", f"{len(y_val):,}", f"{len(y_test):,}",
-        100 * y_train.mean(), 100 * y_test.mean(),
-    )
-    return X_train, X_val, X_test, y_train, y_val, y_test
+    pool = sorted(top1m)
+    urls = []
+    for _ in range(N_BENIGN_OAUTH):
+        base = rng.choice(pool)
+        if base.startswith("www."):
+            base = base[4:]
+        stem = rng.choice(OAUTH_STEMS)
+        style = rng.random()
+        if style < 0.6:
+            url = f"https://{stem}.{base}{rng.choice(OAUTH_PATHS)}"
+            url += rng.choice(OAUTH_QUERIES).format(a=_alnum(rng, 20), b=_alnum(rng, 12), d=base)
+        elif style < 0.8:
+            url = f"https://{stem}.{base}{rng.choice(['/signin', '/login', '/identify'])}?returnUrl=%2Fhome"
+        else:
+            url = f"https://www.{base}/login?redirect={_alnum(rng, 10)}"
+        urls.append(url)
+    return list(dict.fromkeys(urls))
 
 
-# ---------------------------------------------------------------------------
-# 2. Hyperparameter search (Optuna preferred, GridSearchCV fallback)
-# ---------------------------------------------------------------------------
-
-def tune_with_optuna(
-    X_train: np.ndarray, y_train: np.ndarray,
-    X_val: np.ndarray, y_val: np.ndarray,
-    scale_pos_weight: float,
-) -> dict:
-    """Bayesian-ish search maximising validation ROC-AUC."""
-    import optuna
-
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-
-    def objective(trial: "optuna.Trial") -> float:
-        params = {
-            "max_depth": trial.suggest_int("max_depth", 3, 10),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-            "n_estimators": trial.suggest_int("n_estimators", 200, 800, step=100),
-            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
-            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
-        }
-        model = XGBClassifier(**BASE_PARAMS, **params, scale_pos_weight=scale_pos_weight)
-        model.fit(X_train, y_train, verbose=False)
-        return roc_auc_score(y_val, model.predict_proba(X_val)[:, 1])
-
-    study = optuna.create_study(direction="maximize",
-                                sampler=optuna.samplers.TPESampler(seed=SEED))
-    study.optimize(objective, n_trials=OPTUNA_N_TRIALS, show_progress_bar=False)
-    log.info("optuna: best val ROC-AUC %.4f in %d trials (params: %s)",
-             study.best_value, OPTUNA_N_TRIALS, study.best_params)
-    return dict(study.best_params)
+def build_cdn_asset_urls(rng: random.Random, top1m: set) -> list[str]:
+    """Benign CDN/static asset and deep-link URLs."""
+    pool = sorted(top1m)
+    urls = []
+    for _ in range(N_BENIGN_CDN):
+        base = rng.choice(pool)
+        if base.startswith("www."):
+            base = base[4:]
+        style = rng.random()
+        if style < 0.4:
+            urls.append(f"https://cdn.{base}/assets/{_alnum(rng, 10)}.{rng.choice(['js', 'css', 'png', 'woff2'])}")
+        elif style < 0.7:
+            urls.append(f"https://static.{base}/{_word(rng)}/{_alnum(rng, 8)}/index.html")
+        else:
+            urls.append(f"https://www.{base}/{'/'.join(str(rng.randint(1, 9999)) for _ in range(rng.randint(2, 4)))}?page={rng.randint(1, 50)}")
+    return list(dict.fromkeys(urls))
 
 
-def tune_with_gridsearch(
-    X_train: np.ndarray, y_train: np.ndarray, scale_pos_weight: float
-) -> dict:
-    """Deterministic fallback when optuna is not installed."""
-    search = GridSearchCV(
-        XGBClassifier(**BASE_PARAMS, scale_pos_weight=scale_pos_weight),
-        GRID_PARAMS,
-        scoring="roc_auc",
-        cv=3,
-        n_jobs=1,  # XGBClassifier already uses all cores
-        verbose=1,
-    )
-    search.fit(X_train, y_train)
-    log.info("gridsearch: best CV ROC-AUC %.4f (params: %s)",
-             search.best_score_, search.best_params_)
-    return dict(search.best_params_)
+def _punycode_brand_host(rng: random.Random) -> str | None:
+    """Homoglyph brand lookalike -> real punycode (xn--...) host.
 
-
-def tune_hyperparameters(
-    X_train: np.ndarray, y_train: np.ndarray,
-    X_val: np.ndarray, y_val: np.ndarray,
-    scale_pos_weight: float,
-) -> dict:
+    Substitutes a Cyrillic/Greek confusable into a brand name and encodes it
+    exactly the way a real IDN attack does.
+    """
+    confusables = {"a": "а", "e": "е", "o": "о", "p": "р", "c": "с", "x": "х", "y": "у", "i": "і"}
+    brand = rng.choice(BRAND_TARGETS)
+    poisoned = "".join(confusables[ch] if ch in confusables and rng.random() < 0.5 else ch for ch in brand)
+    tld = rng.choice(["com", "net", "io", "app", "top"])
+    label = poisoned if rng.random() < 0.5 else f"{poisoned}-{rng.choice(['secure', 'login', 'verify', 'id'])}"
     try:
-        import optuna  # noqa: F401
-    except ImportError:
-        log.info("optuna not installed — falling back to GridSearchCV "
-                 "(pip install optuna for the faster TPE search)")
-        return tune_with_gridsearch(X_train, y_train, scale_pos_weight)
-    return tune_with_optuna(X_train, y_train, X_val, y_val, scale_pos_weight)
-
-
-# ---------------------------------------------------------------------------
-# 3. Final training, evaluation, persistence
-# ---------------------------------------------------------------------------
-
-def evaluate(model: XGBClassifier, X_test: np.ndarray, y_test: np.ndarray) -> dict:
-    """Threshold-0.5 metrics + rank metrics on the held-out test set."""
-    proba = model.predict_proba(X_test)[:, 1]
-    pred = (proba > 0.5).astype(int)
-    metrics = {
-        "accuracy": round(float(accuracy_score(y_test, pred)), 4),
-        "precision": round(float(precision_score(y_test, pred, zero_division=0)), 4),
-        "recall": round(float(recall_score(y_test, pred, zero_division=0)), 4),
-        "f1": round(float(f1_score(y_test, pred, zero_division=0)), 4),
-        "roc_auc": round(float(roc_auc_score(y_test, proba)), 4),
-        "pr_auc": round(float(average_precision_score(y_test, proba)), 4),
-    }
-    tn, fp, fn, tp = confusion_matrix(y_test, pred).ravel()
-    metrics["confusion_matrix"] = {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)}
-    return metrics
-
-
-def print_metrics(metrics: dict, n_test: int) -> None:
-    cm = metrics["confusion_matrix"]
-    log.info("--- TEST METRICS (%s held-out rows, threshold 0.5) ---", f"{n_test:,}")
-    log.info("  Accuracy : %.4f", metrics["accuracy"])
-    log.info("  Precision: %.4f", metrics["precision"])
-    log.info("  Recall   : %.4f", metrics["recall"])
-    log.info("  F1-score : %.4f", metrics["f1"])
-    log.info("  ROC-AUC  : %.4f", metrics["roc_auc"])
-    log.info("  PR-AUC   : %.4f", metrics["pr_auc"])
-    log.info("  confusion: TP %s / FP %s / FN %s / TN %s",
-             cm["tp"], cm["fp"], cm["fn"], cm["tn"])
-
-
-def plot_feature_importance(model: XGBClassifier) -> Path | None:
-    """Gain-based importance plot; None when matplotlib is unavailable."""
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except ImportError:
-        log.warning("matplotlib not installed — skipping feature-importance plot "
-                    "(pip install matplotlib)")
+        puny = label.encode("idna").decode("ascii")
+    except UnicodeError:
         return None
-
-    gains = model.get_booster().get_score(importance_type="gain")
-    # get_score keys are bare feature indices when trained on numpy ("f0"..).
-    pairs = []
-    for key, value in gains.items():
-        index = int(key[1:]) if key.startswith("f") else FEATURE_COLUMNS_V3.index(key)
-        pairs.append((FEATURE_COLUMNS_V3[index], value))
-    pairs.sort(key=lambda p: p[1])
-    names = [p[0] for p in pairs]
-    values = [p[1] for p in pairs]
-
-    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(10, max(6, len(names) * 0.35)))
-    ax.barh(names, values, color="#2b6cb0")
-    ax.set_xlabel("Gain (total gain contributed by splits on the feature)")
-    ax.set_title("XGBoost v4 — URL feature importance (19-feature v3 schema)")
-    fig.tight_layout()
-    fig.savefig(PLOT_PATH, dpi=150)
-    plt.close(fig)
-    log.info("feature-importance plot saved: %s", PLOT_PATH)
-    return PLOT_PATH
+    if puny == label:  # no non-ASCII survived -> not an IDN case
+        return None
+    return f"{puny}.{tld}"
 
 
-def run_regression_gate(model: XGBClassifier, top1m: set[str]) -> bool:
-    """The v3 'Medium test': benign marketing/tracking URLs must stay benign.
+def build_synthetic_phish_v4(rng: random.Random) -> list[str]:
+    """Phishing diversity the feed lacks: IDN/punycode, shortener-wrapped,
+    open-redirect chains, brand-hyphen login hosts."""
+    urls = []
+    tlds = ["tk", "ml", "top", "xyz", "cf", "gq", "rest", "cyou"]
+    while len(urls) < N_PHISH_SYNTH_V4:
+        style = rng.random()
+        if style < 0.3:
+            host = _punycode_brand_host(rng)
+            if not host:
+                continue
+            urls.append(f"https://{host}/{rng.choice(['login', 'verify', 'secure', 'signin', ''])}")
+        elif style < 0.55:
+            short = rng.choice(SHORTENERS)
+            evil = f"{rng.choice(BRAND_TARGETS)}-{rng.choice(['secure', 'login', 'verify'])}-{_alnum(rng, 4)}.{rng.choice(tlds)}"
+            urls.append(f"https://{short}/{_alnum(rng, rng.randint(5, 9))}")  # wrapper itself
+            urls.append(f"https://{evil}/{rng.choice(['wp-content', '', 'session'])}?{_alnum(rng, 6)}={_alnum(rng, 12)}")
+        elif style < 0.8:
+            # Open redirect on a plausible relay host pointing at a brand phish.
+            relay = f"{_alnum(rng, 6)}.{rng.choice(['workers.dev', 'vercel.app', 'pages.dev', 'herokuapp.com'])}"
+            evil = f"https://{rng.choice(BRAND_TARGETS)}-secure.{rng.choice(tlds)}/login"
+            urls.append(f"https://{relay}/?{rng.choice(REDIRECT_PARAMS)}={evil}")
+        else:
+            # Brand-hyphen login host (pure-ASCII impersonation).
+            brand = rng.choice(BRAND_TARGETS)
+            host = f"{brand}-{rng.choice(['secure', 'login', 'account', 'verify', 'support'])}{rng.randint(1, 99)}.{rng.choice(tlds)}"
+            urls.append(f"https://{host}/{rng.choice(['login.php', 'signin', 'verify/', ''])}")
+    return list(dict.fromkeys(urls))[:N_PHISH_SYNTH_V4]
 
-    Same canonical URLs train_url_v3.py gates on — a v4 that fixes recall by
-    flagging medium.com digest links again is a regression, not an upgrade.
-    """
-    from ml.url_features_v3 import extract_url_features_v3, vectorize_v3
 
-    gate_urls: list[tuple[str, int]] = [
-        ("https://medium.com/@coder6861python?source=email-971ea2707eee-1789158672039-digest.reader", 0),
-        ("https://paypal.com/signin?utm_source=email", 0),
-        ("http://paypa1-secure.tk/login", 1),
-        ("http://192.168.1.5/verify-login.php", 1),
-    ]
+# Validation gates: v3 parity cases + v4-specific attack/benign cases.
+V4_GATES = [
+    ("https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&response_type=code", 0),
+    ("https://login.microsoftonline.com/common/oauth2/authorize", 0),
+    # Multi-hyphen enterprise subdomain on a benign registrable domain. NOTE:
+    # the same shape on a PLATFORM host (portal-app-svc.cloudfront.net) is a
+    # phishing pattern — platform hosts are deliberately NOT benign gates.
+    ("https://portal-app-svc.corporatetools.com/status", 0),
+    ("https://www.bbc.co.uk/news", 0),
+    ("https://paypal.com/signin", 0),
+    ("https://xn--80ak6aa92e.com/", 1),          # punycode homoglyph
+    ("https://xn--pypal-4ve.com/login", 1),       # confusable punycode
+    ("http://paypa1-secure.tk/login", 1),         # leet typo-squat
+    ("https://bit.ly/3xR2f9K", None),             # shortener: informational only
+]
+
+
+def run_gates(model, top1m: set) -> tuple[bool, list[dict]]:
+    ranks = load_top1m_rank_map()
     all_pass = True
-    for url, expected in gate_urls:
-        vector = np.array([vectorize_v3(extract_url_features_v3(url, top1m))],
-                          dtype=np.float64)
-        proba = float(model.predict_proba(vector)[0][1])
-        ok = (proba > 0.5) == bool(expected)
-        all_pass &= ok
-        log.info("  %s Prob %.4f | expected %s | %s",
-                 "PASS" if ok else "FAIL", proba,
-                 "phish" if expected else "benign", url[:90])
-    return all_pass
+    rows = []
+    for url, expected in V4_GATES:
+        feats = extract_url_features_v4(url, top1m, ranks)
+        proba = model.predict_proba(pd.DataFrame([vectorize_v4(feats)], columns=FEATURE_COLUMNS_V4))[0][1]
+        pred_phish = proba > 0.5
+        ok = (expected is None) or (pred_phish == bool(expected))
+        if expected is not None:
+            all_pass &= ok
+        rows.append({"url": url, "proba": round(float(proba), 4), "expected": expected,
+                     "pass": bool(ok)})
+        status = ("INFO" if expected is None else ("PASS" if ok else "FAIL"))
+        print(f"  {status} | {proba:.4f} | {url[:80]}")
+    return all_pass, rows
+
+
+def v4_frame(urls: list[str], label: int, top1m: set, ranks: dict) -> pd.DataFrame:
+    rows = []
+    for url in urls:
+        try:
+            feats = extract_url_features_v4(url, top1m, ranks)
+            rows.append(vectorize_v4(feats) + [label, registrable_of_url(url, top1m)])
+        except Exception:
+            continue
+    return pd.DataFrame(rows, columns=FEATURE_COLUMNS_V4 + ["label", "group_domain"])
 
 
 def main() -> int:
-    log.info("=== URL XGBoost v4 training (19-feature v3 schema, 100k+ real URLs) ===")
+    print("=== url_xgb_v4 training (29-feature schema, domain-grouped split) ===")
+    rng = random.Random(SEED)
+    top1m = load_top1m_domains()
+    ranks = load_top1m_rank_map()
 
-    if not PROCESSED_CSV_PATH.exists():
-        log.error("processed dataset not found: %s — run fetch_url_data.py and "
-                  "preprocess_url_v4.py first", PROCESSED_CSV_PATH)
-        return 1
-    frame = load_processed(PROCESSED_CSV_PATH)
-    n_benign, n_malicious = int((frame["label"] == 0).sum()), int((frame["label"] == 1).sum())
-    log.info("dataset: %s rows (benign %s / malicious %s)", f"{len(frame):,}",
-             f"{n_benign:,}", f"{n_malicious:,}")
-    if len(frame) < 50_000:
-        log.warning("dataset below 100k target — v4's purpose is scale; consider "
-                    "re-running fetch_url_data.py with higher caps")
+    benign_urls = build_benign_urls(rng, top1m)
+    benign_urls += build_brand_secondary_urls(rng, top1m)
+    benign_urls += build_enterprise_subdomain_urls(rng, top1m)
+    benign_urls += build_oauth_sso_urls(rng, top1m)
+    benign_urls += build_cdn_asset_urls(rng, top1m)
 
-    X_train, X_val, X_test, y_train, y_val, y_test = make_splits(frame)
+    phish_real, data_mode, phish_temporal = fetch_real_phishing_urls(rng)
+    phish_urls = [u for u in dict.fromkeys(phish_real) if u not in set(benign_urls)]
+    phish_urls += build_synthetic_phish_v4(rng)
+    benign_urls = list(dict.fromkeys(benign_urls))
+    print(f"  corpus: benign={len(benign_urls):,} phishing={len(phish_urls):,}")
 
-    # Class imbalance via cost-sensitive learning (v3 convention; chosen over
-    # SMOTE because all 19 features are deterministic functions of the URL —
-    # interpolating synthetic feature vectors creates URLs that never existed).
-    scale_pos_weight = float((y_train == 0).sum()) / float(max((y_train == 1).sum(), 1))
-    log.info("scale_pos_weight (train): %.4f", scale_pos_weight)
+    print("  building v4 features (29 columns) ...")
+    benign_df = v4_frame(benign_urls, 0, top1m, ranks)
+    phish_df = v4_frame(phish_urls, 1, top1m, ranks)
+    frame = pd.concat([benign_df, phish_df], ignore_index=True)
+    frame = frame.sample(frac=1.0, random_state=SEED).reset_index(drop=True)
 
-    best_params = tune_hyperparameters(X_train, y_train, X_val, y_val, scale_pos_weight)
+    y = frame["label"]
+    n_benign, n_phish = int((y == 0).sum()), int((y == 1).sum())
 
-    # Final fit on Train+Validation with the tuned configuration.
-    log.info("refitting best config on train+validation ...")
-    final_model = XGBClassifier(
-        **BASE_PARAMS, **best_params, scale_pos_weight=scale_pos_weight)
-    final_model.fit(
-        np.vstack([X_train, X_val]), np.concatenate([y_train, y_val]), verbose=False)
+    tr, te = domain_grouped_split(frame)
+    leakage = leakage_report(frame, tr, te, "domain")
+    train, test = frame.iloc[tr], frame.iloc[te]
 
-    metrics = evaluate(final_model, X_test, y_test)
-    print_metrics(metrics, len(y_test))
+    model = make_model(len(train), n_benign, n_phish)
+    model.fit(train[FEATURE_COLUMNS_V4], train["label"])
+
+    proba = model.predict_proba(test[FEATURE_COLUMNS_V4])[:, 1]
+    metrics = full_metrics(test["label"].to_numpy(), proba)
+    if metrics["roc_auc"] is None:
+        metrics["roc_auc"] = round(float(roc_auc_score(test["label"], proba)), 4)
+    print("\n--- DOMAIN-GROUPED HOLDOUT ---")
+    print(f"  rows={len(frame):,} (benign {n_benign:,} / phish {n_phish:,}) data_mode={data_mode}")
+    print(json.dumps({k: metrics[k] for k in
+                      ("precision", "recall", "f1", "roc_auc", "pr_auc", "fpr", "fnr", "confusion", "ece")},
+                     indent=2))
+
+    print("\n--- V4 VALIDATION GATES ---")
+    gates_ok, gate_rows = run_gates(model, top1m)
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    joblib.dump(final_model, MODEL_PATH)  # joblib — the runtime's load path
-    log.info("saved model: %s", MODEL_PATH)
-    plot_feature_importance(final_model)
+    joblib.dump(model, MODEL_PATH)
+    print(f"\n  saved: {MODEL_PATH}")
 
-    metrics_card = {
-        "model": MODEL_PATH.name,
-        "algorithm": "XGBoost (XGBClassifier)",
-        "feature_schema": "ml/url_features_v3.py FEATURE_COLUMNS_V3 (19 features, unchanged)",
-        "dataset_rows": int(len(frame)),
+    payload = {
+        "model": "url_xgb_v4.pkl",
+        "schema": "v4",
+        "split": "domain-grouped",
+        "data_mode": data_mode,
+        "n_rows": int(len(frame)),
         "n_benign": n_benign,
-        "n_malicious": n_malicious,
-        "splits": "80/10/10 stratified on (label, source)",
-        "scale_pos_weight": round(scale_pos_weight, 4),
-        "tuned_params": best_params,
+        "n_phishing": n_phish,
+        "leakage_audit": leakage,
+        "gates": gate_rows,
+        "gates_pass": bool(gates_ok),
         **metrics,
     }
-    METRICS_PATH.write_text(json.dumps(metrics_card, indent=2), encoding="utf-8")
-    log.info("saved metrics card: %s", METRICS_PATH)
-
-    try:
-        from app.core.url_reputation import top1m_domain_set
-        top1m = top1m_domain_set()
-    except Exception:  # offline gate check — reuse file loader
-        top1m = {
-            line.strip().lower()
-            for line in (BACKEND_DIR / "ml" / "data" / "url_whitelist" / "top1m.txt")
-            .read_text(encoding="utf-8", errors="replace").splitlines()
-            if line.strip()
-        }
-    gate_ok = run_regression_gate(final_model, top1m)
-    log.info("=== DONE — regression gate: %s ===", "PASS" if gate_ok else "FAIL")
-    return 0 if gate_ok else 1
+    METRICS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"  metrics: {METRICS_PATH}")
+    print("=== DONE ===")
+    return 0 if gates_ok and leakage["overlap_domains"] == 0 else 1
 
 
 if __name__ == "__main__":

@@ -284,8 +284,10 @@ flowchart LR
     URL["URL string"] --> LEX["11 lexical heuristics<br/>ip_host · entropy>4.0 · length>75 ·<br/>brand_in_subdomain · tld ·<br/>executable ext · urlhaus pattern …"]
     URL --> REP["Reputation layer<br/>Cisco Umbrella top-1M whitelist<br/>+ path-shape classifier<br/>(uuid|hex32|short-id|homepage)"]
     LEX --> SPLIT
-    REP --> FEAT["19-feature v3 vector<br/>(shared ml/url_features_v3.py)"] --> ML["url_xgb_v3.1<br/>AUC 0.9985"]
-    ML --> FUSE["monotonic blend"] --> OUT
+    REP --> FEAT["29-feature v4 vector<br/>(shared ml/url_features_v3.py)"] --> ML["url_xgb_v4<br/>external FPR 0.32%"]
+    ML --> FUSE["monotonic blend + ML floor"] --> OUT
+    ML -. "p ≥ 0.60 only" .-> S2["Stage-2 Phishpedia<br/>(visual-worker, Redis TTL cache)"]
+    S2 --> FUSE2["evidence fusion<br/>SAFE/WARN/REVIEW/BLOCK"] --> OUT
 ```
 
 ### 6.3 BEC & Impersonation Engine

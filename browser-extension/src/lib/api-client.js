@@ -77,6 +77,25 @@
   }
 
   /**
+   * POST /analysis/url/visual — cascaded Stage-1 + Stage-2. Sends the current
+   * tab screenshot (base64/data-URL); Stage 2 (Phishpedia) runs on the backend
+   * worker only when Stage 1 is suspicious. Returns {stage1, stage2, job_id?}.
+   */
+  async function analyzeUrlVisual(baseUrl, url, screenshotDataUrl) {
+    return authedFetch(`${baseUrl}/analysis/url/visual`, {
+      method: 'POST',
+      body: JSON.stringify({ url, screenshot: screenshotDataUrl }),
+    });
+  }
+
+  /** GET /analysis/url/visual/{jobId} — poll a queued Stage-2 job. */
+  async function getVisualResult(baseUrl, jobId) {
+    return authedFetch(`${baseUrl}/analysis/url/visual/${encodeURIComponent(jobId)}`, {
+      method: 'GET',
+    });
+  }
+
+  /**
    * POST /analysis/email -> AlertResponse.
    * text is a pasted email body (optionally with RFC822 headers); From: and
    * Subject: lines are promoted to sender/subject when present.
@@ -132,6 +151,8 @@
     AuthLostError,
     fetchMe,
     analyzeUrl,
+    analyzeUrlVisual,
+    getVisualResult,
     analyzeEmail,
     analyzeDeepfake,
     analyzeDeepfakeForm,

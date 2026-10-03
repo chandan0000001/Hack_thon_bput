@@ -51,7 +51,13 @@ DEFAULT_CALIBRATION: dict[str, Any] = {
             ],
         },
     },
-    "url_model_version": "v2",
+    # In-code fallback used only when models_dir()/calibration.json is
+    # unreadable. Kept in sync with the artifact-backed calibration
+    # (ml/models/calibration.json): url_xgb_v4.pkl (29-feature schema, see
+    # ml_inference.URL_MODEL_REGISTRY) replaced v3.1 after the external
+    # evaluation in ml/scripts/eval_url_models.py proved v3.1's FPR was 33%
+    # on held-out benign infrastructure (v4: 0.32% bare / 2.4% hard-benign).
+    "url_model_version": "v4",
     "deepfake": {
         "splice_score_threshold": 3.0,
         "noise_floor": 0.55,

@@ -54,7 +54,19 @@
       tabs: {
         create: (options) => callbackToPromise(raw.tabs.create.bind(raw.tabs), [options]),
         remove: (tabId) => callbackToPromise(raw.tabs.remove.bind(raw.tabs), [tabId]),
+        get: (tabId) => callbackToPromise(raw.tabs.get.bind(raw.tabs), [tabId]),
+        // MV3 service worker: register the listener directly (like onMessage) —
+        // wrapping onUpdated in a promise makes no sense for an event stream.
+        onUpdated: raw.tabs && raw.tabs.onUpdated ? raw.tabs.onUpdated : null,
+        onRemoved: raw.tabs && raw.tabs.onRemoved ? raw.tabs.onRemoved : null,
       },
+      action: (raw.action || raw.browserAction)
+        ? {
+            setBadgeText: (details) => callbackToPromise((raw.action || raw.browserAction).setBadgeText.bind(raw.action || raw.browserAction), [details]),
+            setBadgeBackgroundColor: (details) => callbackToPromise((raw.action || raw.browserAction).setBadgeBackgroundColor.bind(raw.action || raw.browserAction), [details]),
+            setTitle: (details) => callbackToPromise((raw.action || raw.browserAction).setTitle.bind(raw.action || raw.browserAction), [details]),
+          }
+        : null,
       runtime: {
         sendMessage: (message) => callbackToPromise(raw.runtime.sendMessage.bind(raw.runtime), [message]),
         onMessage: raw.runtime.onMessage,

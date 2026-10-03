@@ -27,6 +27,27 @@
     return EXCLUDED_HOSTS.test(String(hostname || ''));
   }
 
+  // Browser-internal / non-analyzable URL schemes. The current-tab guard
+  // never sends these anywhere — there is no remote server behind them and
+  // leaking extension/file internals would be a privacy bug.
+  const INTERNAL_URL_RE = new RegExp(
+    '^(?:' + [
+      'chrome', 'chrome-extension', 'chromewebstore', 'about', 'edge',
+      'extension', 'moz-extension', 'opera', 'vivaldi', 'brave', 'devtools',
+      'view-source', 'javascript', 'data', 'blob', 'file', 'ws', 'wss',
+    ].join('|') + '):',
+    'i'
+  );
+
+  /** True for browser-internal pages and non-http(s) targets. */
+  function isInternalUrl(url) {
+    const u = String(url || '').trim();
+    if (!u) return true;
+    if (INTERNAL_URL_RE.test(u)) return true;
+    if (!/^https?:\/\//i.test(u)) return true;
+    return isExcludedHost(safeHostname(u));
+  }
+
   function safeHostname(url) {
     try {
       return new URL(url).hostname;
@@ -168,6 +189,7 @@
   global.CyberGuardExt.detect = {
     URL_RE,
     isExcludedHost,
+    isInternalUrl,
     detectUrls,
     detectEmail,
     detectImages,
