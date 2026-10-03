@@ -34,6 +34,11 @@ INTERNAL_LOCAL_SUFFIXES = (
     ".corp",
     ".intranet",
     ".localdomain",
+    # Cloud metadata endpoints reached BY HOSTNAME (the IP literals 169.254.169.254
+    # / fd00:ec2::254 are caught by the link-local classification above; these
+    # hostnames must not resolve their way past it).
+    ".metadata.google.internal",
+    "metadata.goog",
 )
 
 # Leet / homoglyph single-character normalizations.

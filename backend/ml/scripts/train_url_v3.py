@@ -38,10 +38,18 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupKFold, GroupShuffleSplit, train_test_split
 from xgboost import XGBClassifier
 
-from ml.url_features_v3 import FEATURE_COLUMNS_V3, extract_url_features_v3, vectorize_v3
+from ml.url_features_v3 import (
+    FEATURE_COLUMNS_V3,
+    FEATURE_COLUMNS_V4,
+    extract_url_features_v3,
+    extract_url_features_v4,
+    load_top1m_rank_map,
+    vectorize_v3,
+    vectorize_v4,
+)
 
 TOP1M_PATH = BACKEND_DIR / "ml" / "data" / "url_whitelist" / "top1m.txt"
 CACHE_DIR = BACKEND_DIR / "ml" / "data" / "cache"
@@ -260,13 +268,18 @@ def fetch_real_phishing_urls(rng: random.Random) -> tuple[list[str], str]:
             return fallback_phishing_urls(rng), "synthetic-fallback"
     urls: list[str] = []
     platform_urls: list[str] = []
-    for line in PHISH_FEED_CACHE.read_text(encoding="utf-8", errors="replace").splitlines():
+    feed_positions: list[int] = []
+    for line_no, line in enumerate(PHISH_FEED_CACHE.read_text(encoding="utf-8", errors="replace").splitlines()):
         u = line.strip()
         if not u.startswith(("http://", "https://", "ftp://")):
             continue
-        (platform_urls if any(p in u for p in PLATFORM_HOSTS) else urls).append(u)
+        if any(p in u for p in PLATFORM_HOSTS):
+            platform_urls.append(u)
+        else:
+            urls.append(u)
+            feed_positions.append(line_no)
     if not urls and not platform_urls:
-        return fallback_phishing_urls(rng), "synthetic-fallback"
+        return fallback_phishing_urls(rng), "synthetic-fallback", []
     # Keep a bounded slice of platform-hosted phishing (the hard cases, capped
     # so class balance stays near 1:1) + a random sample of the general feed.
     max_platform = min(20_000, N_PHISH_REAL // 2)
@@ -275,13 +288,20 @@ def fetch_real_phishing_urls(rng: random.Random) -> tuple[list[str], str]:
     remaining = N_PHISH_REAL - len(platform_urls)
     if remaining > 0:
         if len(urls) > remaining:
-            urls = rng.sample(urls, remaining)
+            keep = rng.sample(range(len(urls)), remaining)
+            keep.sort()  # preserve feed order so temporal_key stays monotone
+            urls = [urls[i] for i in keep]
+            feed_positions = [feed_positions[i] for i in keep]
     else:
         urls = []
+        feed_positions = []
     picked = platform_urls + urls
+    # Platform-hosted URLs have no meaningful feed-position key; park them at
+    # the end of the temporal ordering (they are the newest-wave hard cases).
+    temporal_keys = feed_positions + [10_000_000 + i for i in range(len(platform_urls))]
     print(f"  phishing: {len(picked):,} REAL URLs "
           f"({len(platform_urls):,} platform-hosted like vercel.app/godaddysites.com)")
-    return picked, "real-feed"
+    return picked, "real-feed", temporal_keys
 
 
 def fallback_phishing_urls(rng: random.Random) -> list[str]:
@@ -316,15 +336,137 @@ def fallback_phishing_urls(rng: random.Random) -> list[str]:
 # 2. Feature matrix
 # ---------------------------------------------------------------------------
 
-def build_frame(urls: list[str], label: int, top1m: set) -> pd.DataFrame:
+def registrable_of_url(url: str, top1m: set) -> str:
+    """Registrable domain of a URL — the leakage group key.
+
+    Every URL from the same registrable domain lands in the same fold, so the
+    model cannot memorize a domain on one URL and 'recognize' it on another.
+    """
+    from urllib.parse import urlparse
+
+    from ml.url_features_v3 import IP_HOST_PATTERN, _registrable
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        parsed = urlparse(f"http://{url}")
+    domain = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not domain:
+        # Userinfo-trick / malformed-authority URLs: group on the raw netloc so
+        # siblings of the same attacker infrastructure stay together.
+        return parsed.netloc.lower() or url
+    if IP_HOST_PATTERN.match(domain):
+        # A bare IP has no registrable domain (and _registrable would fold
+        # 192.168.1.5 to 1.5) — group on the IP itself.
+        return domain
+    return _registrable(domain)
+
+
+def build_frame(
+    urls: list[str],
+    label: int,
+    top1m: set,
+    temporal_keys: list[int] | None = None,
+    schema: str = "v3",
+) -> pd.DataFrame:
+    """Feature frame with leakage-audit metadata columns.
+
+    `group_domain`  — registrable domain, the key for domain-grouped splits.
+    `temporal_key`  — proxy for when the URL was first seen (feed-file line
+    number for real phishing, generation order otherwise); drives the temporal
+    split. Both are metadata ONLY — they are never part of X.
+    """
+    use_v4 = schema == "v4"
+    columns = FEATURE_COLUMNS_V4 if use_v4 else FEATURE_COLUMNS_V3
+    extract = extract_url_features_v4 if use_v4 else extract_url_features_v3
+
     rows = []
-    for url in urls:
+    for i, url in enumerate(urls):
         try:
-            feats = extract_url_features_v3(url, top1m)
+            feats = extract(url, top1m) if not use_v4 else extract(url, top1m, load_top1m_rank_map())
         except Exception:
             continue
-        rows.append(vectorize_v3(feats) + [label])
-    return pd.DataFrame(rows, columns=FEATURE_COLUMNS_V3 + ["label"])
+        vector = vectorize_v4(feats) if use_v4 else vectorize_v3(feats)
+        rows.append(vector + [label, registrable_of_url(url, top1m),
+                              temporal_keys[i] if temporal_keys else i])
+    return pd.DataFrame(rows, columns=columns + ["label", "group_domain", "temporal_key"])
+
+
+# ---------------------------------------------------------------------------
+# 2b. Leakage-prevention splits (domain-grouped + temporal)
+# ---------------------------------------------------------------------------
+
+def domain_grouped_split(frame: pd.DataFrame, test_size: float = 0.2, seed: int = SEED):
+    """Single 80/20 holdout where no registrable domain spans both sides.
+
+    A plain stratified split leaks: the real phishing feed contains many URLs
+    per attacker domain, so near-duplicate hosts land on both sides and the
+    holdout AUC reads 5-15 points high (the classic phishing-dataset leakage
+    documented by Sahingoz et al. and the PhishBench line of work).
+    """
+    splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=seed)
+    train_idx, test_idx = next(splitter.split(frame, groups=frame["group_domain"]))
+    return train_idx, test_idx
+
+
+def domain_grouped_cv(
+    model_factory,
+    frame: pd.DataFrame,
+    top1m: set,
+    n_splits: int = 5,
+    schema: str = "v3",
+) -> list[dict]:
+    """GroupKFold CV over registrable domains — the honest model-selection
+    metric. Returns per-fold metrics; print/aggregate as needed."""
+    columns = FEATURE_COLUMNS_V4 if schema == "v4" else FEATURE_COLUMNS_V3
+    folds = []
+    splitter = GroupKFold(n_splits=n_splits)
+    for fold_no, (train_idx, test_idx) in enumerate(
+        splitter.split(frame[columns], frame["label"], groups=frame["group_domain"]), start=1
+    ):
+        train, test = frame.iloc[train_idx], frame.iloc[test_idx]
+        model = model_factory(len(train))
+        model.fit(train[columns], train["label"])
+        proba = model.predict_proba(test[columns])[:, 1]
+        pred = (proba > 0.5).astype(int)
+        folds.append({
+            "fold": fold_no,
+            "auc": round(float(roc_auc_score(test["label"], proba)), 4),
+            "f1": round(float(f1_score(test["label"], pred)), 4),
+            "train_domains": int(train["group_domain"].nunique()),
+            "test_domains": int(test["group_domain"].nunique()),
+        })
+        print(f"  fold {fold_no}: AUC {folds[-1]['auc']:.4f}  F1 {folds[-1]['f1']:.4f}  "
+              f"(train domains {folds[-1]['train_domains']:,} / test {folds[-1]['test_domains']:,})")
+    return folds
+
+
+def temporal_split(frame: pd.DataFrame, test_size: float = 0.2):
+    """Train on the past, test on the future, ordered by `temporal_key`.
+
+    The real phishing feed's line order approximates first-seen order, so the
+    test slice simulates 'URLs that appear after the model shipped' — the
+    regime the runtime actually faces. Unlike the domain-grouped split this
+    intentionally ALLOWS domain overlap across time (a domain seen in March
+    legitimately reappears in June); the leakage report records the overlap
+    but the zero-overlap gate only applies to the domain-grouped split.
+    """
+    ordered = frame.sort_values("temporal_key", kind="stable").reset_index(drop=True)
+    cutoff = int(len(ordered) * (1.0 - test_size))
+    return ordered.index[:cutoff], ordered.index[cutoff:]
+
+
+def leakage_report(frame: pd.DataFrame, train_idx, test_idx, mode: str) -> dict:
+    """Domain-overlap audit for any split; must be 0 overlapping domains."""
+    train_domains = set(frame.iloc[train_idx]["group_domain"])
+    test_domains = set(frame.iloc[test_idx]["group_domain"])
+    overlap = train_domains & test_domains
+    print(f"\n--- LEAKAGE AUDIT ({mode} split) ---")
+    print(f"  train: {len(train_idx):,} rows / {len(train_domains):,} domains")
+    print(f"  test : {len(test_idx):,} rows / {len(test_domains):,} domains")
+    print(f"  domain overlap: {len(overlap):,} {'✅ PASS' if not overlap else '❌ FAIL — LEAKAGE'}")
+    return {"mode": mode, "overlap_domains": len(overlap), "train_rows": len(train_idx),
+            "test_rows": len(test_idx)}
 
 
 # ---------------------------------------------------------------------------
@@ -344,20 +486,26 @@ V31_TEST_URLS = [
 ]
 
 
-def run_validation(model: XGBClassifier, top1m: set, version: str = "v3") -> bool:
+def run_validation(model: XGBClassifier, top1m: set, version: str = "v3", schema: str = "v3") -> bool:
     print("\n--- V3 MODEL VALIDATION ---")
+    columns = FEATURE_COLUMNS_V4 if schema == "v4" else FEATURE_COLUMNS_V3
+
+    def feature_row(url: str) -> pd.DataFrame:
+        if schema == "v4":
+            return pd.DataFrame([vectorize_v4(extract_url_features_v4(url, top1m, load_top1m_rank_map()))],
+                                columns=columns)
+        return pd.DataFrame([vectorize_v3(extract_url_features_v3(url, top1m))], columns=columns)
+
     test_urls = list(TEST_URLS) + (V31_TEST_URLS if version.startswith("v3.1") else [])
     all_pass = True
     for url, expected in test_urls:
-        features = extract_url_features_v3(url, top1m)
-        proba = model.predict_proba(pd.DataFrame([vectorize_v3(features)], columns=FEATURE_COLUMNS_V3))[0][1]
+        proba = model.predict_proba(feature_row(url))[0][1]
         is_phish_pred = proba > 0.5
         ok = is_phish_pred == bool(expected)
         all_pass &= ok
         status = "✅ PASS" if ok else "❌ FAIL"
         print(f"{status} | Prob: {proba:.4f} | Expected: {'Phish' if expected else 'Benign'} | {url}")
-    medium_proba = model.predict_proba(pd.DataFrame(
-        [vectorize_v3(extract_url_features_v3(TEST_URLS[0][0], top1m))], columns=FEATURE_COLUMNS_V3))[0][1]
+    medium_proba = model.predict_proba(feature_row(TEST_URLS[0][0]))[0][1]
     if medium_proba >= 0.20:
         print(f"❌ FAIL | Medium digest URL probability {medium_proba:.4f} did NOT drop below 0.20")
         all_pass = False
@@ -370,47 +518,106 @@ def run_validation(model: XGBClassifier, top1m: set, version: str = "v3") -> boo
 # 4. Main
 # ---------------------------------------------------------------------------
 
+def _parse_args(argv: list[str]) -> dict:
+    """Positional version + flags: [--split stratified|domain|temporal]
+    [--schema v3|v4] [--cv]. Defaults preserve the historical v3 behaviour."""
+    args = {"version": "v3", "split": "stratified", "schema": "v3", "cv": False}
+    positional = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--split":
+            args["split"] = argv[i + 1]
+            i += 2
+        elif arg == "--schema":
+            args["schema"] = argv[i + 1]
+            i += 2
+        elif arg == "--cv":
+            args["cv"] = True
+            i += 1
+        else:
+            positional.append(arg)
+            i += 1
+    if positional:
+        args["version"] = positional[0]
+    return args
+
+
+def make_model(n_train: int, n_benign: int, n_phish: int) -> XGBClassifier:
+    return XGBClassifier(
+        n_estimators=300,
+        max_depth=6,
+        learning_rate=0.05,
+        scale_pos_weight=max(1, n_benign) / max(1, n_phish),  # handle class imbalance
+        eval_metric="auc",
+        tree_method="hist",
+        n_jobs=-1,
+        random_state=SEED,
+    )
+
+
 def main() -> int:
-    version = sys.argv[1] if len(sys.argv) > 1 else "v3"
+    cfg = _parse_args(sys.argv[1:])
+    version = cfg["version"]
+    split_mode = cfg["split"]
+    schema = cfg["schema"]
+    if split_mode not in {"stratified", "domain", "temporal"}:
+        print(f"!! unknown --split {split_mode!r} (use stratified|domain|temporal)")
+        return 2
+    if schema not in {"v3", "v4"}:
+        print(f"!! unknown --schema {schema!r} (use v3|v4)")
+        return 2
+
     model_filename = "url_xgb_v3.pkl" if version == "v3" else f"url_xgb_{version}.pkl"
     model_path = MODELS_DIR / model_filename
-    print(f"=== {model_filename} training (real datasets, reputation-aware features) ===")
+    print(f"=== {model_filename} training (schema={schema}, split={split_mode}) ===")
     rng = random.Random(SEED)
     top1m = load_top1m_domains()
 
     benign_urls = build_benign_urls(rng, top1m)
     if version.startswith("v3.1"):
         benign_urls += build_brand_secondary_urls(rng, top1m)
-    phish_urls, data_mode = fetch_real_phishing_urls(rng)
+    phish_urls, data_mode, phish_temporal = fetch_real_phishing_urls(rng)
 
     # Dedup by URL (feature-level dedup would collapse distinct short domains
     # that happen to share identical feature vectors — mostly benign loss).
     benign_urls = list(dict.fromkeys(benign_urls))
     benign_set = set(benign_urls)
     phish_urls = [u for u in dict.fromkeys(phish_urls) if u not in benign_set]
+    phish_temporal = phish_temporal[: len(phish_urls)] if phish_temporal else None
 
-    print(f"  building features for {len(benign_urls) + len(phish_urls):,} URLs ...")
-    benign_df = build_frame(benign_urls, 0, top1m)
-    phish_df = build_frame(phish_urls, 1, top1m)
+    print(f"  building {schema} features for {len(benign_urls) + len(phish_urls):,} URLs ...")
+    columns = FEATURE_COLUMNS_V4 if schema == "v4" else FEATURE_COLUMNS_V3
+    benign_df = build_frame(benign_urls, 0, top1m, schema=schema)
+    phish_df = build_frame(phish_urls, 1, top1m, temporal_keys=phish_temporal, schema=schema)
     frame = pd.concat([benign_df, phish_df], ignore_index=True)
     frame = frame.sample(frac=1.0, random_state=SEED).reset_index(drop=True)
 
-    X = frame[FEATURE_COLUMNS_V3]
     y = frame["label"]
     n_benign, n_phish = int((y == 0).sum()), int((y == 1).sum())
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=SEED)
 
-    model = XGBClassifier(
-        n_estimators=300,
-        max_depth=6,
-        learning_rate=0.05,
-        scale_pos_weight=n_benign / n_phish,  # handle class imbalance
-        eval_metric="auc",
-        tree_method="hist",
-        n_jobs=-1,
-        random_state=SEED,
-    )
+    if split_mode == "domain":
+        train_idx, test_idx = domain_grouped_split(frame)
+    elif split_mode == "temporal":
+        train_idx, test_idx = temporal_split(frame)
+    else:
+        # Historical behaviour: plain stratified holdout (leaks domains — kept
+        # only for comparability with the v3.1 metrics; see leakage_report).
+        train_idx, test_idx = train_test_split(
+            frame.index, test_size=0.2, stratify=y, random_state=SEED)
+    leakage = leakage_report(frame, train_idx, test_idx, split_mode)
+
+    train, test = frame.iloc[np.asarray(train_idx)], frame.iloc[np.asarray(test_idx)]
+    X_train, y_train = train[columns], train["label"]
+    X_test, y_test = test[columns], test["label"]
+
+    cv_results = None
+    if cfg["cv"]:
+        print(f"\n--- GROUP-KFOLD CV (5 folds, domain-grouped, schema={schema}) ---")
+        cv_results = domain_grouped_cv(
+            lambda n: make_model(n, n_benign, n_phish), frame, top1m, schema=schema)
+
+    model = make_model(len(X_train), n_benign, n_phish)
     # NOTE: use_label_encoder intentionally omitted — removed in xgboost >= 2.0.
     model.fit(X_train, y_train)
 
@@ -419,7 +626,7 @@ def main() -> int:
     auc = roc_auc_score(y_test, proba)
     f1 = f1_score(y_test, pred)
     acc = accuracy_score(y_test, pred)
-    print("\n--- TEST METRICS (20% stratified holdout) ---")
+    print(f"\n--- TEST METRICS ({split_mode} holdout, schema={schema}) ---")
     print(f"  rows: {len(frame):,} (benign {n_benign:,} / phishing {n_phish:,}) | data_mode: {data_mode}")
     print(f"  AUC:  {auc:.4f}")
     print(f"  F1:   {f1:.4f}")
@@ -429,21 +636,30 @@ def main() -> int:
     joblib.dump(model, model_path)  # joblib for parity with the runtime joblib.load path
     print(f"\n  saved: {model_path}")
 
-    ok = run_validation(model, top1m, version=version)
+    ok = run_validation(model, top1m, version=version, schema=schema)
 
     # Platform-hosted phishing spot check (must NOT be whitelisted by reputation).
     platform_phish = [u for u in phish_urls if any(p in u for p in PLATFORM_HOSTS)][:5]
     if platform_phish:
         print("\n--- PLATFORM-HOSTED PHISHING SPOT CHECK (reputation must not blind the model) ---")
-        vecs = pd.DataFrame(
-            [vectorize_v3(extract_url_features_v3(u, top1m)) for u in platform_phish],
-            columns=FEATURE_COLUMNS_V3)
+        if schema == "v4":
+            vecs = pd.DataFrame(
+                [vectorize_v4(extract_url_features_v4(u, top1m, load_top1m_rank_map())) for u in platform_phish],
+                columns=FEATURE_COLUMNS_V4)
+        else:
+            vecs = pd.DataFrame(
+                [vectorize_v3(extract_url_features_v3(u, top1m)) for u in platform_phish],
+                columns=FEATURE_COLUMNS_V3)
         for u, p in zip(platform_phish, model.predict_proba(vecs)[:, 1]):
             print(f"  {'✅' if p > 0.5 else '❌'} Prob: {p:.4f} | {u[:100]}")
 
     metrics = {
         "model": model_filename,
         "data_mode": data_mode,
+        "schema": schema,
+        "split_mode": split_mode,
+        "leakage_audit": leakage,
+        "cv_domain_grouped": cv_results,
         "n_rows": int(len(frame)),
         "n_benign": n_benign,
         "n_phishing": n_phish,
@@ -453,7 +669,10 @@ def main() -> int:
     }
     (MODELS_DIR / f"url_{version.replace('.', '')}_metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     print("\n=== DONE ===")
-    return 0 if ok else 1
+    # Zero-overlap is only a hard requirement for the domain-grouped split;
+    # temporal splits legitimately reuse domains across the time boundary.
+    no_leakage = split_mode != "domain" or leakage["overlap_domains"] == 0
+    return 0 if ok and no_leakage else 1
 
 
 if __name__ == "__main__":

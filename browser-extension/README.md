@@ -20,6 +20,42 @@ re-opens the popup's URL view pre-filled). Settings in `chrome.storage.local`:
 all domains), `scan_max_detections` (default 20). Web stores and iframes are
 excluded.
 
+## Current-tab URL guard (URL-CASCADE)
+
+On top of the click-to-analyze scanner, the background service worker now
+also classifies the URL of the tab being navigated (independent of page
+content): `tabs.onUpdated` → internal-page filter (`lib/detect.js
+isInternalUrl` — chrome://, about:, file:, extension stores, non-http(s)) →
+`POST /analysis/url`. Verdicts are cached per URL with a 10-minute TTL and
+deduplicated while in flight (SPA hash-pushes and back/forward do not re-scan),
+surfaced as a per-tab badge (cleared on SAFE) and stored in
+`chrome.storage.session` for the popup (`GET_TAB_SCAN_VERDICT` /
+`SCAN_TAB_URL` messages). The whole path is opt-out via
+`chrome.storage.local { auto_scan_tab: false }`.
+
+When the Stage-1 verdict is high/critical, the guard escalates to the
+cascaded Stage-2 flow: `tabs.captureVisibleTab` → `POST /analysis/url/visual`
+(backend Phishpedia brand verification on the visual worker, Redis TTL cache
+keyed by registrable domain) → fused SAFE/WARN/REVIEW/BLOCK verdict stored
+back into the tab record. SAFE URLs never get screenshots taken, and Stage-2
+failures degrade to Stage-1-only.
+
+## Fail-open decision (deliberate)
+
+**The extension never blocks a site merely because the CyberGuard backend is
+unreachable.** On API timeout, network failure, malformed response, or
+authentication loss the tab scan records an error verdict and shows no
+warning — an offline SOC must not brick browsing. Hard blocking is a separate
+opt-in: with `{ block_critical: true }` in `chrome.storage.local`, a fused
+BLOCK verdict redirects the tab to `blocked/blocked.html`, which displays the
+risk score, domain, and the exact reasons, always offers "Go Back" and
+"Proceed anyway", and is clearly branded as a CyberGuard extension page
+(never a browser/system imitation).
+
+Extension detections are sent with `source: "browser_extension"` so the SOC
+can distinguish them from manual dashboard analysis; both share the same
+`POST /analysis/url` engine, event schema, and alert pipeline.
+
 ## Layout
 
 ```

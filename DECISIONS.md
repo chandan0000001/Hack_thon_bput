@@ -665,3 +665,44 @@ diff-based reconciliation back into the main repo.
 return their work to `Hack_thon_bput` (or commit directly on a branch there)
 before any verification is reported. Sibling copies are quarantined, not kept
 in sync.
+
+## 2026-10-03 · URL model v4 deployment + cascade architecture (URL-CASCADE)
+
+**Decision:**
+1. The active URL model is calibrated to `url_xgb_v4.pkl` (29-feature
+   `FEATURE_COLUMNS_V4` schema) after an external evaluation proved v3.1's
+   replacement necessary — on 45k never-trained URLs (OpenPhish + fresh
+   Phishing.Database + held-out top-1M benign), v3.1 scored FPR 29.2% on bare
+   benign infrastructure and 40.2% on hard-benign OAuth/login/CDN shapes
+   (F1 0.824, ECE 0.168), while v4 scored FPR 0.32% / 2.4% (F1 0.979,
+   ECE 0.006). Report: `ml/models/url_eval_report.{json,md}`, harness:
+   `ml/scripts/eval_url_models.py`.
+2. Feature schema is bound to the model version in
+   `ml_inference.URL_MODEL_REGISTRY` (v3/v3.1 = 19 columns frozen, v4 = 29);
+   inference can no longer serve an artifact with the wrong vector (the old
+   filename-sniffing path would have silently degraded v4 to heuristics-only).
+3. Domain-grouped and temporal splits are the reporting standard; stratified
+   holdout metrics are retained only for historical comparability and are
+   documented as inflated by domain leakage.
+4. The URL blending policy gains an ML-confidence floor
+   (`blend_scores_url`): a ≥0.97 model probability now maps to ≥88/100 even
+   when URL heuristics are silent (previously capped at 54/"medium"). Other
+   modules keep the generic blend.
+5. Phishpedia is integrated as Stage-2 visual brand verification, triggered
+   ONLY when Stage 1 is suspicious (p ≥ 0.60): heavy CV runs on a dedicated
+   Arq worker (`visual-worker`), verdicts are cached in Redis with a 1-hour
+   TTL keyed on registrable domain, and evidence is fused by explicit policy
+   (`evidence_fusion.py`) — never averaged.
+
+**Rationale:** The user-facing failure mode of v3.1 (real enterprise
+subdomains like `workflows-frontend-livechat.corporatetools.com` scored 0.97
+phishy) could not be fixed by thresholds — the 19-feature schema cannot
+distinguish those from typo-squats. Stage-2 visual verification catches the
+complement (brand impersonation on clean-looking domains) that lexical models
+miss by construction.
+
+**Consequences:** v3/v3.1 artifacts remain on disk for rollback via
+calibration flip only. Stratified-metric claims in older docs are superseded.
+Stage 2 requires the one-time artifact fetch
+(`app/services/phishpedia_engine/README.md`); without it the cascade degrades
+gracefully to Stage-1-only with REVIEW-band decisions for suspicious URLs.

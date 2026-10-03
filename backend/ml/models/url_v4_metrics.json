@@ -1,0 +1,151 @@
+{
+  "model": "url_xgb_v4.pkl",
+  "schema": "v4",
+  "split": "domain-grouped",
+  "data_mode": "real-feed",
+  "n_rows": 155501,
+  "n_benign": 93999,
+  "n_phishing": 61502,
+  "leakage_audit": {
+    "mode": "domain",
+    "overlap_domains": 0,
+    "train_rows": 129865,
+    "test_rows": 25636
+  },
+  "gates": [
+    {
+      "url": "https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&response_type=code",
+      "proba": 0.0632,
+      "expected": 0,
+      "pass": true
+    },
+    {
+      "url": "https://login.microsoftonline.com/common/oauth2/authorize",
+      "proba": 0.2528,
+      "expected": 0,
+      "pass": true
+    },
+    {
+      "url": "https://portal-app-svc.corporatetools.com/status",
+      "proba": 0.0065,
+      "expected": 0,
+      "pass": true
+    },
+    {
+      "url": "https://www.bbc.co.uk/news",
+      "proba": 0.0062,
+      "expected": 0,
+      "pass": true
+    },
+    {
+      "url": "https://paypal.com/signin",
+      "proba": 0.0277,
+      "expected": 0,
+      "pass": true
+    },
+    {
+      "url": "https://xn--80ak6aa92e.com/",
+      "proba": 0.9989,
+      "expected": 1,
+      "pass": true
+    },
+    {
+      "url": "https://xn--pypal-4ve.com/login",
+      "proba": 0.9989,
+      "expected": 1,
+      "pass": true
+    },
+    {
+      "url": "http://paypa1-secure.tk/login",
+      "proba": 0.9998,
+      "expected": 1,
+      "pass": true
+    },
+    {
+      "url": "https://bit.ly/3xR2f9K",
+      "proba": 0.9934,
+      "expected": null,
+      "pass": true
+    }
+  ],
+  "gates_pass": true,
+  "threshold": 0.5,
+  "n": 25636,
+  "positives": 10425,
+  "precision": 0.9862,
+  "recall": 0.8648,
+  "f1": 0.9216,
+  "roc_auc": 0.9883,
+  "pr_auc": 0.9867,
+  "fpr": 0.0083,
+  "fnr": 0.1352,
+  "confusion": {
+    "tn": 15085,
+    "fp": 126,
+    "fn": 1409,
+    "tp": 9016
+  },
+  "ece": 0.0392,
+  "reliability": [
+    {
+      "bin": "0.0-0.1",
+      "n": 15312,
+      "mean_p": 0.0109,
+      "empirical_phish_rate": 0.0473
+    },
+    {
+      "bin": "0.1-0.2",
+      "n": 650,
+      "mean_p": 0.1445,
+      "empirical_phish_rate": 0.5277
+    },
+    {
+      "bin": "0.2-0.3",
+      "n": 276,
+      "mean_p": 0.2408,
+      "empirical_phish_rate": 0.5725
+    },
+    {
+      "bin": "0.3-0.4",
+      "n": 138,
+      "mean_p": 0.3403,
+      "empirical_phish_rate": 0.7174
+    },
+    {
+      "bin": "0.4-0.5",
+      "n": 118,
+      "mean_p": 0.4586,
+      "empirical_phish_rate": 0.7119
+    },
+    {
+      "bin": "0.5-0.6",
+      "n": 103,
+      "mean_p": 0.5488,
+      "empirical_phish_rate": 0.6893
+    },
+    {
+      "bin": "0.6-0.7",
+      "n": 62,
+      "mean_p": 0.65,
+      "empirical_phish_rate": 0.6452
+    },
+    {
+      "bin": "0.7-0.8",
+      "n": 93,
+      "mean_p": 0.7546,
+      "empirical_phish_rate": 0.7419
+    },
+    {
+      "bin": "0.8-0.9",
+      "n": 158,
+      "mean_p": 0.8545,
+      "empirical_phish_rate": 0.8228
+    },
+    {
+      "bin": "0.9-1.0",
+      "n": 8726,
+      "mean_p": 0.9973,
+      "empirical_phish_rate": 0.9977
+    }
+  ]
+}

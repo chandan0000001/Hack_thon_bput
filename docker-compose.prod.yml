@@ -168,6 +168,33 @@ services:
       - cyberguard-prod-net
 
   # ----------------------------------------------------------------------------
+  # 5b. Visual Phishing (Stage-2 Phishpedia) Worker
+  #     Heavy CV (logo detection + Siamese matching) stays off the API process.
+  #     Mounted model dir supplies the pretrained artifacts; see
+  #     backend/app/services/phishpedia_engine/README.md.
+  # ----------------------------------------------------------------------------
+  visual-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cyberguard-visual-worker-prod
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+    volumes:
+      - ./ml-artifacts/phishpedia:/app/ml/data/phishpedia:ro
+    command: python -m arq app.workers.visual_worker.WorkerSettings
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - cyberguard-prod-net
+
+  # ----------------------------------------------------------------------------
   # 6. Periodic Scheduler & Watch Renewal Worker
   # ----------------------------------------------------------------------------
   scheduler-worker:

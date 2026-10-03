@@ -114,7 +114,9 @@ flowchart TB
 
 ## 3. Engine 2 — Malicious URL Forensics
 
-**Module:** `url` · **Service:** `app/services/url_detector.py` · **ML:** `url_xgb_v3.1.pkl` (served version selected via `calibration.json → url_model_version`) · **Endpoint:** `POST /api/v1/analysis/url` · **Features:** `ml/url_features_v3.py` (shared training + serving)
+**Module:** `url` · **Service:** `app/services/url_detector.py` · **ML:** `url_xgb_v4.pkl` (29-feature `FEATURE_COLUMNS_V4`; version→schema binding in `ml_inference.URL_MODEL_REGISTRY`; v3.1 kept for rollback) · **Endpoint:** `POST /api/v1/analysis/url` (+ `/analysis/url/visual` cascaded Stage-2) · **Features:** `ml/url_features_v3.py` (shared training + serving)
+
+> **Cascaded pipeline (URL-CASCADE):** Stage 1 is the fast 29-feature XGBoost model (external-eval FPR 0.32% on held-out benign; see `ml/models/url_eval_report.md`). URLs scoring ≥ 0.60 trigger Stage 2 — Phishpedia visual brand verification (`app/services/phishpedia_engine/`, run on the dedicated `visual-worker` Arq process, Redis TTL cache keyed on registrable domain). Evidence is fused by explicit policy in `app/services/evidence_fusion.py` (SAFE/WARN/REVIEW/BLOCK; no score averaging), and the URL blend applies an ML-confidence floor so a high model probability can never be masked by quiet heuristics.
 
 ### Pipeline
 

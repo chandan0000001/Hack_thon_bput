@@ -68,11 +68,34 @@
     return res.json();
   }
 
-  /** POST /analysis/url -> AlertResponse (risk_score 0-100, severity, indicators). */
+  /**
+   * POST /analysis/url -> AlertResponse (risk_score 0-100, severity, indicators).
+   * source: 'browser_extension' lets the SOC distinguish extension detections
+   * from manual dashboard analysis (same engine, same event schema).
+   */
   async function analyzeUrl(baseUrl, url) {
     return authedFetch(`${baseUrl}/analysis/url`, {
       method: 'POST',
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, source: 'browser_extension' }),
+    });
+  }
+
+  /**
+   * POST /analysis/url/visual — cascaded Stage-1 + Stage-2. Sends the current
+   * tab screenshot (base64/data-URL); Stage 2 (Phishpedia) runs on the backend
+   * worker only when Stage 1 is suspicious. Returns {stage1, stage2, job_id?}.
+   */
+  async function analyzeUrlVisual(baseUrl, url, screenshotDataUrl) {
+    return authedFetch(`${baseUrl}/analysis/url/visual`, {
+      method: 'POST',
+      body: JSON.stringify({ url, screenshot: screenshotDataUrl, source: 'browser_extension' }),
+    });
+  }
+
+  /** GET /analysis/url/visual/{jobId} — poll a queued Stage-2 job. */
+  async function getVisualResult(baseUrl, jobId) {
+    return authedFetch(`${baseUrl}/analysis/url/visual/${encodeURIComponent(jobId)}`, {
+      method: 'GET',
     });
   }
 
@@ -132,6 +155,8 @@
     AuthLostError,
     fetchMe,
     analyzeUrl,
+    analyzeUrlVisual,
+    getVisualResult,
     analyzeEmail,
     analyzeDeepfake,
     analyzeDeepfakeForm,

@@ -60,3 +60,49 @@ def get_recommended_action(score_0_1: float) -> str:
     if score_0_1 < TIER_QUARANTINE_MAX:
         return ACTION_QUARANTINE
     return ACTION_BLOCK
+
+
+# --- URL-DECISION-POLICY: score -> (verdict, action) for the URL engine ------
+# Separates the MODEL SCORE (0-100 + severity) from the SECURITY ACTION taken
+# by consumers (dashboard display, browser extension). The policy is explicit
+# and monotone; thresholds are configuration, not scattered comparisons.
+# Fail-safe note: the browser extension applies this policy but FAILS OPEN on
+# backend unavailability (never blocks because CyberGuard is offline) — the
+# decision is documented in browser-extension/README.md.
+URL_VERDICT_SAFE = "safe"
+URL_VERDICT_SUSPICIOUS = "suspicious"
+URL_VERDICT_MALICIOUS = "malicious"
+
+URL_ACTION_ALLOW = "allow"
+URL_ACTION_WARN = "warn"
+URL_ACTION_BLOCK = "block"
+
+# HIGH severity warns by default and blocks only when the model is confident
+# (ml probability >= URL_BLOCK_CONFIDENCE) — score alone never blocks, the
+# confidence+evidence combination does.
+URL_BLOCK_CONFIDENCE = 0.90
+
+_URL_POLICY = {
+    "safe": (URL_VERDICT_SAFE, URL_ACTION_ALLOW),
+    "low": (URL_VERDICT_SAFE, URL_ACTION_ALLOW),
+    "medium": (URL_VERDICT_SUSPICIOUS, URL_ACTION_WARN),
+    "high": (URL_VERDICT_SUSPICIOUS, URL_ACTION_WARN),
+    "critical": (URL_VERDICT_MALICIOUS, URL_ACTION_BLOCK),
+}
+
+
+def get_url_decision(severity: str, ml_confidence: float | None = None) -> dict:
+    """Map URL severity (+ optional ML confidence) to {verdict, action}.
+
+    LOW/MEDIUM follow the blueprint defaults; HIGH escalates to BLOCK only
+    with high model confidence; CRITICAL always blocks. Unknown severities
+    fail safe to WARN (visible) rather than silently ALLOW.
+    """
+    verdict, action = _URL_POLICY.get(
+        str(severity or "").lower(),
+        (URL_VERDICT_SUSPICIOUS, URL_ACTION_WARN),
+    )
+    if verdict == URL_VERDICT_SUSPICIOUS and severity == "high" \
+            and ml_confidence is not None and ml_confidence >= URL_BLOCK_CONFIDENCE:
+        verdict, action = URL_VERDICT_MALICIOUS, URL_ACTION_BLOCK
+    return {"verdict": verdict, "action": action}

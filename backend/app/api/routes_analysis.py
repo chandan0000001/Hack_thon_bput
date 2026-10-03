@@ -1,6 +1,7 @@
 """Analysis pipeline endpoints using Async SQLAlchemy and OpenRouter XAI."""
 
 import asyncio
+import hashlib
 import uuid
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -40,10 +41,11 @@ from app.services import auth_verifier
 from app.services.deepfake_detector import analyze_media
 from app.services.impersonation_detector import analyze_impersonation_heuristics
 from app.services.domain_intelligence import live_enrich_url
-from app.services.ml_inference import score_with_ml
+from app.services.ml_inference import score_with_ml, url_model_artifact
+from app.queue.client import get_queue
 from app.services.network_threat_detector import analyze_network_heuristics
 from app.services.phishing_detector import analyze_email_heuristics
-from app.services.scoring_service import calculate_score, get_severity
+from app.services.scoring_service import calculate_score, get_severity, get_url_decision
 from app.services.attachment_scanner import AttachmentScanner
 from app.services.se_pattern_engine import (
     ATTACHMENT_REFERENCE_WARNING,
@@ -79,6 +81,14 @@ class UrlAnalysisRequest(BaseModel):
     source: str = Field(default="api", min_length=1)
     url: str = Field(min_length=1)
     target_user: Optional[str] = None
+
+
+class UrlVisualAnalysisRequest(BaseModel):
+    """Cascaded Stage-1 + Stage-2 request (visual brand verification)."""
+
+    url: str = Field(min_length=1)
+    screenshot: str = Field(min_length=1, description="base64 PNG/JPEG (data: URL prefix tolerated)")
+    source: str = Field(default="extension", min_length=1)
 
 
 class ImpersonationAnalysisRequest(BaseModel):
@@ -151,8 +161,10 @@ async def _run_analysis_pipeline(
         raw_data=raw_data,
     )
 
-    # Hybrid engine: heuristic + ML blend
-    _heuristic_score, hybrid_score, _ml_probability = score_with_ml(indicators)
+    # Hybrid engine: heuristic + ML blend. The URL module applies the
+    # confidence-floor policy (blend_scores_url) so a high model probability
+    # cannot be masked by lexically clean URLs.
+    _heuristic_score, hybrid_score, _ml_probability = score_with_ml(indicators, policy=module)
     hybrid_score = max(int(hybrid_score), int(min_score))
     severity = get_severity(hybrid_score)
 
@@ -389,11 +401,28 @@ async def analyze_url(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(require_role(["admin", "analyst"])),
 ) -> Any:
-    """Full malicious URL analysis pipeline for a single URL."""
+    """Full malicious URL analysis pipeline for a single URL.
+
+    Both entry points (web dashboard manual input and browser extension) hit
+    this one endpoint and therefore the same engine. The raw and normalized
+    URL pair is stored as evidence; detection runs on the normalized form.
+    """
+    from app.core.rate_limit import get_url_analysis_limiter
+    from app.core.url_normalization import normalization_pair
+
+    if not get_url_analysis_limiter().allow(tenant.user_id):
+        raise HTTPException(status_code=429, detail="URL analysis rate limit exceeded; slow down")
+
+    normalized = normalization_pair(payload.url)
+    if not normalized["normalized_url"] and not normalized["url"]:
+        raise HTTPException(status_code=422, detail="unparseable url")
+    analysis_url = normalized["normalized_url"] or normalized["url"]
+
     raw_data = payload.model_dump(mode="json")
-    indicators = await asyncio.to_thread(analyze_url_heuristics, payload.url)
+    raw_data.update(normalized)
+    indicators = await asyncio.to_thread(analyze_url_heuristics, analysis_url)
     # Firecrawl live enrichment (optional; additive heuristics-side indicators).
-    indicators = await live_enrich_url(payload.url, indicators)
+    indicators = await live_enrich_url(analysis_url, indicators)
     return await _run_analysis_pipeline(
         db,
         tenant,
@@ -405,6 +434,106 @@ async def analyze_url(
         system_prompt=URL_SYSTEM_PROMPT,
         user_prompt_builder=lambda data, ind, score, sev: format_url_user_prompt(payload.url, ind, score, sev),
     )
+
+
+@router.post("/url/visual")
+async def analyze_url_visual(
+    payload: UrlVisualAnalysisRequest,
+    tenant: TenantContext = Depends(require_role(["admin", "analyst"])),
+) -> Any:
+    """Cascaded URL analysis — Stage 1 inline, Stage 2 (Phishpedia) on the worker.
+
+    Stage 1 (lexical XGBoost + heuristics) runs inline and is returned
+    immediately. When Stage 1 is suspicious, the screenshot is handed to the
+    visual worker (heavy CV stays off the API process); the fused
+    SAFE/WARN/REVIEW/BLOCK verdict is polled via GET /analysis/url/visual/{job_id}.
+    Verdicts are cached in Redis with a TTL keyed on the registrable domain so
+    repeated navigation to the same attacker domain never re-runs vision.
+    """
+    from app.core.url_reputation import get_registrable_domain
+    from app.services.evidence_fusion import stage2_required
+    from app.workers.visual_worker import visual_verdict_cache_key
+
+    from app.core.rate_limit import get_url_analysis_limiter
+
+    if not get_url_analysis_limiter().allow(tenant.user_id):
+        raise HTTPException(status_code=429, detail="URL analysis rate limit exceeded; slow down")
+
+    url = payload.url.strip()
+    # Stage 1 inline (fast path — heuristics + XGBoost, URL confidence floor).
+    indicators = await asyncio.to_thread(analyze_url_heuristics, url)
+    heuristic_score, _hybrid, ml_probability = score_with_ml(indicators, policy="url")
+    stage1_summary = {
+        "heuristic_score": heuristic_score,
+        "hybrid_score": _hybrid,
+        "ml_probability": ml_probability,
+        "severity": get_severity(_hybrid),
+        "model_version": url_model_artifact(),
+        **get_url_decision(get_severity(_hybrid), ml_probability),
+    }
+
+    # Domain-TTL cache: a verdict for this registrable domain already exists.
+    try:
+        queue = await get_queue()
+        import json as _json
+
+        cached_raw = await queue.pool.get(visual_verdict_cache_key(url))
+        if cached_raw:
+            cached = _json.loads(cached_raw)
+            cached["stage1"] = stage1_summary
+            cached["cache"] = "domain_ttl_hit"
+            return cached
+    except Exception:
+        queue = None  # redis unavailable: proceed uncached
+
+    if not stage2_required(ml_probability):
+        return {
+            "url": url,
+            "stage1": stage1_summary,
+            "stage2": None,
+            "fusion": {
+                "decision": "safe" if ml_probability is not None and ml_probability < 0.5 else "warn",
+                "reasons": [f"Stage-1 probability {ml_probability} below visual-verification threshold"],
+            },
+            "cache": None,
+        }
+
+    if queue is None:
+        queue = await get_queue()
+    screenshot_hash = hashlib.sha1(payload.screenshot[:4096].encode("utf-8", "ignore")).hexdigest()[:16]
+    job_id = f"visual_phish:{get_registrable_domain(url)}:{screenshot_hash}"
+    job = await queue.enqueue_job(
+        "visual_phish_check",
+        url,
+        payload.screenshot,
+        _job_id=job_id,
+    )
+    return {
+        "url": url,
+        "stage1": stage1_summary,
+        "stage2": "queued",
+        "job_id": job_id,
+        "poll": f"/analysis/url/visual/{job_id}",
+        "queued": job is not None,
+    }
+
+
+@router.get("/url/visual/{job_id}")
+async def get_url_visual_result(
+    job_id: str,
+    tenant: TenantContext = Depends(require_role(["admin", "analyst"])),
+) -> Any:
+    """Poll a queued Stage-2 visual verification job."""
+    from arq.jobs import Job as ArqJob
+
+    queue = await get_queue()
+    job = ArqJob(job_id, redis=queue.pool)
+    try:
+        result = await job.result(timeout=0.5)
+    except Exception:
+        info = await queue.job_info(job_id)
+        return {"job_id": job_id, "status": "running" if info else "unknown", "result": None}
+    return {"job_id": job_id, "status": "done", "result": result}
 
 
 @router.post("/impersonation", response_model=AlertResponse)

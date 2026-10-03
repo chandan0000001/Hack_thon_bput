@@ -49,7 +49,7 @@ Models are loaded lazily into a **thread-safe in-process cache** on first use an
 | Domain | Active artifacts | Version | Algorithm | Selected by |
 | --- | --- | --- | --- | --- |
 | Email phishing (text) | `email_tfidf_v2.pkl`, `email_phishing_xgb_v2.pkl` | v2 (fallback v1: `email_tfidf.pkl`, `email_phishing_xgb.pkl`) | Multilingual char-n-gram TF-IDF + XGBoost | `email_model_version` |
-| URL phishing | `url_xgb_v3.1.pkl` (also kept: `url_xgb_v3.pkl`, `url_xgb_v2.pkl`, `url_xgb.pkl`) | v3.1 (fallback v3 → v2 → v1) | XGBoost on 19 structural + reputation features | `url_model_version` |
+| URL phishing | `url_xgb_v4.pkl` (also kept: `url_xgb_v3.1.pkl`, `url_xgb_v3.pkl`, `url_xgb_v2.pkl`, `url_xgb.pkl`) | v4 (fallback v3.1 → v2 → v1) | XGBoost on 29 lexical/reputation features (19 frozen v3 + IDN/homoglyph/brand-typo/rank extension) | `url_model_version` |
 | Image deepfake | `deepfake_cnn_v2.pt` | v2 | MobileNetV3-Small transfer learning, 128px | `deepfake_model_version` |
 | Audio anti-spoofing | `audio_cnn_v1.pt` | v1 | LCNN/MFM CNN + handcrafted-statistics fusion | `audio_model_version` |
 | Network anomaly | `network_xgb.pkl`, `network_scaler.pkl` | v1 | XGBoost on scaled KDD99-SF features | Served directly |
@@ -103,6 +103,29 @@ The URL model has the most iterative history: v1/v2 (base features), v3 (real-da
 | 18 | `domain_hyphens` |
 | 19 | `has_suspicious_path_keyword` |
 
+**v4 feature extension (trained and serving).** The 19 columns above are **frozen**: the v3.1 artifact consumes exactly this vector and stays loadable for rollback. `FEATURE_COLUMNS_V4` = the 19 frozen columns + 10 new ones:
+
+| # | Feature | Signal |
+| --- | --- | --- |
+| 20 | `is_idn` | any non-ASCII character in the host |
+| 21 | `is_punycode` | any `xn--` label |
+| 22 | `punycode_label_count` | how many `xn--` labels |
+| 23 | `mixed_script_domain` | host mixes scripts (Latin + Cyrillic/Greek/...) — detected on the *decoded* punycode form |
+| 24 | `homoglyph_confusable` | confusable fold (Cyrillic `а`→`a`, Greek `ο`→`o`, ...) differs from the literal host (`аpple-id.com`) |
+| 25 | `brand_typo_min_distance` | capped Damerau-Levenshtein from the leet-normalized SLD to the nearest of ~39 brand stems |
+| 26 | `brand_typo_exact_leet` | SLD leet-folds exactly onto a brand stem while the registrable domain is not the brand's official domain (`goog1e.com`) |
+| 27 | `brand_in_nonofficial_domain` | brand stem parked in a subdomain or SLD prefix of a non-official domain (`paypal.com.verify-id.tk`) |
+| 28 | `domain_rank_log` | log10 rank from the ordered top-1M file (Tranco-rank stand-in; swap the file in without a schema change) |
+| 29 | `suspicious_tld_extended` | widened suspicious-TLD set (`zip`, `mov`, `cam`, `link`, `sbs`, ...) — the legacy TLD set stays frozen for column 15 |
+
+Brand comparisons run on a homoglyph-folded + leet-normalized form, so Cyrillic `pаypаl.com` scores like `paypal.com` against the stems, while the official-domain whitelist (`paypal.com`, `apple.com`, ...) keeps real brand hosts from flagging themselves. The known false-positive family (benign brand-secondary domains such as `mediumday.com`) is preserved: prefix matches with appended words score distance 3, unlike `paypa1-secure.tk`-style near-misses at distance 6 with `brand_in_nonofficial_domain=1`.
+
+**Leakage-free splits (prepared in `ml/scripts/train_url_v3.py`).** Plain stratified holdouts leak on phishing data (many URLs per attacker domain land on both sides and inflate holdout AUC). The trainer now supports `--split domain|temporal|stratified`:
+
+- **domain** (GroupShuffleSplit) and **domain-grouped 5-fold CV** (`--cv`): no registrable domain spans train/test; the run prints a domain-overlap audit and exits non-zero on leakage. IP hosts group on the raw IP.
+- **temporal**: trains on the past, tests on the future using phishing-feed line order as the first-seen proxy; domain overlap across time is expected and reported, not gated.
+- **stratified** (default): historical behavior, kept only for metric comparability with the v3.1 numbers above.
+
 **Training data (v3)**
 
 | Class | Source |
@@ -120,6 +143,16 @@ The URL model has the most iterative history: v1/v2 (base features), v3 (real-da
 | v3.1 | 109,000 | 0.9985 | 0.9795 | 0.9812 |
 
 The v3.1 hardening trades a marginal F1 decrease (0.9830 → 0.9795) for eliminating a concrete false-positive family — the deliberate trade is recorded in [DECISIONS.md](DECISIONS.md).
+
+**Honest external evaluation (the numbers above are stratified-holdout and inflated by domain leakage).** `ml/scripts/eval_url_models.py` evaluates frozen artifacts on never-trained data — OpenPhish + a fresh Phishing.Database snapshot for phishing, held-out top-1M domains plus hard-benign variants (OAuth/OIDC, login, tracking, CDN, enterprise subdomains) for benign — and reports precision/recall/F1, ROC/PR-AUC, FPR/FNR, confusion matrix, ECE calibration, and per-URL latency. First run (2026-10-03):
+
+| Model | F1 | PR-AUC | FPR (bare benign) | FPR (hard benign) | ECE |
+| --- | --- | --- | --- | --- | --- |
+| v3.1 (stratified claim) | 0.9795 | — | — | — | — |
+| v3.1 (external) | 0.8239 | 0.9328 | **29.2%** | **40.2%** | 0.168 |
+| **v4 (external, now serving)** | **0.9785** | **0.9962** | **0.32%** | **2.44%** | **0.006** |
+
+The v3.1 external false positives are dominated by real multi-hyphen enterprise subdomains (e.g. `workflows-frontend-livechat.corporatetools.com` at p=0.97) — a shape the v3 benign corpus never covered; v4 trains explicit benign examples of it and adds the IDN/brand-typo feature block. Full report: `ml/models/url_eval_report.{json,md}`.
 
 ### 3.3 Image Deepfake Detection
 
@@ -351,8 +384,12 @@ uv run python ml/build_indic_corpus.py
 uv run python ml/train_email_model.py
 
 # 3. URL phishing — v3 or v3.1 (feature extraction + training + metrics)
-uv run python ml/scripts/train_url_v3.py          # v3
+uv run python ml/scripts/train_url_v3.py          # v3 (stratified split, v3 schema)
 uv run python ml/scripts/train_url_v3.py v3.1     # v3.1 (brand-secondary benign augmentation)
+
+# Leakage-free variants (recommended for the next training run):
+uv run python ml/scripts/train_url_v3.py v4 --schema v4 --split domain --cv   # 29-feature schema, domain-grouped holdout + grouped 5-fold CV
+uv run python ml/scripts/train_url_v3.py v4 --schema v4 --split temporal      # train on the past, test on the future
 
 # 4. Image deepfake (GenImage fetch -> messenger degradation -> training)
 uv run python ml/fetch_genimage.py
