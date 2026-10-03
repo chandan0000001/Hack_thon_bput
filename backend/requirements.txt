@@ -25,3 +25,5 @@ pandas
 joblib
 requests
 greenlet
+timm
+huggingface_hub

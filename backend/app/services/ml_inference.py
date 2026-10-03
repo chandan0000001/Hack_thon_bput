@@ -233,6 +233,9 @@ def _load_deepfake_model():
         model.load_state_dict(state_dict)
         model.eval()
         _DEEPFAKE_LOADED_ARTIFACT = artifact
+        logger.info(
+            "deepfake_model_a_loaded artifact=%s model=MobileNetV3-Small", artifact
+        )
         return model
     except Exception as exc:
         logger.warning(
