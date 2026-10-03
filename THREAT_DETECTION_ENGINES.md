@@ -116,6 +116,8 @@ flowchart TB
 
 **Module:** `url` · **Service:** `app/services/url_detector.py` · **ML:** `url_xgb_v3.1.pkl` (served version selected via `calibration.json → url_model_version`) · **Endpoint:** `POST /api/v1/analysis/url` · **Features:** `ml/url_features_v3.py` (shared training + serving)
 
+> **v4 feature extension (prepared, not yet served):** the shared module now also defines `FEATURE_COLUMNS_V4` — the frozen 19 features above plus 10 new columns for IDN/punycode detection, mixed-script + homoglyph confusables, brand typo-squatting distance (leet-normalized, Damerau-Levenshtein against ~39 brand stems), a top-1M rank proxy, and an extended suspicious-TLD set. The deployed v3.1 artifact still consumes the unchanged 19-dim vector; the extension is consumed by the next training run (`train_url_v3.py --schema v4`) with leakage-free domain-grouped and temporal splits (`--split domain|temporal --cv`). Planned downstream: a Stage-2 visual brand-verification engine (Phishpedia) triggered only for URLs the lexical model flags as suspicious.
+
 ### Pipeline
 
 ```mermaid

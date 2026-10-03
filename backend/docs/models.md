@@ -136,7 +136,7 @@ Model artifact selection is governed by `ml/models/calibration.json` (hot-reload
 ### Malicious URL — XGBoost v4 (`url_xgb_v4.pkl`)
 
 - **Algorithm:** XGBoost (`XGBClassifier`, `binary:logistic`, hist tree method), hyperparameters tuned via Optuna TPE (validation ROC-AUC objective; GridSearchCV fallback when Optuna is not installed) over `max_depth`, `learning_rate`, `n_estimators`, `subsample` (+ `colsample_bytree`, `min_child_weight`).
-- **Feature schema:** **unchanged from v3** — the exact 19 features of `ml/url_features_v3.py` (`FEATURE_COLUMNS_V3`), extracted by the same module at training and inference time, so v4 is a drop-in artifact. Serving is selected via `ml/models/calibration.json` → `"url_model_version": "v4"` (loader registered in `URL_V3_ARTIFACTS`, `app/services/ml_inference.py`).
+- **Feature schema:** **unchanged from v3 by default** — the exact 19 features of `ml/url_features_v3.py` (`FEATURE_COLUMNS_V3`), extracted by the same module at training and inference time, so v4 is a drop-in artifact. The module additionally defines an **optional 29-feature extension schema** (`FEATURE_COLUMNS_V4`: IDN/punycode, mixed-script + homoglyph confusables, brand typo-squatting distance, top-1M rank proxy, extended suspicious TLDs) for the retraining run — enable with `ml/scripts/train_url_v3.py v4 --schema v4`; the served 19-dim vector stays bit-identical either way. Serving is selected via `ml/models/calibration.json` → `"url_model_version": "v4"` (loader registered in `URL_V3_ARTIFACTS`, `app/services/ml_inference.py`).
 - **Dataset (real-world, ≥ 100,000 URLs — resolves the v1/v2/v3 small-sample caveat):**
   - Malicious: abuse.ch **URLhaus** bulk feed (recent CSV) + **Phishing.Database** ACTIVE feed (GitHub, ~780k live phishing URLs incl. platform-hosted cases).
   - Benign: **Cisco Umbrella top-1M** whitelist (`ml/data/url_whitelist/top1m.txt` — the same set the runtime reputation service loads) + optional **PhiUSIIL Phishing URL Dataset** (UCI) for hard benign/phishing pairs.
@@ -152,9 +152,9 @@ Model artifact selection is governed by `ml/models/calibration.json` (hot-reload
 | --- | --- | --- |
 | Dataset size | ~100k rows, but benign side partly **synthetic augmentation** (tracking-param + brand-secondary generators); malicious = 50k feed URLs | **100k+ fully real URLs** (URLhaus + Phishing.Database + Umbrella top-1M, optional PhiUSIIL); no synthetic rows |
 | Small-sample caveat | Generalization limited by augmentation-shaped benign distribution — model fit the generator's fingerprints | Real-world benign diversity (top-1M + PhiUSIIL) removes generator overfit; **caveat resolved** |
-| Split | 80/20 stratified on label only | 80/10/10 stratified on **(label, source)** — test holds out infrastructure unseen from every source |
+| Split | 80/20 stratified on label only | 80/10/10 stratified on **(label, source)** — test holds out infrastructure unseen from every source; `train_url_v3.py` additionally offers **domain-grouped** (`--split domain`, zero registrable-domain overlap across the holdout, enforced by a leakage audit) and **temporal** (`--split temporal`, train on the past / test on the future via feed order) splits |
 | Imbalance handling | `scale_pos_weight` (same) | `scale_pos_weight` (same principle, computed per-split) + documented SMOTE rejection rationale |
 | Hyperparameters | Fixed (`300 × depth-6, lr 0.05`) | Tuned via Optuna TPE on validation ROC-AUC (GridSearchCV fallback) |
-| Features | 19 (`FEATURE_COLUMNS_V3`) | **19 — unchanged (feature lock)** |
+| Features | 19 (`FEATURE_COLUMNS_V3`) | 19 by default (feature lock); optionally **29** via `--schema v4` (`FEATURE_COLUMNS_V4` — IDN/homoglyph/brand-typo/rank extension, prepared in `ml/url_features_v3.py`) |
 | Artifact | `url_xgb_v3.pkl` / `url_xgb_v3.1.pkl` | `url_xgb_v4.pkl` (same joblib XGBClassifier `predict_proba` interface) |
 | Regression gate | Medium/PayPal-benign vs lookalike/IP-phish gate | Same gate retained in `train_url_v4.py` — v4 must keep benign marketing URLs benign |
