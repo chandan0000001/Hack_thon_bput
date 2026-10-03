@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Navigation Blocked — CyberGuard</title>
+    <link rel="stylesheet" href="theme.css" />
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0a0d12;
+        color: #e2e8f0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        padding: 24px;
+      }
+      .interstitial-card {
+        max-width: 620px;
+        width: 100%;
+        background: #111722;
+        border: 1px solid #3b1818;
+        border-radius: 14px;
+        padding: 36px 32px;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(220, 38, 38, 0.15);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+      }
+      .shield-icon {
+        width: 64px;
+        height: 64px;
+        margin-bottom: 20px;
+        color: #ef4444;
+      }
+      h1 {
+        font-size: 26px;
+        font-weight: 700;
+        color: #fca5a5;
+        margin-bottom: 14px;
+        letter-spacing: -0.02em;
+      }
+      .target-url {
+        font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+        font-size: 13px;
+        background: #0b0f17;
+        border: 1px solid #1f293d;
+        color: #cbd5e1;
+        padding: 10px 14px;
+        border-radius: 8px;
+        word-break: break-all;
+        margin-bottom: 20px;
+        width: 100%;
+        text-align: left;
+      }
+      .meta-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        margin-bottom: 18px;
+        width: 100%;
+      }
+      .severity-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 12px;
+        border-radius: 9999px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        background: rgba(239, 68, 68, 0.2);
+        color: #ef4444;
+        border: 1px solid rgba(239, 68, 68, 0.4);
+      }
+      .score-display {
+        font-size: 15px;
+        color: #94a3b8;
+      }
+      .score-display strong {
+        color: #ef4444;
+        font-size: 18px;
+      }
+      .reason-line {
+        font-size: 14px;
+        line-height: 1.5;
+        color: #f87171;
+        background: rgba(239, 68, 68, 0.08);
+        border: 1px solid rgba(239, 68, 68, 0.2);
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin-bottom: 20px;
+        width: 100%;
+        text-align: left;
+      }
+      .indicators-wrap {
+        width: 100%;
+        text-align: left;
+        margin-bottom: 26px;
+      }
+      .indicators-wrap h2 {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b;
+        margin-bottom: 8px;
+      }
+      .indicators-list {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .indicators-list li {
+        font-size: 13px;
+        color: #cbd5e1;
+        background: #0d121c;
+        border: 1px solid #1e2638;
+        border-radius: 6px;
+        padding: 8px 12px;
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
+      .indicators-list li::before {
+        content: '•';
+        color: #ef4444;
+        font-weight: bold;
+      }
+      .actions {
+        display: flex;
+        gap: 12px;
+        width: 100%;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+      button.btn {
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 10px 22px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background-color 0.15s ease, border-color 0.15s ease;
+        border: 1px solid transparent;
+      }
+      button.btn-primary {
+        background: #2563eb;
+        color: #ffffff;
+        border-color: #2563eb;
+      }
+      button.btn-primary:hover {
+        background: #1d4ed8;
+      }
+      button.btn-outline {
+        background: transparent;
+        color: #94a3b8;
+        border-color: #334155;
+      }
+      button.btn-outline:hover {
+        background: rgba(255, 255, 255, 0.05);
+        color: #e2e8f0;
+      }
+      .footer-note {
+        margin-top: 24px;
+        font-size: 12px;
+        color: #64748b;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="interstitial-card" role="alert">
+      <!-- Big red shield -->
+      <svg class="shield-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="rgba(239, 68, 68, 0.15)" />
+        <path d="m9 12 2 2 4-4" stroke="#ffffff" stroke-width="2" />
+      </svg>
+
+      <h1>Navigation blocked</h1>
+
+      <!-- target URL (mono) -->
+      <div class="target-url" id="cg-target-url">—</div>
+
+      <!-- severity badge & risk score /100 -->
+      <div class="meta-row">
+        <span class="severity-badge" id="cg-severity">BLOCK</span>
+        <span class="score-display">Risk Score: <strong id="cg-score">—</strong>/100</span>
+      </div>
+
+      <!-- one-line reason -->
+      <div class="reason-line" id="cg-reason">Threat detected. Navigation was automatically prevented.</div>
+
+      <!-- top 3 indicators -->
+      <div class="indicators-wrap" id="cg-indicators-wrap">
+        <h2>Top Threat Indicators</h2>
+        <ul class="indicators-list" id="cg-indicators"></ul>
+      </div>
+
+      <!-- Buttons -->
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="btn-back">Go back</button>
+        <button type="button" class="btn btn-outline" id="btn-continue">Continue anyway</button>
+      </div>
+
+      <!-- Footer note -->
+      <p class="footer-note">You can disable auto-block in extension settings.</p>
+    </main>
+
+    <script src="blocked.js"></script>
+  </body>
+</html>

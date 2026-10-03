@@ -414,5 +414,44 @@
     }
   }
 
-  boot().then(applyPrefill);
+  async function initSettings() {
+    const autoblockEl = document.getElementById('toggle-autoblock');
+    const pauseDetectionEl = document.getElementById('toggle-pause-detection');
+    if (!autoblockEl || !pauseDetectionEl) return;
+
+    try {
+      const stored = await api.storage.local.get({
+        autoBlockNavigation: true,
+        pause_detection: false,
+      });
+      autoblockEl.checked = stored.autoBlockNavigation !== false;
+      pauseDetectionEl.checked = Boolean(stored.pause_detection);
+    } catch (e) {}
+
+    autoblockEl.addEventListener('change', async () => {
+      try {
+        await api.storage.local.set({ autoBlockNavigation: autoblockEl.checked });
+      } catch (e) {}
+    });
+
+    pauseDetectionEl.addEventListener('change', async () => {
+      try {
+        await api.storage.local.set({ pause_detection: pauseDetectionEl.checked });
+        try {
+          const tabs = await api.raw.tabs.query({ active: true, currentWindow: true });
+          if (tabs && tabs[0] && tabs[0].id) {
+            api.raw.tabs.sendMessage(tabs[0].id, {
+              type: 'SET_LOCK_STATE',
+              locked: pauseDetectionEl.checked,
+            }, () => {});
+          }
+        } catch (e) {}
+      } catch (e) {}
+    });
+  }
+
+  boot().then(async () => {
+    await initSettings();
+    await applyPrefill();
+  });
 })();

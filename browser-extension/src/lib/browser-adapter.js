@@ -79,6 +79,12 @@
             onAlarm: raw.alarms.onAlarm,
           }
         : null,
+      webNavigation: raw.webNavigation
+        ? {
+            onBeforeNavigate: raw.webNavigation.onBeforeNavigate,
+            onCompleted: raw.webNavigation.onCompleted,
+          }
+        : null,
     };
   }
 
