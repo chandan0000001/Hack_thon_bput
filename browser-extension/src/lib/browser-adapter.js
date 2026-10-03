@@ -55,6 +55,7 @@
         create: (options) => callbackToPromise(raw.tabs.create.bind(raw.tabs), [options]),
         remove: (tabId) => callbackToPromise(raw.tabs.remove.bind(raw.tabs), [tabId]),
         get: (tabId) => callbackToPromise(raw.tabs.get.bind(raw.tabs), [tabId]),
+        update: (tabId, options) => callbackToPromise(raw.tabs.update.bind(raw.tabs), [tabId, options]),
         // MV3 service worker: register the listener directly (like onMessage) —
         // wrapping onUpdated in a promise makes no sense for an event stream.
         onUpdated: raw.tabs && raw.tabs.onUpdated ? raw.tabs.onUpdated : null,

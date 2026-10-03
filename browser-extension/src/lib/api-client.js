@@ -68,11 +68,15 @@
     return res.json();
   }
 
-  /** POST /analysis/url -> AlertResponse (risk_score 0-100, severity, indicators). */
+  /**
+   * POST /analysis/url -> AlertResponse (risk_score 0-100, severity, indicators).
+   * source: 'browser_extension' lets the SOC distinguish extension detections
+   * from manual dashboard analysis (same engine, same event schema).
+   */
   async function analyzeUrl(baseUrl, url) {
     return authedFetch(`${baseUrl}/analysis/url`, {
       method: 'POST',
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, source: 'browser_extension' }),
     });
   }
 
@@ -84,7 +88,7 @@
   async function analyzeUrlVisual(baseUrl, url, screenshotDataUrl) {
     return authedFetch(`${baseUrl}/analysis/url/visual`, {
       method: 'POST',
-      body: JSON.stringify({ url, screenshot: screenshotDataUrl }),
+      body: JSON.stringify({ url, screenshot: screenshotDataUrl, source: 'browser_extension' }),
     });
   }
 

@@ -1,0 +1,77 @@
+<!doctype html>
+<!--
+  CyberGuard extension — warning/block page (URL-CASCADE).
+  Opened by the background worker ONLY when the user enables
+  { block_critical: true } and the fused verdict for the current tab is
+  BLOCK. Deliberately NOT a deceptive imitation of browser/system security
+  pages: it names CyberGuard, shows the raw evidence, and always offers a
+  one-click way through (the user, not the extension, owns the risk).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CyberGuard — Website Blocked</title>
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100vh; display: flex; align-items: center;
+        justify-content: center; font-family: system-ui, -apple-system, sans-serif;
+        background: #101418; color: #e8eaed;
+      }
+      .card {
+        max-width: 640px; width: 92%; background: #1b2027;
+        border: 1px solid #3a1d1d; border-radius: 12px; padding: 32px;
+        box-shadow: 0 12px 40px rgba(0,0,0,.5);
+      }
+      .brand { display: flex; align-items: center; gap: 10px; font-size: 13px;
+        letter-spacing: .12em; text-transform: uppercase; color: #9aa4b2; }
+      .brand .dot { width: 10px; height: 10px; border-radius: 50%; background: #dc2626; }
+      h1 { font-size: 22px; margin: 18px 0 6px; color: #f87171; }
+      .sub { color: #9aa4b2; margin: 0 0 22px; font-size: 14px; }
+      .meta { background: #10151b; border: 1px solid #2a313b; border-radius: 8px;
+        padding: 14px 16px; font-size: 14px; margin-bottom: 18px; word-break: break-all; }
+      .meta b { color: #e8eaed; }
+      .score { font-size: 28px; font-weight: 700; color: #f87171; }
+      ul { margin: 0 0 22px; padding-left: 20px; font-size: 14px; color: #c3cad4; }
+      ul li { margin: 6px 0; }
+      .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+      button, a.btn {
+        font: inherit; padding: 10px 18px; border-radius: 8px; cursor: pointer;
+        border: 1px solid #3a4250; background: #262d37; color: #e8eaed;
+        text-decoration: none; display: inline-block;
+      }
+      button.primary { background: #dc2626; border-color: #dc2626; color: #fff; }
+      .foot { margin-top: 22px; font-size: 12px; color: #6b7280; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="brand"><span class="dot"></span> CyberGuard SOC — Extension</div>
+      <h1>Blocked: likely phishing website</h1>
+      <p class="sub">
+        The CyberGuard browser extension blocked navigation because the page's
+        combined evidence matched the BLOCK policy.
+      </p>
+      <div class="meta">
+        <div><b>Domain:</b> <span id="cg-host">—</span></div>
+        <div><b>Risk score:</b> <span class="score" id="cg-score">—</span>/100</div>
+        <div><b>Risk level:</b> <span id="cg-severity">—</span></div>
+      </div>
+      <div><b style="font-size:14px">Reasons:</b></div>
+      <ul id="cg-reasons"></ul>
+      <div class="actions">
+        <button class="primary" id="cg-back">Go Back</button>
+        <a class="btn" id="cg-details" href="#" title="Open the CyberGuard dashboard analysis">View Details</a>
+        <a class="btn" id="cg-proceed" href="#">Proceed anyway (I accept the risk)</a>
+      </div>
+      <p class="foot">
+        Page served by the CyberGuard extension — not by your browser or OS.
+        If you believe this is a false positive, report it in the CyberGuard
+        dashboard and proceed only if you trust the site.
+      </p>
+    </main>
+    <script src="blocked.js"></script>
+  </body>
+</html>

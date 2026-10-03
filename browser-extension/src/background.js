@@ -346,6 +346,19 @@ async function captureVisible(tabId) {
   });
 }
 
+// Block page: opened ONLY when the user opts in via
+// { block_critical: true } (default false — fail-open by design; CyberGuard
+// being wrong or offline must not brick browsing) AND the fused Stage-2
+// verdict is BLOCK. See blocked/blocked.html for the evidence shown.
+async function blockCriticalVerdictEnabled() {
+  try {
+    const stored = await api.storage.local.get({ block_critical: false });
+    return stored.block_critical === true;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function maybeRunStageTwo(tabId, url, verdict) {
   const sev = String((verdict && verdict.severity) || '').toLowerCase();
   if (sev !== 'high' && sev !== 'critical') return;
@@ -366,17 +379,31 @@ async function maybeRunStageTwo(tabId, url, verdict) {
       }
     }
     if (fused && fused.fusion) {
+      const fusedDecision = fused.fusion.decision;
       await storeTabVerdict(tabId, {
         url: normalizeCacheKey(url),
-        severity: fused.fusion.decision === 'block' ? 'critical' : verdict.severity,
+        severity: fusedDecision === 'block' ? 'critical' : verdict.severity,
         risk_score: fused.fusion.risk_score ?? verdict.risk_score,
         stage2: {
-          decision: fused.fusion.decision,
+          decision: fusedDecision,
           brand: (fused.stage2 && fused.stage2.brand_detected) || null,
           reasons: (fused.fusion && fused.fusion.reasons) || [],
         },
       });
-      if (fused.fusion.decision === 'block') await setTabBadge(tabId, { severity: 'critical' });
+      if (fusedDecision === 'block') {
+        await setTabBadge(tabId, { severity: 'critical' });
+        if (await blockCriticalVerdictEnabled()) {
+          const reasons = (fused.fusion.reasons || []).map(String);
+          const getURL = api.raw.runtime && api.raw.runtime.getURL
+            ? api.raw.runtime.getURL('blocked/blocked.html') : 'blocked/blocked.html';
+          const blockedPage = `${getURL}?url=${encodeURIComponent(url)}`
+            + `&score=${encodeURIComponent(fused.fusion.risk_score ?? '')}`
+            + `&severity=${encodeURIComponent('critical')}`
+            + `&reasons=${encodeURIComponent(JSON.stringify(reasons))}`
+            + `&apiBase=${encodeURIComponent(CFG.API_BASE_URL)}`;
+          try { await api.tabs.update(tabId, { url: blockedPage }); } catch (e) { /* tab gone */ }
+        }
+      }
     }
   } catch (e) {
     // Stage 2 is additive evidence; failures never break browsing.

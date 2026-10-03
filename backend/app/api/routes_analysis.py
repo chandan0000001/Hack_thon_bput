@@ -41,11 +41,11 @@ from app.services import auth_verifier
 from app.services.deepfake_detector import analyze_media
 from app.services.impersonation_detector import analyze_impersonation_heuristics
 from app.services.domain_intelligence import live_enrich_url
-from app.services.ml_inference import score_with_ml
+from app.services.ml_inference import score_with_ml, url_model_artifact
 from app.queue.client import get_queue
 from app.services.network_threat_detector import analyze_network_heuristics
 from app.services.phishing_detector import analyze_email_heuristics
-from app.services.scoring_service import calculate_score, get_severity
+from app.services.scoring_service import calculate_score, get_severity, get_url_decision
 from app.services.attachment_scanner import AttachmentScanner
 from app.services.se_pattern_engine import (
     ATTACHMENT_REFERENCE_WARNING,
@@ -401,11 +401,28 @@ async def analyze_url(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(require_role(["admin", "analyst"])),
 ) -> Any:
-    """Full malicious URL analysis pipeline for a single URL."""
+    """Full malicious URL analysis pipeline for a single URL.
+
+    Both entry points (web dashboard manual input and browser extension) hit
+    this one endpoint and therefore the same engine. The raw and normalized
+    URL pair is stored as evidence; detection runs on the normalized form.
+    """
+    from app.core.rate_limit import get_url_analysis_limiter
+    from app.core.url_normalization import normalization_pair
+
+    if not get_url_analysis_limiter().allow(tenant.user_id):
+        raise HTTPException(status_code=429, detail="URL analysis rate limit exceeded; slow down")
+
+    normalized = normalization_pair(payload.url)
+    if not normalized["normalized_url"] and not normalized["url"]:
+        raise HTTPException(status_code=422, detail="unparseable url")
+    analysis_url = normalized["normalized_url"] or normalized["url"]
+
     raw_data = payload.model_dump(mode="json")
-    indicators = await asyncio.to_thread(analyze_url_heuristics, payload.url)
+    raw_data.update(normalized)
+    indicators = await asyncio.to_thread(analyze_url_heuristics, analysis_url)
     # Firecrawl live enrichment (optional; additive heuristics-side indicators).
-    indicators = await live_enrich_url(payload.url, indicators)
+    indicators = await live_enrich_url(analysis_url, indicators)
     return await _run_analysis_pipeline(
         db,
         tenant,
@@ -437,6 +454,11 @@ async def analyze_url_visual(
     from app.services.evidence_fusion import stage2_required
     from app.workers.visual_worker import visual_verdict_cache_key
 
+    from app.core.rate_limit import get_url_analysis_limiter
+
+    if not get_url_analysis_limiter().allow(tenant.user_id):
+        raise HTTPException(status_code=429, detail="URL analysis rate limit exceeded; slow down")
+
     url = payload.url.strip()
     # Stage 1 inline (fast path — heuristics + XGBoost, URL confidence floor).
     indicators = await asyncio.to_thread(analyze_url_heuristics, url)
@@ -446,6 +468,8 @@ async def analyze_url_visual(
         "hybrid_score": _hybrid,
         "ml_probability": ml_probability,
         "severity": get_severity(_hybrid),
+        "model_version": url_model_artifact(),
+        **get_url_decision(get_severity(_hybrid), ml_probability),
     }
 
     # Domain-TTL cache: a verdict for this registrable domain already exists.

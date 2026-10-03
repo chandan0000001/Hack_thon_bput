@@ -76,3 +76,48 @@ def get_rate_limiter() -> TokenBucketRateLimiter:
     if _default_rate_limiter is None:
         _default_rate_limiter = TokenBucketRateLimiter()
     return _default_rate_limiter
+
+
+class PerUserHTTPRateLimiter:
+    """Token bucket for HTTP endpoints, keyed by authenticated principal id.
+
+    Unlike the Gmail job limiter (which defers), this one answers a boolean:
+    the API layer converts a miss into HTTP 429. In-memory by design — it
+    guards a single API process; a multi-replica deploy should front it with
+    a shared limiter (Redis) and keep this as per-replica backstop.
+    """
+
+    def __init__(self, rate_per_minute: float = 60.0, burst: int = 15):
+        self.capacity = float(max(burst, 1))
+        self.refill_rate = float(rate_per_minute) / 60.0
+        self._buckets: dict[str, list[float]] = {}
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            self._buckets[key] = [self.capacity - 1.0, now]
+            return True
+        tokens, last = bucket
+        tokens = min(self.capacity, tokens + (now - last) * self.refill_rate)
+        if tokens >= 1.0:
+            self._buckets[key] = [tokens - 1.0, now]
+            return True
+        self._buckets[key] = [tokens, now]
+        return False
+
+
+# Expensive analysis endpoints (URL engine: heuristics + enrichment + ML).
+URL_ANALYSIS_RATE_PER_MINUTE = 60
+URL_ANALYSIS_BURST = 15
+
+_url_analysis_limiter: Optional[PerUserHTTPRateLimiter] = None
+
+
+def get_url_analysis_limiter() -> PerUserHTTPRateLimiter:
+    global _url_analysis_limiter
+    if _url_analysis_limiter is None:
+        _url_analysis_limiter = PerUserHTTPRateLimiter(
+            rate_per_minute=URL_ANALYSIS_RATE_PER_MINUTE, burst=URL_ANALYSIS_BURST
+        )
+    return _url_analysis_limiter
