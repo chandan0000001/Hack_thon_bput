@@ -652,7 +652,7 @@ preserves the forensic chain required by SOC 2 / ISO 27001-style audit review.
 ## 2026-09-27 · Single-repo rule (EXT-REPO-FIX)
 
 **Decision:** All components live inside `Hack_thon_bput` (`backend/`,
-`frontend/`, `demo-server-project/`, `browser-extension/`). Creating sibling
+`frontend/`, `browser-extension/`). Creating sibling
 copies of the repository is forbidden; agents work only in the main repo path.
 
 **Rationale:** During EXT-P1 a `git worktree` checkout
