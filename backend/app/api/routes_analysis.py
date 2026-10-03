@@ -1,12 +1,14 @@
 """Analysis pipeline endpoints using Async SQLAlchemy and OpenRouter XAI."""
 
 import asyncio
+import difflib
 import hashlib
 import uuid
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Header, UploadFile, status
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 from app.ai.openrouter_client import call_openrouter
@@ -24,15 +26,21 @@ from app.ai.prompt_templates import (
     format_phishing_user_prompt,
     format_url_user_prompt,
 )
-from app.core.errors import NotFoundError, ValidationError
-from app.core.security import TenantContext, require_role, tenant_criteria
+from app.core.errors import NotFoundError, PermissionDeniedError, UnauthorizedError, ValidationError
+from app.core.security import (
+    TenantContext,
+    get_current_user,
+    get_tenant_context,
+    require_role,
+    tenant_criteria,
+)
 from app.core.storage import (
     MAX_MEDIA_SIZE_BYTES,
     download_media,
     upload_media_to_supabase,
 )
-from app.db.models import Event, MediaFile
-from app.db.session import get_db
+from app.db.models import Event, MediaFile, OrgOrganization, OrgProject, VerifiedIdentity
+from app.db.session import get_db, set_session_user
 from app.schemas.alerts import AlertResponse
 from app.services.account_takeover_detector import analyze_auth_log_heuristics
 from app.services.alert_service import create_alert
@@ -818,4 +826,425 @@ async def analyze_media_event(
             }
             for action in alert.recommended_actions
         ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# SCENARIO-2: Organization-scoped identity-fraud analysis
+#
+# Authentication accepts a Supabase JWT *or* an organization API key
+# (cg_org_...). In both cases the organization/project scope is resolved
+# SERVER-SIDE from the credential (tenant context / org_api_keys row) — the
+# endpoints never accept an organization_id from the client, so one tenant
+# cannot read, seed, or analyze against another tenant's verified identities.
+# ---------------------------------------------------------------------------
+
+
+class VerifiedIdentityCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    role_title: Optional[str] = Field(default=None, max_length=120)
+    email: Optional[str] = Field(default=None, max_length=255)
+    username: Optional[str] = Field(default=None, max_length=64)
+
+
+def _identity_risk_tier(score: int) -> str:
+    if score >= 70:
+        return "high"
+    if score >= 40:
+        return "medium"
+    return "low"
+
+
+def _text_similarity(a: Optional[str], b: Optional[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio()
+
+
+def _email_domain(email: Optional[str]) -> str:
+    if not email or "@" not in email:
+        return ""
+    return email.rsplit("@", 1)[1].strip().lower()
+
+
+async def require_identity_fraud_auth(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: AsyncSession = Depends(get_db),
+) -> TenantContext:
+    """Resolve the tenant from a Supabase JWT or an org API key.
+
+    Org API keys are validated through the same security-definer function the
+    public project gateway uses (cyberguard.validate_org_api_key); the
+    resulting organization_id / project_id come from the key row itself.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise UnauthorizedError("Missing bearer credentials")
+
+    token = authorization[7:].strip()
+    if not token:
+        raise UnauthorizedError("Empty bearer token")
+
+    # Path A: organization API key (cg_org_...).
+    if token.startswith("cg_org_"):
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        res = await db.execute(
+            text(
+                "SELECT key_id, project_id, organization_id, role, owner_user_id, status "
+                "FROM cyberguard.validate_org_api_key(:h)"
+            ),
+            {"h": token_hash},
+        )
+        key_row = res.mappings().first()
+        if not key_row or key_row["status"] != "active":
+            raise UnauthorizedError("Invalid or inactive API key")
+        if key_row["role"] == "viewer":
+            raise PermissionDeniedError("Viewer keys cannot perform identity-fraud actions")
+
+        # Stamp the RLS identity before any tenant-scoped query runs.
+        await set_session_user(db, str(key_row["owner_user_id"]))
+        try:
+            await db.execute(
+                text("UPDATE cyberguard.org_api_keys SET last_used_at = now() WHERE id = :kid"),
+                {"kid": str(key_row["key_id"])},
+            )
+            await db.commit()
+        except Exception:  # noqa: BLE001 - usage stamping must never fail auth
+            await db.rollback()
+
+        organization = (
+            await db.execute(
+                select(OrgOrganization).where(OrgOrganization.id == str(key_row["organization_id"]))
+            )
+        ).scalar_one_or_none()
+        project = (
+            await db.execute(select(OrgProject).where(OrgProject.id == str(key_row["project_id"])))
+        ).scalar_one_or_none()
+
+        return TenantContext(
+            user_id=str(key_row["owner_user_id"]),
+            owner_user_id=str(key_row["owner_user_id"]),
+            organization_id=str(key_row["organization_id"]),
+            organization_name=organization.name if organization else "Organization",
+            role="admin" if key_row["role"] == "master" else str(key_row["role"]),
+            is_single_user=False,
+            project_id=str(key_row["project_id"]) if key_row["project_id"] else None,
+        )
+
+    # Path B: Supabase JWT through the standard tenant resolution.
+    try:
+        user = await get_current_user(
+            credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token),
+            db=db,
+        )
+    except UnauthorizedError:
+        raise
+    tenant = await get_tenant_context(user=user, db=db)
+    if tenant.role not in ("admin", "analyst"):
+        raise PermissionDeniedError("Role does not have permission for identity-fraud analysis")
+    if tenant.organization_id is None:
+        # The feature is org-scoped by design: verified identities and fraud
+        # analysis must never fall back to a personal workspace.
+        raise PermissionDeniedError("Identity-fraud analysis requires an organization context")
+    return tenant
+
+
+def _verified_identity_payload(row: VerifiedIdentity) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "role_title": row.role_title,
+        "email": row.email,
+        "username": row.username,
+    }
+
+
+@router.post("/identity-fraud/verified", status_code=status.HTTP_201_CREATED)
+async def create_verified_identity(
+    payload: VerifiedIdentityCreate,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(require_identity_fraud_auth),
+) -> dict:
+    """Seed a trusted identity scoped to the authenticated organization."""
+    row = VerifiedIdentity(
+        id=str(uuid.uuid4()),
+        organization_id=tenant.organization_id or "",
+        project_id=tenant.project_id,        owner_user_id=tenant.owner_user_id or None,
+        name=payload.name.strip(),
+        role_title=(payload.role_title or "").strip() or None,
+        email=(payload.email or "").strip().lower() or None,
+        username=(payload.username or "").strip().lower() or None,
+        created_by=tenant.user_id,
+    )
+    db.add(row)
+    await db.commit()
+    result = _verified_identity_payload(row)
+    result["organization_id"] = str(row.organization_id)
+    return result
+
+
+@router.get("/identity-fraud/verified")
+async def list_verified_identities(
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(require_identity_fraud_auth),
+) -> dict:
+    """List the authenticated organization's verified identities."""
+    query = select(VerifiedIdentity).where(tenant_criteria(VerifiedIdentity, tenant))
+    rows = (await db.execute(query)).scalars().all()
+    return {"identities": [_verified_identity_payload(r) for r in rows], "count": len(rows)}
+
+
+@router.post("/identity-fraud")
+async def analyze_identity_fraud(
+    claimed_name: str = Form(...),
+    claimed_email: str = Form(...),
+    claimed_username: str = Form(default=""),
+    message: str = Form(default=""),
+    media: Optional[UploadFile] = File(default=None),
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(require_identity_fraud_auth),
+) -> dict:
+    """Identity-fraud analysis for a claimed contact/profile.
+
+    Compares the claimed attributes against the organization's verified
+    identities (server-side tenant scope), runs deepfake forensics on the
+    optional profile media, and persists an Event + Alert under the tenant.
+    """
+    # 1. Tenant-scoped verified-identity roster.
+    roster_query = select(VerifiedIdentity).where(tenant_criteria(VerifiedIdentity, tenant))
+    roster = (await db.execute(roster_query)).scalars().all()
+
+    best: Optional[VerifiedIdentity] = None
+    best_score = 0.0
+    for row in roster:
+        candidate = max(
+            _text_similarity(claimed_name, row.name),
+            _text_similarity(claimed_email, row.email),
+            _text_similarity(claimed_username, row.username),
+        )
+        if candidate > best_score:
+            best, best_score = row, candidate
+
+    evidence: list[dict[str, Any]] = []
+    indicators: list[dict[str, Any]] = []
+    imp_score = 0
+
+    # 2. Impersonation evidence.
+    if best is not None and best_score > 0.4:
+        domain_ok = bool(_email_domain(claimed_email)) and (
+            _email_domain(claimed_email) == _email_domain(best.email)
+        )
+        if not domain_ok:
+            imp_score += 45
+            evidence.append({
+                "status": "danger",
+                "text": (
+                    "Profile identity does not match the verified identity "
+                    f"(Domain Mismatch: {_email_domain(claimed_email) or 'unknown'} "
+                    f"vs {_email_domain(best.email) or 'unknown'})"
+                ),
+            })
+            indicators.append({
+                "type": "identity_domain_mismatch",
+                "severity": "high",
+                "description": (
+                    f"Claimed email domain {_email_domain(claimed_email)!r} does not match "
+                    f"verified domain {_email_domain(best.email)!r}"
+                ),
+                "source": "identity_fraud",
+            })
+        else:
+            evidence.append({"status": "pass", "text": "Email domain matches the verified identity"})
+
+        name_sim = _text_similarity(claimed_name, best.name)
+        if name_sim > 0.8 and claimed_name.strip().lower() != (best.name or "").strip().lower():
+            imp_score += 20
+            evidence.append({
+                "status": "danger",
+                "text": (
+                    f"Claimed name '{claimed_name}' closely mimics the verified "
+                    f"identity '{best.name}'"
+                ),
+            })
+            indicators.append({
+                "type": "identity_name_mimicry",
+                "severity": "medium",
+                "description": f"Claimed name similarity {name_sim:.2f} vs verified '{best.name}'",
+                "source": "identity_fraud",
+            })
+        elif name_sim > 0.8:
+            evidence.append({"status": "pass", "text": "Name matches the verified identity"})
+
+        username_sim = _text_similarity(claimed_username, best.username)
+        if best.username and claimed_username and username_sim > 0.75:
+            imp_score += 15
+            evidence.append({
+                "status": "danger",
+                "text": (
+                    "Username shows strong similarity to the genuine account "
+                    f"({best.username})"
+                ),
+            })
+            indicators.append({
+                "type": "identity_username_mimicry",
+                "severity": "medium",
+                "description": f"Claimed username similarity {username_sim:.2f} vs '{best.username}'",
+                "source": "identity_fraud",
+            })
+    else:
+        imp_score += 25
+        evidence.append({
+            "status": "warn",
+            "text": (
+                "No verified identity baseline matches this claim in the organization; "
+                "authenticity could not be corroborated"
+            ),
+        })
+
+    # 3. Message content: impersonation heuristics + social-engineering patterns.
+    message_score = 0
+    if message:
+        message_indicators = await asyncio.to_thread(
+            analyze_impersonation_heuristics, message=message, claimed_identity=claimed_name
+        )
+        try:
+            se_result = await asyncio.to_thread(SEPatternEngine().analyze, message, "")
+            message_indicators.extend(
+                {**i, "source": "se_patterns"} for i in se_result.get("indicators") or []
+            )
+        except Exception as exc:  # noqa: BLE001 - SE engine is additive
+            logger.warning("Identity-fraud SE analysis failed: %s", exc)
+        message_score = min(100, calculate_score(message_indicators))
+        imp_score = min(100, imp_score + round(message_score * 0.4))
+        indicators.extend(message_indicators)
+        if message_score >= 40:
+            evidence.append({
+                "status": "danger",
+                "text": "Message contains urgency and financial-request indicators",
+            })
+        elif message_score > 0:
+            evidence.append({
+                "status": "warn",
+                "text": "Message contains weak social-engineering patterns",
+            })
+
+    imp_score = min(100, imp_score)
+
+    # 4. Media forensics (deepfake pipeline).
+    media_analysis: Optional[dict[str, Any]] = None
+    df_score = 0
+    if media is not None and media.filename:
+        content_type = media.content_type or ""
+        if not content_type.startswith(ANALYSIS_MEDIA_CONTENT_TYPE_PREFIXES):
+            raise ValidationError("Profile media must be an image, video, or audio upload")
+        file_bytes = await media.read()
+        media_analysis = await asyncio.to_thread(
+            analyze_media, file_bytes, media.filename, content_type
+        )
+        df_score = int(media_analysis.get("risk_score") or 0)
+        if df_score >= 40:
+            evidence.append({
+                "status": "danger",
+                "text": "Profile image similarity/manipulation detected",
+            })
+        else:
+            evidence.append({
+                "status": "pass",
+                "text": "Profile media forensics found no manipulation signals",
+            })
+        indicators.extend(media_analysis.get("indicators") or [])
+
+    overall = max(imp_score, df_score)
+    overall_tier = _identity_risk_tier(overall)
+    severity = get_severity(overall)
+
+    verdict = (
+        "identity_fraud_detected"
+        if overall_tier == "high" and (imp_score >= 70 or df_score >= 70)
+        else ("suspicious" if overall_tier != "low" else "no_fraud_detected")
+    )
+
+    if overall_tier == "high":
+        recommended = [
+            "Do not trust the request.",
+            "Verify the person's identity through an independent channel.",
+            "Report/escalate the suspicious account.",
+        ]
+    elif overall_tier == "medium":
+        recommended = [
+            "Treat the request as unverified.",
+            "Confirm the sender's identity through a known contact channel before acting.",
+            "Report the attempt to the security team.",
+        ]
+    else:
+        recommended = ["No immediate action required; continue to monitor for follow-up attempts."]
+
+    # 5. Persist event + alert under the authenticated tenant (never raw media).
+    event_id = await _create_analysis_event(
+        db,
+        tenant=tenant,
+        created_by=tenant.user_id,
+        event_type="identity_fraud",
+        source="identity_fraud_api",
+        raw_data={
+            "claimed_name": claimed_name,
+            "claimed_username": claimed_username,
+            "claimed_email": claimed_email,
+            "message": message,
+            "media_file": media.filename if media else None,
+            "verified_identity_id": str(best.id) if best else None,
+        },
+    )
+
+    explanation = (
+        f"Identity-fraud analysis for '{claimed_name}' <{claimed_email}>: "
+        f"impersonation score {imp_score}/100, deepfake score {df_score}/100, "
+        f"verdict {verdict}."
+    )
+    alert = await create_alert(
+        db,
+        tenant=tenant,
+        created_by=tenant.user_id,
+        event_id=event_id,
+        module="identity_fraud",
+        raw_data={
+            "subject": f"Identity fraud attempt: {claimed_name}",
+            "claimed_name": claimed_name,
+            "claimed_email": claimed_email,
+            "claimed_username": claimed_username,
+            "message": message,
+        },
+        indicators=indicators,
+        score=overall,
+        severity=severity,
+        llm_output={"explanation": explanation, "summary": explanation[:250]},
+    )
+
+    return {
+        "verdict": verdict,
+        "overall_risk": overall_tier,
+        "risk_score": overall,
+        "impersonation_risk": _identity_risk_tier(imp_score),
+        "impersonation_score": imp_score,
+        "deepfake_risk": _identity_risk_tier(df_score),
+        "deepfake_score": df_score,
+        "verified_identity": _verified_identity_payload(best) if best else None,
+        "organization": {
+            "id": tenant.organization_id,
+            "name": tenant.organization_name,
+        },
+        "project": {"id": tenant.project_id} if tenant.project_id else None,
+        "evidence": evidence,
+        "recommended_action": recommended,
+        "indicators": indicators,
+        "media_analysis": {
+            "file_name": media.filename,
+            "method": media_analysis.get("method"),
+            "risk_score": df_score,
+            "severity": media_analysis.get("severity"),
+            "simulated": media_analysis.get("simulated"),
+        }
+        if media_analysis
+        else None,
+        "event_id": event_id,
+        "alert_id": alert.id,
     }

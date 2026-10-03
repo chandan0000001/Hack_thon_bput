@@ -500,6 +500,24 @@ def upgrade() -> None:
 )"""))
     bind.execute(text("""CREATE INDEX ix_cyberguard_org_projects_slug ON cyberguard.org_projects (slug)"""))
     bind.execute(text("""CREATE INDEX ix_cyberguard_org_projects_organization_id ON cyberguard.org_projects (organization_id)"""))
+    bind.execute(text("""CREATE TABLE cyberguard.verified_identities (
+	id VARCHAR(36) NOT NULL,
+	organization_id VARCHAR(36) NOT NULL,
+	project_id VARCHAR(36),
+	owner_user_id VARCHAR(64),
+	name VARCHAR(120) NOT NULL,
+	role_title VARCHAR(120),
+	email VARCHAR(255),
+	username VARCHAR(64),
+	created_by VARCHAR(64),
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+	PRIMARY KEY (id),
+	FOREIGN KEY(organization_id) REFERENCES cyberguard.org_organizations (id) ON DELETE CASCADE,
+	FOREIGN KEY(project_id) REFERENCES cyberguard.org_projects (id) ON DELETE SET NULL
+)"""))
+    bind.execute(text("""CREATE INDEX ix_verified_identities_org ON cyberguard.verified_identities (organization_id)"""))
+    bind.execute(text("""CREATE INDEX ix_verified_identities_project ON cyberguard.verified_identities (project_id)"""))
+    bind.execute(text("""CREATE INDEX ix_verified_identities_owner ON cyberguard.verified_identities (owner_user_id)"""))
     bind.execute(text("""CREATE TABLE cyberguard.processed_emails (
 	id VARCHAR(36) NOT NULL, 
 	owner_user_id VARCHAR(64) NOT NULL, 
@@ -760,7 +778,7 @@ def upgrade() -> None:
         "org_blocked_indicators", "org_events", "org_members", "org_organizations",
         "org_projects", "processed_emails", "quarantined_items", "recommended_actions",
         "response_catalog", "response_executions", "scan_results", "security_events",
-        "trusted_senders", "users",
+        "trusted_senders", "users", "verified_identities",
     ]
     for tbl in ALL_TABLES:
         bind.execute(text(f"ALTER TABLE {SCHEMA}.{tbl} ENABLE ROW LEVEL SECURITY"))
@@ -813,6 +831,10 @@ def upgrade() -> None:
         CREATE POLICY org_blocked_indicators_admin_insert ON {SCHEMA}.org_blocked_indicators FOR INSERT TO {target_roles} WITH CHECK ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
         CREATE POLICY org_blocked_indicators_admin_update ON {SCHEMA}.org_blocked_indicators FOR UPDATE TO {target_roles} USING ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin') WITH CHECK ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
         CREATE POLICY org_blocked_indicators_admin_delete ON {SCHEMA}.org_blocked_indicators FOR DELETE TO {target_roles} USING ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
+
+        CREATE POLICY verified_identities_member_select ON {SCHEMA}.verified_identities FOR SELECT TO {target_roles} USING ({SCHEMA}.org_member_role(organization_id, {_GUC}) IS NOT NULL OR owner_user_id = {_GUC});
+        CREATE POLICY verified_identities_member_insert ON {SCHEMA}.verified_identities FOR INSERT TO {target_roles} WITH CHECK ({SCHEMA}.org_member_role(organization_id, {_GUC}) IS NOT NULL OR owner_user_id = {_GUC});
+        CREATE POLICY verified_identities_admin_delete ON {SCHEMA}.verified_identities FOR DELETE TO {target_roles} USING ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin' OR owner_user_id = {_GUC});
 
         CREATE POLICY org_invitations_admin_select ON {SCHEMA}.organization_invitations FOR SELECT TO {target_roles} USING ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
         CREATE POLICY org_invitations_admin_insert ON {SCHEMA}.organization_invitations FOR INSERT TO {target_roles} WITH CHECK ({SCHEMA}.org_member_role(organization_id, {_GUC}) = 'admin');
