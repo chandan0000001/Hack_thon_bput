@@ -168,6 +168,14 @@ async def _run_analysis_pipeline(
     hybrid_score = max(int(hybrid_score), int(min_score))
     severity = get_severity(hybrid_score)
 
+    calculated_confidence: Optional[float] = None
+    if _ml_probability is not None and 0.0 <= _ml_probability <= 1.0:
+        # Distance from 0.5 decision boundary: model confidence in its classification
+        calculated_confidence = round(max(_ml_probability, 1.0 - _ml_probability), 2)
+    elif hybrid_score is not None:
+        # Baseline confidence from distance to ambiguity midpoint 50
+        calculated_confidence = round(0.50 + abs(hybrid_score - 50) / 100.0, 2)
+
     if callable(user_prompt_builder):
         user_prompt = user_prompt_builder(raw_data, indicators, hybrid_score, severity)
     else:
@@ -193,6 +201,7 @@ async def _run_analysis_pipeline(
         score=hybrid_score,
         severity=severity,
         llm_output=llm_output,
+        confidence=calculated_confidence,
     )
     return alert
 

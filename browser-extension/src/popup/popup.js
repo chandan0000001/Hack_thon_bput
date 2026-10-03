@@ -158,9 +158,11 @@
     top.appendChild(el('span', `score cg-score ${scoreColorClass(score)}`, Number.isFinite(score) ? String(score) : '—'));
     const right = el('div', 'score-head__right');
     right.appendChild(el('span', `cg-badge ${severityBadgeClass(sev)}`, String(sev).toUpperCase()));
-    const conf = Number(data.confidence);
-    if (Number.isFinite(conf)) {
-      right.appendChild(el('p', 'result__meta cg-score', `confidence ${conf <= 1 ? Math.round(conf * 100) : Math.round(conf)}%`));
+    const confPct = popupViews.resolveDisplayConfidence
+      ? popupViews.resolveDisplayConfidence(data)
+      : null;
+    if (confPct != null && confPct > 0) {
+      right.appendChild(el('p', 'result__meta cg-score', `confidence ${confPct}%`));
     }
     top.appendChild(right);
     container.appendChild(top);
