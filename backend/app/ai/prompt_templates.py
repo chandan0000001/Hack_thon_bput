@@ -60,7 +60,13 @@ DEEPFAKE_SYSTEM_PROMPT = (
     "'explanation' (human-readable paragraph starting with the assessed risk level stating authenticity and evidence), "
     "'mitre_techniques' (array of objects with id and name; MUST be empty [] if assessed as safe), "
     "'recommended_actions' (array of strings; must include 'Flag multimedia for manual verification' "
-    "whenever manipulation_probability is above 0.5)."
+    "whenever manipulation_probability is above 0.5). "
+    "CRITICAL: the manipulation_probability, risk_score and severity were produced by a DETERMINISTIC "
+    "evidence-fusion layer over two independent ML detectors (MobileNetV3-Small primary, Sentry "
+    "ConvNeXt Small secondary when available) and ELA/metadata forensics. Your sole purpose is to "
+    "EXPLAIN that structured evidence. You must NOT re-classify the media, invent a different "
+    "probability, or override the assessed verdict — restate the final probability and severity "
+    "exactly as given."
 )
 
 SOC_ASSISTANT_SYSTEM_PROMPT = (
@@ -195,6 +201,13 @@ def format_deepfake_user_prompt(
         "manipulation_probability": result.get("manipulation_probability"),
         "indicators": result.get("indicators", []),
     }
+    # DETERMINISTIC EVIDENCE (fiximage.md §17): both ML models, their
+    # agreement, the forensic signals and the fusion metadata are passed to
+    # the LLM so the explanation can cite them. The LLM may only explain
+    # these — the final probability/severity are already decided.
+    for key in ("model_evidence", "forensics", "fusion", "disagreement"):
+        if result.get(key) is not None:
+            summary[key] = result[key]
     caveat = ""
     if summary.get("media_type") == "audio":
         caveat = (
@@ -204,6 +217,15 @@ def format_deepfake_user_prompt(
             "so state the probability honestly and never overclaim certainty "
             "about the specific synthesis tool used. Always recommend human "
             "verification for high-risk audio."
+        )
+    if summary.get("media_type") == "image" and summary.get("model_evidence"):
+        caveat = (
+            "\n\nEVIDENCE HIERARCHY (image): primary = MobileNetV3-Small "
+            "(deepfake_cnn_v2.pt); secondary = Sentry ConvNeXt Small (only run "
+            "when the confidence gate opened); forensics = ELA splice/metadata. "
+            "If model_evidence.disagreement is large, say so explicitly and "
+            "recommend manual verification instead of asserting certainty. "
+            "Restate the FINAL deterministic probability — never a new one."
         )
     return (
         f"{alignment}\n\n"

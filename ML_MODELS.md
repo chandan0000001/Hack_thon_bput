@@ -174,6 +174,46 @@ The v3.1 external false positives are dominated by real multi-hyphen enterprise 
 
 **Why the degraded-real augmentation matters:** without it, models trained on GenImage learn JPEG-and-resize fingerprints of *real* social-media images as "fake evidence". Evaluating FPR separately on clean versus messenger-degraded reals makes this failure mode measurable — and the degraded reals actually show the *lower* FPR, confirming the augmentation worked.
 
+### 3.3b Secondary Image Detector (Model B — Sentry ConvNeXt Small)
+
+An OPTIONAL second, independent AI-image detector integrated from the Lynote
+[`ai-image-detector`](https://github.com/lynote-ai/ai-image-detector) project. Model A above remains
+the primary detector; Model B is never a replacement and never averaged with it.
+
+| Property | Value |
+| --- | --- |
+| Adapter | `app/services/secondary_image_detector.py` (self-contained; no Lynote imports) |
+| Model | Sentry ConvNeXt Small — `timm.create_model("convnext_small", num_classes=2)` |
+| Weights | `InfImagine/Sentry_image_models` → `convnext_small_4xb256_fake5m-lr4e-4/epoch_15.pth`, downloaded once via `huggingface_hub` (or local override `DEEPFAKE_SECONDARY_WEIGHT_PATH`) |
+| Class order | Sentry checkpoints: index 0 = **fake (AI)**, 1 = real (opposite of Model A) — normalised by the adapter |
+| Preprocessing | Resize 256 (bicubic) → CenterCrop 224 → ImageNet-style normalisation (timm ConvNeXt constants) |
+| Loading | Thread-safe lazy singleton; `model.eval()` + `torch.inference_mode()`; failures cached as "unavailable" — the API never fails because Model B is missing |
+| Dependencies added | `timm`, `huggingface_hub` (torch/torchvision/Pillow already present) |
+
+**Enforcement of the fusion contract** (`app/services/image_evidence_fusion.py`, deterministic — the
+LLM layer only explains the result, it cannot reclassify):
+
+1. **Confidence gate** (`should_run_secondary_model`): Model B runs only when Model A is unavailable,
+   uncertain (probability inside `DEEPFAKE_SECONDARY_LOW_CONFIDENCE..HIGH_CONFIDENCE`), or confidently
+   real while ELA/metadata forensics disagree (strong splice / container mismatch). A confident Model A
+   verdict with non-contradicting forensics skips Model B entirely (CPU/latency budget: i5 U-series).
+2. **Evidence fusion** (`fuse_image_evidence`): agreement takes the stronger vote (max for fake,
+   min for real — never `(A+B)/2`); opposed-model deadlock resolves to 0.5 (uncertain) unless strong
+   forensic evidence raises it; strong forensic evidence can raise, never lower, the final score.
+3. **Disagreement as evidence** (`calculate_model_disagreement`): `|A − B|` above
+   `DEEPFAKE_MODEL_DISAGREEMENT_THRESHOLD` emits a `model_disagreement` indicator and a top-level
+   `disagreement` response block — it is reported, not silently converted into a verdict.
+4. **Fallback hierarchy**: A+B+forensics → A+forensics (Model B off/failed: existing pipeline output
+   passes through byte-identical) → B+forensics (Model A unavailable) → forensics-only (both missing).
+
+Fusion behaviour, gate thresholds, fallback paths and the adapter contract are covered by
+`backend/tests/test_image_evidence_fusion.py` (38 cases).
+
+> **Benchmark honesty (spec §28):** Lynote's published Sentry accuracy figures are repository
+> benchmarks on their datasets and are NOT copied into CyberGuard metrics. The four-configuration
+> evaluation (A / B / A+B / A+B+forensics) and threshold calibration on CyberGuard's own held-out
+> split are pending — initial gate thresholds (0.35/0.65/0.35) are config defaults, not tuned values.
+
 ### 3.4 Audio Anti-Spoofing
 
 | Property | Value |
@@ -280,6 +320,26 @@ final = monotonic blend as in 5.1
 ```
 
 **Why the tone cap:** the model was trained on speech spoofing (ASVspoof LA). A pure sine tone or DTMF stream is out of domain — the model's opinion on it is unreliable, so its contribution is capped and the deterministic heuristic evidence dominates.
+
+### 5.3 Image evidence fusion (Model A + optional Model B + forensics)
+
+Images do NOT use the 0.45/0.55 blend. After the existing Model A ↔ ELA hybrid
+policy (which is preserved verbatim), the image pipeline routes through
+`app/services/image_evidence_fusion.py`:
+
+```text
+Image → ELA/metadata forensics → Model A
+     → confidence gate ── uncertain/contradicted/Model-A-missing ──→ Model B (Sentry)
+     → deterministic evidence fusion  (see section 3.3b)
+     → final probability → risk score → severity → LLM explanation only
+```
+
+When the gate keeps Model B out, the existing pipeline probability passes
+through unchanged — fusion never rewrites a verdict it had no part in
+producing. The image API response additionally carries `model_evidence`
+(primary/secondary probability + agreement), `fusion` (method, invoked,
+confidence, fallback) and — when `|A − B|` exceeds the threshold — a
+`disagreement` block plus a `model_disagreement` indicator.
 
 ---
 

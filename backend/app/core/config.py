@@ -224,6 +224,27 @@ class Settings(BaseSettings):
     ML_ENABLED: bool = True
     ML_MODELS_DIR: str = "ml/models"
 
+    # --- Deepfake secondary detector (Model B: Lynote Sentry ConvNeXt Small) ---
+    # Model B is an OPTIONAL independent verification signal behind a
+    # confidence gate — never a default second pass, never a probability
+    # average. Initial threshold values; calibrate on the evaluation dataset.
+    DEEPFAKE_SECONDARY_ENABLED: bool = True
+    DEEPFAKE_SECONDARY_BACKEND: str = "sentry-convnext-small"
+    # Model A probability band treated as uncertain (gate runs Model B inside it).
+    DEEPFAKE_SECONDARY_LOW_CONFIDENCE: float = 0.35
+    DEEPFAKE_SECONDARY_HIGH_CONFIDENCE: float = 0.65
+    # |A - B| above this is flagged as model disagreement evidence.
+    DEEPFAKE_MODEL_DISAGREEMENT_THRESHOLD: float = 0.35
+    # Hard wall-clock cap for one Model B inference.
+    DEEPFAKE_SECONDARY_TIMEOUT_SECONDS: int = 30
+    # Inference device (dev machine is CPU-only: i5 13th-gen U-series).
+    DEEPFAKE_SECONDARY_DEVICE: str = "cpu"
+    # Optional local path to the Sentry ConvNeXt Small checkpoint
+    # (epoch_15.pth); empty = download once from the Hugging Face hub and
+    # cache it via huggingface_hub.
+    DEEPFAKE_SECONDARY_WEIGHT_PATH: str = ""
+    DEEPFAKE_SECONDARY_HF_REPO: str = "InfImagine/Sentry_image_models"
+
     APP_TITLE: str = "CYBERGUARD API"
     APP_VERSION: str = "0.2.0"
     @model_validator(mode="after")

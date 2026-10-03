@@ -150,6 +150,31 @@ All analysis routes run the shared pipeline: Event → heuristics + ML → monot
 
 Response shape (`AlertResponse`): verdict, risk_score, severity, indicators (incl. `ml_model` with probability), explanation, MITRE techniques, recommended actions.
 
+**Image responses additionally carry the deterministic evidence blocks** (Model A = MobileNetV3-Small `deepfake_cnn_v2.pt`; Model B = Lynote Sentry ConvNeXt Small, run only when the confidence gate opens; video/audio responses are unchanged):
+
+```json
+{
+  "model_evidence": {
+    "primary":   {"model": "MobileNetV3-Small", "artifact": "deepfake_cnn_v2.pt", "probability": 0.82, "available": true},
+    "secondary": {"model": "Sentry ConvNeXt Small", "backend": "sentry-convnext-small", "probability": 0.74, "available": true},
+    "agreement": true,
+    "disagreement": 0.08
+  },
+  "forensics": {"ela": true, "splice_score": 4.2, "metadata": true},
+  "fusion": {
+    "method": "calibrated_evidence_fusion",
+    "secondary_invoked": true,
+    "confidence": 0.9,
+    "fallback": "none",
+    "agreement": true,
+    "disagreement": 0.08,
+    "rationale": "Both detectors report manipulation; the stronger fake probability is used."
+  }
+}
+```
+
+When `|A − B|` exceeds `DEEPFAKE_MODEL_DISAGREEMENT_THRESHOLD` (default 0.35) a top-level `"disagreement": {"value", "threshold", "flagged": true, "severity", "description"}` block is added and a `model_disagreement` indicator appears. The final probability/severity are produced by the deterministic fusion layer — the LLM explanation restates them and cannot reclassify. If Model B is disabled, fails to load, or is skipped by the gate, the response degrades gracefully (`fusion.fallback`: `primary_only` / `forensics_only`, `secondary.available: false`) and never returns an error.
+
 ### 5.3 Raw Event Ingestion — admin/analyst
 
 | Endpoint | Method | Body |

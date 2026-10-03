@@ -17,6 +17,7 @@ import tempfile
 from io import BytesIO
 from typing import Any
 
+from app.core.config import get_settings
 from app.services.media_forensics.audio_analyzer import AudioAnalyzer, _is_wav
 from app.services.media_forensics.base import MediaAnalyzer
 from app.services.media_forensics.image_analyzer import ImageAnalyzer
@@ -33,7 +34,16 @@ from app.services.ml_inference import (
     split_ml_indicator,
 )
 from app.core.calibration import get_deepfake_calibration
+from app.services.image_evidence_fusion import (
+    fuse_image_evidence,
+    should_run_secondary_model,
+)
 from app.services.scoring_service import calculate_score, get_severity
+from app.services.secondary_image_detector import (
+    SECONDARY_BACKEND,
+    SECONDARY_MODEL_NAME,
+    predict_secondary_image,
+)
 
 logger = logging.getLogger("cyberguard.deepfake")
 
@@ -115,6 +125,146 @@ def _extract_splice_score(result: dict[str, Any], indicators: list[dict]) -> flo
     return 0.0
 
 
+def _run_image_secondary_fusion(
+    file_bytes: bytes,
+    model_a_probability: float | None,
+    forensic_probability: float,
+    primary_blended_probability: float,
+    splice_score: float,
+    indicators: list[dict],
+    strong_splice_threshold: float,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+    """Confidence gate -> optional Model B (Sentry ConvNeXt Small) -> fusion.
+
+    Runs AFTER the existing Model A + ELA hybrid logic and never rewrites a
+    verdict the fusion layer had no part in producing: when the gate keeps
+    Model B out, the existing pipeline probability passes through unchanged.
+
+    Returns (fusion, model_evidence, forensics_block, disagreement_evidence).
+    """
+    settings = get_settings()
+    secondary_enabled = settings.DEEPFAKE_SECONDARY_ENABLED and settings.ML_ENABLED
+
+    model_b_probability: float | None = None
+    model_b_prediction: dict[str, Any] | None = None
+    if secondary_enabled:
+        gate_open = should_run_secondary_model(
+            model_a_probability,
+            forensic_probability=forensic_probability,
+            splice_score=splice_score,
+            indicators=indicators,
+            strong_splice_threshold=strong_splice_threshold,
+        )
+        if gate_open:
+            model_b_prediction = predict_secondary_image(file_bytes)
+            if model_b_prediction.get("available"):
+                model_b_probability = float(model_b_prediction["probability_ai"])
+                indicators.append(
+                    {
+                        "type": "ml_model",
+                        "value": SECONDARY_BACKEND,
+                        "severity": get_severity(round(model_b_probability * 100)),
+                        "description": (
+                            f"Secondary model ({SECONDARY_MODEL_NAME}) probability: "
+                            f"{model_b_probability:.2f}"
+                        ),
+                        "probability": round(model_b_probability, 4),
+                    }
+                )
+            else:
+                logger.warning(
+                    "deepfake_secondary_failure stage=inference error=%s — "
+                    "fusion continues without Model B",
+                    model_b_prediction.get("error"),
+                )
+        else:
+            logger.debug("deepfake_model_b_skipped reason=confidence_gate")
+
+    fusion = fuse_image_evidence(
+        model_a_probability=model_a_probability,
+        model_b_probability=model_b_probability,
+        model_b_available=bool(model_b_prediction and model_b_prediction.get("available")),
+        forensic_probability=forensic_probability,
+        primary_blended_probability=primary_blended_probability,
+        splice_score=splice_score,
+        metadata_indicators=indicators,
+        strong_splice_threshold=strong_splice_threshold,
+    )
+
+    if model_a_probability is not None:
+        primary_block: dict[str, Any] = {
+            "model": "MobileNetV3-Small",
+            "artifact": deepfake_model_artifact(),
+            "probability": round(float(model_a_probability), 4),
+            "available": True,
+        }
+    else:
+        primary_block = {
+            "model": "MobileNetV3-Small",
+            "artifact": deepfake_model_artifact(),
+            "probability": None,
+            "available": False,
+        }
+
+    if model_b_prediction is not None:
+        secondary_block: dict[str, Any] = {
+            "model": SECONDARY_MODEL_NAME,
+            "backend": SECONDARY_BACKEND,
+            "probability": model_b_prediction.get("probability_ai"),
+            "available": bool(model_b_prediction.get("available")),
+        }
+        if not model_b_prediction.get("available"):
+            secondary_block["error"] = model_b_prediction.get("error")
+    else:
+        secondary_block = {
+            "model": SECONDARY_MODEL_NAME,
+            "backend": SECONDARY_BACKEND,
+            "probability": None,
+            "available": False,
+            "error": "not invoked (confidence gate or disabled)"
+            if not secondary_enabled
+            else "not invoked (confidence gate)",
+        }
+
+    model_evidence: dict[str, Any] = {
+        "primary": primary_block,
+        "secondary": secondary_block,
+        "agreement": fusion.get("agreement"),
+        "disagreement": fusion.get("disagreement"),
+    }
+    forensics_block = {
+        "ela": True,
+        "splice_score": round(float(splice_score), 4),
+        "metadata": any(
+            ind.get("type") in ("missing_exif", "container_mismatch")
+            for ind in indicators
+        ),
+    }
+
+    disagreement_evidence: dict[str, Any] | None = None
+    if fusion.get("disagreement") is not None and model_a_probability is not None:
+        threshold = float(settings.DEEPFAKE_MODEL_DISAGREEMENT_THRESHOLD)
+        if fusion["disagreement"] > threshold:
+            severity = "high" if fusion["disagreement"] >= 0.6 else "medium"
+            logger.info(
+                "deepfake_model_disagreement model_a=%.4f model_b=%s disagreement=%.4f",
+                model_a_probability,
+                model_b_probability,
+                fusion["disagreement"],
+            )
+            disagreement_evidence = {
+                "type": "model_disagreement",
+                "severity": severity,
+                "value": f"model_a={model_a_probability:.2f}, model_b={model_b_probability:.2f}"
+                if model_b_probability is not None
+                else f"model_a={model_a_probability:.2f}, model_b=unavailable",
+                "description": "Primary and secondary image detectors disagree.",
+                "disagreement": fusion["disagreement"],
+            }
+
+    return fusion, model_evidence, forensics_block, disagreement_evidence
+
+
 def analyze_media(file_bytes: bytes, file_name: str, content_type: str) -> dict[str, Any]:
     """Run media forensics and return the unified deepfake analysis result.
 
@@ -148,6 +298,9 @@ def analyze_media(file_bytes: bytes, file_name: str, content_type: str) -> dict[
 
     # --- Hybrid blending with CNN vs ELA disagreement policy ---
     if media_type == "image":
+        # Pure ELA/metadata probability BEFORE any neural blending — the
+        # independent forensic evidence input to the fusion layer.
+        forensic_probability = probability
         cnn_probability = predict_image(file_bytes)
         if cnn_probability is not None:
             indicators.append(ml_indicator(deepfake_model_artifact(), cnn_probability))
@@ -192,6 +345,36 @@ def analyze_media(file_bytes: bytes, file_name: str, content_type: str) -> dict[
                     ),
                 }
             )
+        # --- Confidence gate -> optional Model B -> deterministic fusion ---
+        # Runs for images whether or not Model A produced a probability
+        # (a missing primary verdict is itself a gate trigger). Existing
+        # Model A + ELA hybrid logic above is preserved verbatim; fusion
+        # passes it through unchanged unless Model B contributed.
+        fusion, model_evidence, forensics_block, disagreement_evidence = (
+            _run_image_secondary_fusion(
+                file_bytes,
+                model_a_probability=cnn_probability,
+                forensic_probability=forensic_probability,
+                primary_blended_probability=probability,
+                splice_score=splice_score,
+                indicators=indicators,
+                strong_splice_threshold=strong_splice_threshold,
+            )
+        )
+        probability = fusion["probability"]
+        if disagreement_evidence is not None:
+            indicators.append(disagreement_evidence)
+        result["model_evidence"] = model_evidence
+        result["fusion"] = fusion
+        result["forensics"] = forensics_block
+        if disagreement_evidence is not None:
+            result["disagreement"] = {
+                "value": disagreement_evidence["disagreement"],
+                "threshold": float(get_settings().DEEPFAKE_MODEL_DISAGREEMENT_THRESHOLD),
+                "flagged": True,
+                "severity": disagreement_evidence["severity"],
+                "description": disagreement_evidence["description"],
+            }
     elif media_type == "video":
         cnn_probability = _video_cnn_probability(file_bytes, file_name)
         if cnn_probability is not None:
@@ -316,7 +499,7 @@ def analyze_media(file_bytes: bytes, file_name: str, content_type: str) -> dict[
 
     severity = get_severity(risk_score)
 
-    return {
+    response: dict[str, Any] = {
         "module": "deepfake",
         "media_type": media_type,
         "authenticity_score": result["authenticity_score"],
@@ -327,3 +510,11 @@ def analyze_media(file_bytes: bytes, file_name: str, content_type: str) -> dict[
         "risk_score": risk_score,
         "severity": severity,
     }
+    # Image-only transparent model evidence (Model A / Model B / fusion).
+    if "model_evidence" in result:
+        response["model_evidence"] = result["model_evidence"]
+        response["fusion"] = result["fusion"]
+        response["forensics"] = result["forensics"]
+    if "disagreement" in result:
+        response["disagreement"] = result["disagreement"]
+    return response

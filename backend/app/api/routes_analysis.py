@@ -707,6 +707,13 @@ async def analyze_media_upload(
             "media_type": result["media_type"],
             "method": result["method"],
             "simulated": result["simulated"],
+            # Deterministic evidence trail (image pipeline): Model A / Model B
+            # probabilities, fusion method and disagreement flag.
+            **({
+                "model_evidence": result["model_evidence"],
+                "fusion": result["fusion"],
+                "disagreement": result.get("disagreement"),
+            } if "model_evidence" in result else {}),
         },
         indicators=result["indicators"],
         score=result["risk_score"],
@@ -783,6 +790,12 @@ async def analyze_media_event(
             "media_type": analysis_res["media_type"],
             "method": analysis_res["method"],
             "simulated": analysis_res["simulated"],
+            # Deterministic evidence trail (image pipeline).
+            **({
+                "model_evidence": analysis_res["model_evidence"],
+                "fusion": analysis_res["fusion"],
+                "disagreement": analysis_res.get("disagreement"),
+            } if "model_evidence" in analysis_res else {}),
         },
         indicators=analysis_res["indicators"],
         score=analysis_res["risk_score"],
