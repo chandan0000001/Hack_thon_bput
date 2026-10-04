@@ -158,10 +158,6 @@
     top.appendChild(el('span', `score cg-score ${scoreColorClass(score)}`, Number.isFinite(score) ? String(score) : '—'));
     const right = el('div', 'score-head__right');
     right.appendChild(el('span', `cg-badge ${severityBadgeClass(sev)}`, String(sev).toUpperCase()));
-    const conf = Number(data.confidence);
-    if (Number.isFinite(conf)) {
-      right.appendChild(el('p', 'result__meta cg-score', `confidence ${conf <= 1 ? Math.round(conf * 100) : Math.round(conf)}%`));
-    }
     top.appendChild(right);
     container.appendChild(top);
     if (data.explanation) container.appendChild(el('p', 'result__explanation', String(data.explanation)));
@@ -173,15 +169,12 @@
   function renderDeepfakeResult(container, data) {
     container.replaceChildren();
     const prob = Number(data.manipulation_probability);
-    const { verdict, confidence } = deepfakeVerdict(Number.isFinite(prob) ? prob : NaN);
+    const { verdict } = deepfakeVerdict(Number.isFinite(prob) ? prob : NaN);
     const sev = data.severity || 'low';
     const top = el('div', 'score-head');
     top.appendChild(el('span', `score score-verdict cg-score ${verdict === 'FAKE' ? 'score-critical' : verdict === 'REAL' ? 'score-safe' : 'score-low'}`, verdict));
     const right = el('div', 'score-head__right');
     right.appendChild(el('span', `cg-badge ${severityBadgeClass(sev)}`, String(sev).toUpperCase()));
-    if (confidence != null) {
-      right.appendChild(el('p', 'result__meta cg-score', `confidence ${Math.round(confidence * 100)}%`));
-    }
     top.appendChild(right);
     container.appendChild(top);
     if (Number.isFinite(prob)) {
@@ -414,5 +407,44 @@
     }
   }
 
-  boot().then(applyPrefill);
+  async function initSettings() {
+    const autoblockEl = document.getElementById('toggle-autoblock');
+    const pauseDetectionEl = document.getElementById('toggle-pause-detection');
+    if (!autoblockEl || !pauseDetectionEl) return;
+
+    try {
+      const stored = await api.storage.local.get({
+        autoBlockNavigation: true,
+        pause_detection: false,
+      });
+      autoblockEl.checked = stored.autoBlockNavigation !== false;
+      pauseDetectionEl.checked = Boolean(stored.pause_detection);
+    } catch (e) {}
+
+    autoblockEl.addEventListener('change', async () => {
+      try {
+        await api.storage.local.set({ autoBlockNavigation: autoblockEl.checked });
+      } catch (e) {}
+    });
+
+    pauseDetectionEl.addEventListener('change', async () => {
+      try {
+        await api.storage.local.set({ pause_detection: pauseDetectionEl.checked });
+        try {
+          const tabs = await api.raw.tabs.query({ active: true, currentWindow: true });
+          if (tabs && tabs[0] && tabs[0].id) {
+            api.raw.tabs.sendMessage(tabs[0].id, {
+              type: 'SET_LOCK_STATE',
+              locked: pauseDetectionEl.checked,
+            }, () => {});
+          }
+        } catch (e) {}
+      } catch (e) {}
+    });
+  }
+
+  boot().then(async () => {
+    await initSettings();
+    await applyPrefill();
+  });
 })();

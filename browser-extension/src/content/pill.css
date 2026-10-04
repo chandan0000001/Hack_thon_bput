@@ -1,33 +1,69 @@
-/* CyberGuard extension — floating pill (scoped under #cgext-pill). */
+/* CyberGuard extension — floating pill UI (EXT-SCANNER-V2 S4). */
 #cgext-pill {
   position: fixed;
   right: 16px;
   bottom: 16px;
   z-index: 2147483647;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 12px;
+  color: #fafafa;
+}
+
+#cgext-pill[hidden] {
+  display: none !important;
+}
+
+/* Collapsed pill bar */
+#cgext-pill .cgext-pill__collapsed {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 8px 12px;
   border: 1px solid #262626;
   border-radius: 9999px;
   background: #0a0a0a;
-  color: #fafafa;
-  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
-  font-size: 12px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
 }
 
-#cgext-pill[hidden] {
+#cgext-pill.cgext-pill--expanded .cgext-pill__collapsed {
   display: none;
+}
+
+#cgext-pill .cgext-pill__body {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
 }
 
 #cgext-pill .cgext-pill__text {
   color: #a3a3a3;
+  transition: color 0.15s ease;
+}
+
+#cgext-pill .cgext-pill__body:hover .cgext-pill__text {
+  color: #fafafa;
 }
 
 #cgext-pill.cgext-pill--loading .cgext-pill__text,
 #cgext-pill.cgext-pill--error .cgext-pill__text {
   color: #fafafa;
+}
+
+#cgext-pill .cgext-pill__badge {
+  background: #dc2626;
+  color: #ffffff;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+#cgext-pill .cgext-pill__locked-tag {
+  color: #eab308;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 #cgext-pill .cgext-pill__analyze {
@@ -40,6 +76,7 @@
   font-weight: 700;
   padding: 3px 10px;
   cursor: pointer;
+  transition: background-color 0.15s ease;
 }
 
 #cgext-pill .cgext-pill__analyze:hover {
@@ -50,6 +87,15 @@
   display: none;
 }
 
+#cgext-pill .cgext-pill__lock {
+  border: none;
+  background: none;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
 #cgext-pill .cgext-pill__close {
   border: none;
   background: none;
@@ -58,13 +104,14 @@
   line-height: 1;
   cursor: pointer;
   padding: 0 2px;
+  transition: color 0.15s ease;
 }
 
 #cgext-pill .cgext-pill__close:hover {
   color: #fafafa;
 }
 
-#cgext-pill.cgext-pill--loading::before {
+#cgext-pill.cgext-pill--loading .cgext-pill__collapsed::before {
   content: '';
   width: 10px;
   height: 10px;
@@ -74,8 +121,219 @@
   animation: cgext-spin 0.7s linear infinite;
 }
 
-#cgext-pill.cgext-pill--error {
+#cgext-pill.cgext-pill--error .cgext-pill__collapsed {
   border-color: #dc2626;
+}
+
+#cgext-pill.cgext-pill--locked .cgext-pill__collapsed {
+  border-color: #ca8a04;
+}
+
+/* Expanded panel */
+#cgext-pill .cgext-pill__panel {
+  width: 380px;
+  max-width: 90vw;
+  background: #11141a;
+  border: 1px solid #272c35;
+  border-radius: 12px;
+  padding: 14px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.75);
+  display: flex;
+  flex-direction: column;
+}
+
+#cgext-pill .cgext-pill__panel[hidden] {
+  display: none;
+}
+
+#cgext-pill .cgext-pill__panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #222731;
+}
+
+#cgext-pill .cgext-pill__panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #e2e8f0;
+}
+
+#cgext-pill .cgext-pill__panel-close {
+  background: none;
+  border: none;
+  color: #71717a;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#cgext-pill .cgext-pill__panel-close:hover {
+  color: #fafafa;
+}
+
+#cgext-pill .cgext-pill__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  padding-right: 4px;
+}
+
+#cgext-pill .cgext-pill__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: #161a22;
+  border: 1px solid #222834;
+  border-radius: 6px;
+}
+
+#cgext-pill .cgext-pill__checkbox {
+  cursor: pointer;
+  accent-color: #dc2626;
+}
+
+#cgext-pill .cgext-pill__type-icon {
+  font-size: 14px;
+}
+
+#cgext-pill .cgext-pill__item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#cgext-pill .cgext-pill__preview {
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  color: #e2e8f0;
+  word-break: break-all;
+}
+
+#cgext-pill .cgext-pill__thumb {
+  width: 22px;
+  height: 22px;
+  object-fit: cover;
+  border-radius: 4px;
+  margin-right: 6px;
+  border: 1px solid #334155;
+}
+
+#cgext-pill .cgext-pill__snippet {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 230px;
+}
+
+#cgext-pill .cgext-pill__location {
+  font-size: 10px;
+  color: #64748b;
+}
+
+#cgext-pill .cgext-pill__cached {
+  font-size: 10px;
+  color: #f87171;
+  font-weight: 700;
+}
+
+#cgext-pill .cgext-pill__item-dismiss {
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+#cgext-pill .cgext-pill__item-dismiss:hover {
+  color: #ef4444;
+}
+
+#cgext-pill .cgext-pill__empty {
+  font-size: 11px;
+  color: #64748b;
+  text-align: center;
+  padding: 16px 8px;
+}
+
+#cgext-pill .cgext-pill__footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #222731;
+  flex-wrap: wrap;
+}
+
+#cgext-pill .cgext-pill__btn {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+#cgext-pill .cgext-pill__btn-analyze-selected {
+  background: #dc2626;
+  border: 1px solid #dc2626;
+  color: #ffffff;
+}
+
+#cgext-pill .cgext-pill__btn-analyze-selected:hover:not(:disabled) {
+  background: #ef4444;
+}
+
+#cgext-pill .cgext-pill__btn-analyze-selected:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#cgext-pill .cgext-pill__btn-analyze-all {
+  background: #1e2530;
+  border: 1px solid #333d4d;
+  color: #cbd5e1;
+}
+
+#cgext-pill .cgext-pill__btn-analyze-all:hover {
+  background: #2a3444;
+  color: #ffffff;
+}
+
+#cgext-pill .cgext-pill__btn-lock {
+  background: #1e2530;
+  border: 1px solid #333d4d;
+  color: #cbd5e1;
+}
+
+#cgext-pill .cgext-pill__btn-lock:hover {
+  background: #2a3444;
+  color: #ffffff;
+}
+
+#cgext-pill .cgext-pill__btn-collapse {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  margin-left: auto;
+}
+
+#cgext-pill .cgext-pill__btn-collapse:hover {
+  color: #e2e8f0;
 }
 
 @keyframes cgext-spin {

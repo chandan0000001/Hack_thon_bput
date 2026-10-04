@@ -91,6 +91,31 @@
     });
   }
 
+  /**
+   * Resolve a display confidence percentage (integer 1-100) or null.
+   * Reads result.confidence or result.model_confidence.
+   * If 0, null, or missing, falls back to distance from ambiguity threshold (50):
+   *   Math.round(Math.abs(riskScore - 50) * 2)
+   * If resulting percentage is 0 or invalid, returns null (hides 0% confidence).
+   */
+  function resolveDisplayConfidence(data) {
+    if (!data) return null;
+    const raw = data.confidence ?? data.model_confidence;
+    if (raw != null) {
+      const num = Number(raw);
+      if (Number.isFinite(num) && num > 0) {
+        const pct = num <= 1 ? Math.round(num * 100) : Math.round(num);
+        return pct > 0 ? pct : null;
+      }
+    }
+    const score = Number(data.risk_score);
+    if (Number.isFinite(score)) {
+      const pct = Math.round(Math.abs(score - 50) * 2);
+      return pct > 0 ? pct : null;
+    }
+    return null;
+  }
+
   global.CyberGuardExt = global.CyberGuardExt || {};
   global.CyberGuardExt.popupViews = {
     nextView,
@@ -100,5 +125,6 @@
     scoreColorClass,
     deepfakeVerdict,
     suspiciousNetworkIndicators,
+    resolveDisplayConfidence,
   };
 })(globalThis);

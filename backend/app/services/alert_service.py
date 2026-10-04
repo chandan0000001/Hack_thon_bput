@@ -52,6 +52,7 @@ async def create_alert(
     severity: str,
     llm_output: dict[str, Any],
     created_by: Optional[str] = None,
+    confidence: Optional[float] = None,
 ) -> Alert:
     """Persist an alert and its recommended actions, and update the associated event."""
     alert_id = str(uuid.uuid4())
@@ -93,6 +94,7 @@ async def create_alert(
         threat_type=threat_type,
         severity=str(severity)[:32],
         risk_score=score,
+        confidence=confidence,
         status="new",
         summary=explanation[:250] if explanation else title[:250],
         indicators=indicators,

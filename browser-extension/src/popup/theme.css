@@ -133,6 +133,33 @@
   font-size: 10.5px;
 }
 
+.settings-group {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--cg-surface);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius);
+  margin-bottom: 6px;
+  box-sizing: border-box;
+}
+
+.toggle-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--cg-text);
+  cursor: pointer;
+}
+
+.toggle-row input[type="checkbox"] {
+  accent-color: var(--cg-accent);
+  cursor: pointer;
+}
+
 .pointers {
   display: flex;
   flex-direction: column;

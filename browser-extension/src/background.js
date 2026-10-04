@@ -412,27 +412,159 @@ async function maybeRunStageTwo(tabId, url, verdict) {
   }
 }
 
-function armTabGuard() {
-  if (!api.tabs || !api.tabs.onUpdated) return;
-  api.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    (async () => {
-      const url = (changeInfo && changeInfo.url) || (changeInfo && changeInfo.status === 'complete' && tab && tab.url) || null;
-      if (!url) return;
-      if (CyberGuardExt.detect.isInternalUrl(url)) {
-        clearTabScan(tabId);
-        return;
-      }
-      if (!(await autoScanEnabled())) return;
-      const verdict = await analyzeCurrentTabUrl(tabId, url);
-      await maybeRunStageTwo(tabId, url, verdict);
-    })().catch(() => {});
-  });
-  if (api.tabs.onRemoved) {
-    api.tabs.onRemoved.addListener((tabId) => clearTabScan(tabId));
+// --- S1 Navigation Guard (chrome.webNavigation.onBeforeNavigate) ---
+const navSessionAllowlist = new Map(); // url -> expiresAt
+const inFlightNavigations = new Map(); // tabId -> navId
+
+async function isAutoBlockNavigationEnabled() {
+  try {
+    const stored = await api.storage.local.get({ autoBlockNavigation: true });
+    return stored.autoBlockNavigation !== false;
+  } catch (e) {
+    return true;
   }
 }
 
-armTabGuard();
+async function isNavAllowlisted(url) {
+  const now = Date.now();
+  if (!url) return false;
+  if (navSessionAllowlist.has(url) && navSessionAllowlist.get(url) > now) return true;
+  try {
+    const u = new URL(url);
+    u.hash = '';
+    if (navSessionAllowlist.has(u.href) && navSessionAllowlist.get(u.href) > now) return true;
+  } catch (e) {}
+
+  try {
+    const stored = await api.storage.session.get({ navAllowlist: {} });
+    const list = (stored && stored.navAllowlist) || {};
+    if (list[url] && list[url] > now) {
+      navSessionAllowlist.set(url, list[url]);
+      return true;
+    }
+    const u = new URL(url);
+    u.hash = '';
+    if (list[u.href] && list[u.href] > now) {
+      navSessionAllowlist.set(u.href, list[u.href]);
+      return true;
+    }
+  } catch (e) {}
+
+  return false;
+}
+
+function setNavAllowlist(url, ttlMs = 10 * 60 * 1000) {
+  const expiresAt = Date.now() + ttlMs;
+  navSessionAllowlist.set(url, expiresAt);
+  try {
+    const u = new URL(url);
+    u.hash = '';
+    navSessionAllowlist.set(u.href, expiresAt);
+  } catch (e) {}
+  api.storage.session.get({ navAllowlist: {} }).then((stored) => {
+    const list = (stored && stored.navAllowlist) || {};
+    list[url] = expiresAt;
+    try {
+      const u = new URL(url);
+      u.hash = '';
+      list[u.href] = expiresAt;
+    } catch (e) {}
+    return api.storage.session.set({ navAllowlist: list });
+  }).catch(() => {});
+}
+
+function isWebOrigin(url) {
+  try {
+    const u = new URL(url);
+    const orig = new URL(CFG.WEB_ORIGIN);
+    return u.origin === orig.origin;
+  } catch {
+    return false;
+  }
+}
+
+function isExtensionPage(url) {
+  if (!url) return true;
+  const s = String(url).toLowerCase();
+  if (s.startsWith('chrome-extension://') || s.startsWith('moz-extension://') || s.startsWith('about:') || s.startsWith('chrome://') || s.startsWith('edge://')) {
+    return true;
+  }
+  if (s.includes('blocked.html')) return true;
+  return CyberGuardExt.detect ? CyberGuardExt.detect.isInternalUrl(url) : false;
+}
+
+async function handleBeforeNavigate(details) {
+  if (!details || !details.url || (details.frameId != null && details.frameId !== 0)) return;
+  const url = details.url;
+  const tabId = details.tabId;
+
+  // For each navigation in http/https tabs: skip if URL is in session allowlist, the web origin, or extension pages.
+  if (!/^https?:\/\//i.test(url)) return;
+  if (isExtensionPage(url)) return;
+  if (isWebOrigin(url)) return;
+  if (await isNavAllowlisted(url)) return;
+  if (!(await isAutoBlockNavigationEnabled())) return;
+
+  const auth = await getAuth();
+  if (!auth || !auth.access_token) return; // fail-open
+
+  const navId = (inFlightNavigations.get(tabId) || 0) + 1;
+  inFlightNavigations.set(tabId, navId);
+
+  try {
+    const data = await CyberGuardExt.apiClient.analyzeUrl(CFG.API_BASE_URL, url);
+    if (inFlightNavigations.get(tabId) !== navId) return;
+
+    const riskScore = typeof data?.risk_score === 'number' ? data.risk_score : (typeof data?.score === 'number' ? data.score : null);
+    const scoreFraction = riskScore != null ? (riskScore > 1 ? riskScore / 100 : riskScore) : 0;
+    const recAction = String(data?.recommended_action || (
+      scoreFraction >= 0.85 ? 'block' : scoreFraction >= 0.60 ? 'quarantine' : scoreFraction >= 0.30 ? 'notify' : 'pass'
+    )).toLowerCase();
+
+    // 4-tier matrix: if recommended_action is 'quarantine' or 'block' (score >= 0.60) -> AUTO-BLOCK
+    if (recAction === 'quarantine' || recAction === 'block' || scoreFraction >= 0.60) {
+      const reason = (data?.indicators && data.indicators[0] && (data.indicators[0].description || data.indicators[0].value))
+        || data?.explanation
+        || `High-risk URL detected (${recAction.toUpperCase()})`;
+      const top3 = (data?.indicators || []).slice(0, 3);
+      const enc = encodeURIComponent;
+      const getURL = (api.raw && api.raw.runtime && api.raw.runtime.getURL)
+        ? api.raw.runtime.getURL('blocked.html') : 'blocked.html';
+      const blockedPage = `${getURL}?url=${enc(url)}`
+        + `&reason=${enc(reason)}`
+        + `&score=${enc(riskScore != null ? (riskScore <= 1 && riskScore > 0 ? Math.round(riskScore * 100) : Math.round(riskScore)) : Math.round(scoreFraction * 100))}`
+        + `&severity=${enc(data?.severity || (scoreFraction >= 0.85 ? 'critical' : 'high'))}`
+        + `&indicators=${enc(JSON.stringify(top3))}`;
+
+      await api.tabs.update(tabId, { url: blockedPage });
+    }
+  } catch (err) {
+    // Fail-open
+  }
+}
+
+function handleNavCompleted(details) {
+  if (details && (details.frameId == null || details.frameId === 0) && details.tabId != null) {
+    inFlightNavigations.delete(details.tabId);
+  }
+}
+
+function armNavigationGuard() {
+  const wn = api.webNavigation || (api.raw && api.raw.webNavigation);
+  if (!wn) return;
+  if (wn.onBeforeNavigate && typeof wn.onBeforeNavigate.addListener === 'function') {
+    wn.onBeforeNavigate.addListener((details) => {
+      handleBeforeNavigate(details).catch(() => {});
+    });
+  }
+  if (wn.onCompleted && typeof wn.onCompleted.addListener === 'function') {
+    wn.onCompleted.addListener((details) => {
+      handleNavCompleted(details);
+    });
+  }
+}
+
+armNavigationGuard();
 
 async function getTabScanVerdict(msg) {
   const tabId = msg && msg.tabId;
@@ -490,6 +622,19 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         })();
       case 'OPEN_URL_VIEW':
         return openUrlView(msg);
+      case 'NAV_ALLOWLIST_ADD':
+        setNavAllowlist(msg.url, msg.ttlMs);
+        return { ok: true };
+      case 'GET_NAV_SETTINGS': {
+        const autoBlock = await isAutoBlockNavigationEnabled();
+        return { ok: true, autoBlockNavigation: autoBlock };
+      }
+      case 'SET_NAV_SETTINGS': {
+        if (typeof msg.autoBlockNavigation === 'boolean') {
+          await api.storage.local.set({ autoBlockNavigation: msg.autoBlockNavigation });
+        }
+        return { ok: true };
+      }
       default:
         return { ok: false, error: 'unknown_message' };
     }
@@ -509,4 +654,21 @@ if (api.alarms && api.alarms.onAlarm) {
   if (auth && auth.refresh_token) scheduleRefresh(auth);
 })();
 
-globalThis.CyberGuardBackground = { handleExtAuth, startAuth, doRefresh, signOut, scheduleRefresh, randomNonce, analyzeBatch, openUrlView, analyzeCurrentTabUrl, getTabScanVerdict, clearTabScan };
+globalThis.CyberGuardBackground = {
+  handleExtAuth,
+  startAuth,
+  doRefresh,
+  signOut,
+  scheduleRefresh,
+  randomNonce,
+  analyzeBatch,
+  openUrlView,
+  analyzeCurrentTabUrl,
+  getTabScanVerdict,
+  clearTabScan,
+  handleBeforeNavigate,
+  handleNavCompleted,
+  isNavAllowlisted,
+  setNavAllowlist,
+  isAutoBlockNavigationEnabled,
+};

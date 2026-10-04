@@ -169,7 +169,7 @@ async function main() {
     await popup.getByRole('button', { name: 'Scan', exact: true }).click();
     await popup.waitForTimeout(700);
     const fakeText = await dump(popup, 'popup: Deepfake result');
-    check('Deepfake result shows FAKE verdict + confidence', fakeText.includes('FAKE') && fakeText.includes('88%'));
+    check('Deepfake result shows FAKE verdict + manipulation probability', fakeText.includes('FAKE') && fakeText.includes('88%'));
 
     // ---- Open Web Console ------------------------------------------------
     await popup.locator('#view-deepfake [data-back]').click();

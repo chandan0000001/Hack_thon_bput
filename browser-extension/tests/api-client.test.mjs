@@ -37,7 +37,7 @@ test('8 API client methods hit the audited contracts (URL JSON, Email JSON, Deep
   assert.equal(urlRes.risk_score, 82);
   assert.equal(calls[0].url, 'http://api/analysis/url');
   assert.equal(calls[0].init.method, 'POST');
-  assert.deepEqual(JSON.parse(calls[0].init.body), { url: 'https://evil.example/login' });
+  assert.deepEqual(JSON.parse(calls[0].init.body), { url: 'https://evil.example/login', source: 'browser_extension' });
   assert.equal(calls[0].init.headers.Authorization, 'Bearer tok-1');
   assert.equal(calls[0].init.headers['Content-Type'], 'application/json');
 

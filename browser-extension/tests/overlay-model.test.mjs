@@ -44,4 +44,21 @@ test('20 batch results -> severity summary + one card per detection', () => {
   const real = buildOverlayModel([{ kind: 'image', input: 'x', ok: true, data: { manipulation_probability: 0.2, severity: 'low' } }]);
   assert.equal(real.cards[0].verdict, 'REAL');
   assert.equal(buildOverlayModel([]).summary, 'no results');
+
+  // Confidence resolution: null or 0.0 confidence does NOT produce 0%
+  const benignEmail = buildOverlayModel([{
+    kind: 'email',
+    input: 'The timetable is on the student portal.',
+    ok: true,
+    data: { risk_score: 1, severity: 'safe', confidence: null, indicators: [] },
+  }]);
+  assert.equal(benignEmail.cards[0].confidence, 0.98);
+
+  const zeroConfEmail = buildOverlayModel([{
+    kind: 'email',
+    input: 'Click to verify',
+    ok: true,
+    data: { risk_score: 85, severity: 'critical', confidence: 0, indicators: [] },
+  }]);
+  assert.equal(zeroConfEmail.cards[0].confidence, 0.7);
 });

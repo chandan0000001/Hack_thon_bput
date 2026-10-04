@@ -111,6 +111,10 @@
   function detectImages(doc, maxDetections = 20) {
     const found = [];
     for (const img of doc.querySelectorAll('img')) {
+      if (img.classList && img.classList.contains('cgext-pill__thumb')) continue;
+      if (typeof img.closest === 'function' && (img.closest('#cgext-pill') || img.closest('#cgext-overlay-root'))) {
+        continue;
+      }
       const w = Number(img.naturalWidth || img.width || img.getAttribute('width') || 0);
       const h = Number(img.naturalHeight || img.height || img.getAttribute('height') || 0);
       if (w > 200 && h > 200) {

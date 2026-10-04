@@ -20,6 +20,24 @@
       : { verdict: 'REAL', confidence: 1 - prob };
   }
 
+  function resolveDisplayConfidence(data) {
+    if (!data) return null;
+    const raw = data.confidence ?? data.model_confidence;
+    if (raw != null) {
+      const num = Number(raw);
+      if (Number.isFinite(num) && num > 0) {
+        const pct = num <= 1 ? Math.round(num * 100) : Math.round(num);
+        return pct > 0 ? pct : null;
+      }
+    }
+    const score = Number(data.risk_score);
+    if (Number.isFinite(score)) {
+      const pct = Math.round(Math.abs(score - 50) * 2);
+      return pct > 0 ? pct : null;
+    }
+    return null;
+  }
+
   /**
    * results: [{kind:'url'|'email'|'image', input, ok, data?, error?}]
    *   url/email data = AlertResponse; image data = media dict.
@@ -32,18 +50,24 @@
         return { kind: (r && r.kind) || 'unknown', input: (r && r.input) || '', failed: true, error: (r && r.error) || 'Analysis failed' };
       }
       if (r.kind === 'url') {
+        const confPct = resolveDisplayConfidence(r.data);
         return {
           kind: 'url', input: r.input, failed: false,
           score: Number(r.data.risk_score), severity: r.data.severity || 'low',
-          confidence: Number(r.data.confidence), explanation: r.data.explanation,
+          confidence: confPct != null ? confPct / 100 : null,
+          confidencePct: confPct,
+          explanation: r.data.explanation,
           indicators: r.data.indicators || [],
         };
       }
       if (r.kind === 'email') {
+        const confPct = resolveDisplayConfidence(r.data);
         return {
           kind: 'email', input: r.input, failed: false,
           score: Number(r.data.risk_score), severity: r.data.severity || 'low',
-          confidence: Number(r.data.confidence), explanation: r.data.explanation,
+          confidence: confPct != null ? confPct / 100 : null,
+          confidencePct: confPct,
+          explanation: r.data.explanation,
           mitre: r.data.mitre || [],
           network: (r.data.indicators || []).filter((i) =>
             String(i.type || '').toLowerCase().includes('url') ||
@@ -94,16 +118,12 @@
     if (card.kind === 'image') {
       const line = el('div', 'cgext-card__metrics');
       line.appendChild(el('span', `cgext-card__verdict cg-score ${card.verdict === 'FAKE' ? 'is-fake' : 'is-real'}`, card.verdict));
-      if (card.confidence != null) line.appendChild(el('span', 'cgext-card__meta cg-score', `confidence ${Math.round(card.confidence * 100)}%`));
       if (card.method) line.appendChild(el('span', 'cgext-card__meta cg-score', `method ${card.method}`));
       cardEl.appendChild(line);
     } else {
       const line = el('div', 'cgext-card__metrics');
       line.appendChild(el('span', 'cgext-card__score cg-score', Number.isFinite(card.score) ? String(card.score) : '—'));
       line.appendChild(el('span', `cgext-pill-sev ${badgeClass(card.severity)}`, String(card.severity).toUpperCase()));
-      if (Number.isFinite(card.confidence)) {
-        line.appendChild(el('span', 'cgext-card__meta cg-score', `confidence ${Math.round(card.confidence * 100)}%`));
-      }
       cardEl.appendChild(line);
     }
 
