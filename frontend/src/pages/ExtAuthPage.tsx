@@ -57,13 +57,27 @@ export default function ExtAuthPage() {
 
   // Signed-out visitors get the normal personal login; hand Login its `next`
   // via the URL (same-app path, guarded in Login.tsx) so a successful sign-in
-  // returns into the extension flow instead of /dashboard.
+  // returns into the extension flow instead of /dashboard. Also stash the
+  // callback in localStorage (30-min TTL): flows that leave the page — OAuth
+  // provider bounces, email-verification links — lose the URL param, and the
+  // stash is the only thing that routes the user back into the handoff.
   useEffect(() => {
     if (checking || searchParams.get('next')) return;
     const params = new URLSearchParams(searchParams);
     params.set('next', callbackNext);
     setSearchParams(params, { replace: true });
   }, [checking, searchParams, callbackNext, setSearchParams]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'cyberguard_ext_auth_next',
+        JSON.stringify({ next: callbackNext, at: Date.now() }),
+      );
+    } catch {
+      // ignore — URL ?next= still covers the common path
+    }
+  }, [callbackNext]);
 
   if (checking) {
     return (

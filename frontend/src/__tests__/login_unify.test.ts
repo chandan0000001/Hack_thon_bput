@@ -164,20 +164,21 @@ describe('LOGIN-UNIFY Test Suite (8 Checks)', () => {
     assert.ok(fs.existsSync(authStorePath), 'authStore.ts must exist');
     const authStoreContent = fs.readFileSync(authStorePath, 'utf8');
 
-    // loginWithOAuth accepts mode parameter
-    assert.match(authStoreContent, /loginWithOAuth:\s*\(provider:\s*'google'\s*\|\s*'github',\s*mode\?:\s*'personal'\s*\|\s*'org'\)/);
+    // loginWithOAuth accepts mode + optional nextPath (EXT-P1 handoff hop)
+    assert.match(authStoreContent, /loginWithOAuth:\s*\(provider:\s*'google'\s*\|\s*'github',\s*mode\?:\s*'personal'\s*\|\s*'org',\s*nextPath\?:\s*string\)/);
 
     // Stores intent in sessionStorage
     assert.match(authStoreContent, /sessionStorage\.setItem\('cyberguard_oauth_mode',\s*selectedMode\)/);
 
-    // Mode-specific redirectTo URL
+    // Mode-specific redirect params + next preserved (same-app paths only)
     assert.match(authStoreContent, /selectedMode === 'org'/);
-    assert.match(authStoreContent, /\/login\?mode=org/);
-    assert.match(authStoreContent, /\/login/);
+    assert.match(authStoreContent, /params\.set\('mode',\s*'org'\)/);
+    assert.match(authStoreContent, /params\.set\('next',\s*nextPath\)/);
+    assert.match(authStoreContent, /!nextPath\.startsWith\('\/\/'\)/);
 
-    // Login.tsx passes mode to loginWithOAuth
+    // Login.tsx passes mode + the next hop to loginWithOAuth
     const loginContent = fs.readFileSync(loginPath, 'utf8');
-    assert.match(loginContent, /loginWithOAuth\(provider,\s*authMode\)/);
+    assert.match(loginContent, /loginWithOAuth\(\s*provider,\s*authMode,\s*authMode === 'personal' && nextPath !== '\/dashboard' \? nextPath : undefined,?\s*\)/);
   });
 
   // Check 8: forbidden-strings scan still zero on new code; personal login visual tree unchanged vs baseline snapshot

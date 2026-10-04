@@ -89,7 +89,16 @@ async function handleExtAuth(msg, sender) {
   await api.storage.local.set({ [AUTH_KEY]: auth });
   scheduleRefresh(auth);
   if (sender && sender.tab && sender.tab.id != null) {
-    try { await api.tabs.remove(sender.tab.id); } catch (e) { /* tab may be gone */ }
+    // Don't yank the tab instantly — the callback page shows a
+    // "Signed in successfully" state first. Close it after the page had
+    // time to render (the page also self-closes via window.close()).
+    const tabId = sender.tab.id;
+    setTimeout(() => {
+      try {
+        const p = api.tabs.remove(tabId);
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (e) { /* tab may already be gone */ }
+    }, 2500);
   }
   return { ok: true };
 }

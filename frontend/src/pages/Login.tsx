@@ -41,6 +41,23 @@ export default function Login() {
   // navigation must re-attach it or the extension handoff is lost.
   const goTo = (path: string) => navigate(path + (window.location.hash || ''), { replace: true });
 
+  // Pending extension-flow callback stashed by /ext/auth (30-min TTL).
+  // Consumed once — a normal login later must not inherit the old handoff.
+  const takePendingExtNext = (): string | null => {
+    try {
+      const raw = localStorage.getItem('cyberguard_ext_auth_next');
+      if (!raw) return null;
+      localStorage.removeItem('cyberguard_ext_auth_next');
+      const parsed = JSON.parse(raw) as { next?: string; at?: number };
+      if (!parsed?.next || !parsed?.at) return null;
+      if (!parsed.next.startsWith('/') || parsed.next.startsWith('//')) return null;
+      if (Date.now() - parsed.at > 30 * 60 * 1000) return null;
+      return parsed.next;
+    } catch {
+      return null;
+    }
+  };
+
   const login = useAuthStore((s) => s.login);
   const signUp = useAuthStore((s) => s.signUp);
   const requestPasswordReset = useAuthStore((s) => s.requestPasswordReset);
@@ -123,8 +140,11 @@ export default function Login() {
         }
       });
     } else {
-      // Personal mode: ALWAYS land on dashboard (or the ?next= override)
-      goTo(nextPath);
+      // Personal mode: ALWAYS land on dashboard — or the ?next= override,
+      // or a pending extension-flow callback stashed before an auth flow
+      // that left the page (OAuth bounce, email-verification link).
+      const target = nextPath !== '/dashboard' ? nextPath : (takePendingExtNext() ?? '/dashboard');
+      goTo(target);
     }
   }, [isAuthenticated, fetchOrganizations, navigate, authMode, nextPath]);
 
@@ -436,7 +456,14 @@ export default function Login() {
     resetMessages();
     setOauthLoading(provider);
     try {
-      await loginWithOAuth(provider, authMode);
+      // Carry the ?next= hop through the OAuth round-trip (redirectTo is the
+      // only URL that survives the provider bounce) — critical for the
+      // extension sign-in flow whose callback lives at /ext/callback.
+      await loginWithOAuth(
+        provider,
+        authMode,
+        authMode === 'personal' && nextPath !== '/dashboard' ? nextPath : undefined,
+      );
       if (authMode === 'personal') {
         goTo(nextPath);
       }

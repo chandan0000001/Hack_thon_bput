@@ -34,7 +34,7 @@ interface AuthState {
   activeProject: Project | null;
 
   login: (email: string, password: string, mode?: 'personal' | 'org') => Promise<void>;
-  loginWithOAuth: (provider: 'google' | 'github', mode?: 'personal' | 'org') => Promise<void>;
+  loginWithOAuth: (provider: 'google' | 'github', mode?: 'personal' | 'org', nextPath?: string) => Promise<void>;
   signUp: (
     fullName: string,
     email: string,
@@ -178,7 +178,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (error) throw new Error(error.message);
   },
 
-  loginWithOAuth: async (provider: 'google' | 'github', mode?: 'personal' | 'org') => {
+  loginWithOAuth: async (provider: 'google' | 'github', mode?: 'personal' | 'org', nextPath?: string) => {
     const selectedMode = mode || 'personal';
     try {
       if (typeof window !== 'undefined' && window.sessionStorage) {
@@ -187,9 +187,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch {
       // ignore
     }
-    const redirectUrl = selectedMode === 'org'
-      ? `${window.location.origin}/login?mode=org`
-      : `${window.location.origin}/login`;
+    // Preserve the post-auth hop (e.g. the /ext/callback extension handoff)
+    // through the OAuth round-trip: the provider bounces the browser off-site
+    // and back, so only the redirectTo URL survives — same-app paths only.
+    const params = new URLSearchParams();
+    if (selectedMode === 'org') params.set('mode', 'org');
+    if (nextPath && nextPath.startsWith('/') && !nextPath.startsWith('//')) {
+      params.set('next', nextPath);
+    }
+    const qs = params.toString();
+    const redirectUrl = `${window.location.origin}/login${qs ? `?${qs}` : ''}`;
     const { error } = await getSupabase().auth.signInWithOAuth({
       provider,
       options: {

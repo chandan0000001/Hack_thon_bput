@@ -119,7 +119,11 @@ test('1.1 EXT_AUTH_START mints a nonce and the matching handoff authenticates', 
   assert.ok(stored.extAuth, 'auth object persisted to storage.local');
   assert.ok(stored.extAuth.access_token.startsWith('at-'), 'access token persisted');
   assert.ok(stored.extAuth.refresh_token.startsWith('rt-'), 'refresh token persisted');
-  assert.ok(chrome.__removed.includes(42), 'callback tab is closed');
+  // The tab is NOT yanked instantly: the callback page shows its success
+  // state first, then the background closes it after the grace period.
+  assert.ok(!chrome.__removed.includes(42), 'tab stays open briefly for the success page');
+  await new Promise((r) => setTimeout(r, 2700));
+  assert.ok(chrome.__removed.includes(42), 'callback tab is closed after the grace period');
   assert.ok(chrome.__alarms.some((a) => a.name === 'extAuthRefresh'), 'refresh alarm armed');
 });
 

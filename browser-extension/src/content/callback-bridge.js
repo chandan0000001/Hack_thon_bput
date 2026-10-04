@@ -20,7 +20,7 @@
   if (!raw || !raw.runtime || !raw.runtime.sendMessage) return;
 
   const POLL_MS = 100;
-  const DEADLINE_MS = 10000; // per callback-path visit, not per document
+  const DEADLINE_MS = 30000; // per callback-path visit, not per document
   let forwarded = false;
   let callbackSince = null;
 
@@ -39,14 +39,22 @@
         forwarded = true;
         clearInterval(timer);
         const payload = { type: 'EXT_AUTH', hash };
-        // The background also closes sender.tab; window.close() is the
-        // fallback that covers contexts where sender.tab is unavailable.
-        raw.runtime.sendMessage(payload, () => {
-          try { window.close(); } catch (e) { /* background closes the tab */ }
+        raw.runtime.sendMessage(payload, (res) => {
+          // Surface the handoff result on the page so the user sees
+          // success/error instead of a tab that silently vanishes or hangs.
+          try {
+            window.dispatchEvent(new CustomEvent('cg:ext-auth-result', {
+              detail: res || { ok: false, error: 'no_response' },
+            }));
+          } catch (e) { /* page is not the CyberGuard callback app */ }
+          if (res && res.ok) {
+            // Give the success page a moment to be visible, then close.
+            // The background also removes the tab as a fallback.
+            setTimeout(() => {
+              try { window.close(); } catch (e) { /* background closes it */ }
+            }, 2000);
+          }
         });
-        setTimeout(() => {
-          try { window.close(); } catch (e) { /* already closing */ }
-        }, 500);
       }
     } else if (Date.now() - callbackSince > DEADLINE_MS) {
       clearInterval(timer);
