@@ -34,6 +34,10 @@ export default function ExtAuthPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const state = searchParams.get('state') ?? '';
   const [checking, setChecking] = useState(true);
+  // Live web session: ask before reusing it. A silent auto-handoff here made
+  // "sign out (extension) → sign in" skip the credential form entirely,
+  // because the WEBSITE's Supabase session survives the extension's sign-out.
+  const [existingEmail, setExistingEmail] = useState<string | null>(null);
 
   const callbackNext = `/ext/callback?state=${encodeURIComponent(state)}&v=1`;
 
@@ -44,7 +48,7 @@ export default function ExtAuthPage() {
       if (supabase) {
         const { data } = await supabase.auth.getSession();
         if (!cancelled && data.session) {
-          navigate(callbackNext, { replace: true });
+          setExistingEmail(data.session.user?.email ?? 'your account');
           return;
         }
       }
@@ -53,7 +57,7 @@ export default function ExtAuthPage() {
     return () => {
       cancelled = true;
     };
-  }, [navigate, state, callbackNext]);
+  }, []);
 
   // Signed-out visitors get the normal personal login; hand Login its `next`
   // via the URL (same-app path, guarded in Login.tsx) so a successful sign-in
@@ -83,6 +87,38 @@ export default function ExtAuthPage() {
     return (
       <ExtShell>
         <p className="text-center text-sm text-zinc-400">Checking sign-in status…</p>
+      </ExtShell>
+    );
+  }
+
+  if (existingEmail) {
+    return (
+      <ExtShell>
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-6 text-center">
+          <p className="text-sm text-zinc-300">
+            You are signed in on the web as
+          </p>
+          <p className="mt-1 font-mono text-sm text-zinc-100">{existingEmail}</p>
+          <button
+            type="button"
+            onClick={() => navigate(callbackNext, { replace: true })}
+            className="mt-5 w-full rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500"
+          >
+            Connect the extension as this account
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              const supabase = getSupabase();
+              if (supabase) await supabase.auth.signOut().catch(() => undefined);
+              setExistingEmail(null);
+              setChecking(false);
+            }}
+            className="mt-2 w-full rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+          >
+            Use a different account
+          </button>
+        </div>
       </ExtShell>
     );
   }
