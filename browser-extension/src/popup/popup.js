@@ -418,7 +418,22 @@
         pause_detection: false,
       });
       autoblockEl.checked = stored.autoBlockNavigation !== false;
-      pauseDetectionEl.checked = Boolean(stored.pause_detection);
+      // toggle shows "Auto-detect on pages" — checked = detection enabled for
+      // the ACTIVE tab (stored pause_detection is the global inverse, and a
+      // per-tab dismissed pill reads as off until re-ticked here).
+      let autoDetectOn = !stored.pause_detection;
+      try {
+        const tabs = await api.raw.tabs.query({ active: true, currentWindow: true });
+        if (tabs && tabs[0] && tabs[0].id) {
+          const st = await new Promise((resolve) => {
+            try {
+              api.raw.tabs.sendMessage(tabs[0].id, { type: 'GET_PILL_STATE' }, (r) => resolve(r || null));
+            } catch (e) { resolve(null); }
+          });
+          if (st && st.ok && st.dismissed) autoDetectOn = false;
+        }
+      } catch (e) { /* no content script on this tab — use global state */ }
+      pauseDetectionEl.checked = autoDetectOn;
     } catch (e) {}
 
     autoblockEl.addEventListener('change', async () => {
@@ -428,14 +443,15 @@
     });
 
     pauseDetectionEl.addEventListener('change', async () => {
+      const autoDetectOn = pauseDetectionEl.checked;
       try {
-        await api.storage.local.set({ pause_detection: pauseDetectionEl.checked });
+        await api.storage.local.set({ pause_detection: !autoDetectOn });
         try {
           const tabs = await api.raw.tabs.query({ active: true, currentWindow: true });
           if (tabs && tabs[0] && tabs[0].id) {
             api.raw.tabs.sendMessage(tabs[0].id, {
               type: 'SET_LOCK_STATE',
-              locked: pauseDetectionEl.checked,
+              locked: !autoDetectOn,
             }, () => {});
           }
         } catch (e) {}

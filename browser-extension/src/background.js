@@ -566,6 +566,23 @@ function armNavigationGuard() {
 
 armNavigationGuard();
 
+// Drop per-tab pill-dismissal entries when the tab closes (session storage).
+const tabsApi = api.tabs || (api.raw && api.raw.tabs);
+if (tabsApi && tabsApi.onRemoved && typeof tabsApi.onRemoved.addListener === 'function') {
+  tabsApi.onRemoved.addListener((tabId) => {
+    (async () => {
+      try {
+        const { cg_pill_dismissed_tabs: set } = await api.storage.session.get('cg_pill_dismissed_tabs');
+        if (set && Object.prototype.hasOwnProperty.call(set, String(tabId))) {
+          const next = { ...set };
+          delete next[String(tabId)];
+          await api.storage.session.set({ cg_pill_dismissed_tabs: next });
+        }
+      } catch (e) { /* session storage unavailable */ }
+    })();
+  });
+}
+
 async function getTabScanVerdict(msg) {
   const tabId = msg && msg.tabId;
   try {
@@ -620,6 +637,44 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           return { ok: true, verdict: await analyzeCurrentTabUrl(tabId, url) };
         })();
+      case 'PILL_DISMISS': {
+        // Sticky per-tab pill dismissal (scanner S6): survives reloads until
+        // the popup auto-detect toggle flips (which clears the whole set).
+        const tabId = sender && sender.tab && sender.tab.id;
+        if (tabId != null) {
+          try {
+            const { cg_pill_dismissed_tabs: set } = await api.storage.session.get('cg_pill_dismissed_tabs');
+            const next = set && typeof set === 'object' ? { ...set } : {};
+            next[String(tabId)] = 1;
+            await api.storage.session.set({ cg_pill_dismissed_tabs: next });
+          } catch (e) { /* session storage unavailable — dismissal stays in-memory */ }
+        }
+        return { ok: true };
+      }
+      case 'PILL_RESUME': {
+        const tabId = sender && sender.tab && sender.tab.id;
+        if (tabId != null) {
+          try {
+            const { cg_pill_dismissed_tabs: set } = await api.storage.session.get('cg_pill_dismissed_tabs');
+            if (set && Object.prototype.hasOwnProperty.call(set, String(tabId))) {
+              const next = { ...set };
+              delete next[String(tabId)];
+              await api.storage.session.set({ cg_pill_dismissed_tabs: next });
+            }
+          } catch (e) { /* session storage unavailable */ }
+        }
+        return { ok: true };
+      }
+      case 'GET_PILL_DISMISSED': {
+        const tabId = sender && sender.tab && sender.tab.id;
+        if (tabId == null) return { ok: true, dismissed: false };
+        try {
+          const { cg_pill_dismissed_tabs: set } = await api.storage.session.get('cg_pill_dismissed_tabs');
+          return { ok: true, dismissed: Boolean(set && set[String(tabId)]) };
+        } catch (e) {
+          return { ok: true, dismissed: false };
+        }
+      }
       case 'OPEN_URL_VIEW':
         return openUrlView(msg);
       case 'NAV_ALLOWLIST_ADD':

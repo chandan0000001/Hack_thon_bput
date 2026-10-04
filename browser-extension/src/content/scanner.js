@@ -40,6 +40,10 @@
   let state = 'idle';
   let isLocked = false;
   let isAutoLocked = false;
+  // Sticky per-tab dismissal: set by the pill [×]. The pill stays hidden for
+  // this tab (across mutations and page reloads, via the background's session
+  // tab set) until auto-detect is re-toggled in the popup.
+  let isDismissed = false;
   let currentRequestId = null;
   let activeSnapshot = [];
   let queuedNewDetections = [];
@@ -130,7 +134,7 @@
   }
 
   function scan() {
-    if (isLocked || isAutoLocked) return;
+    if (isDismissed || isLocked || isAutoLocked) return;
     if (state === 'analyzing') return;
 
     state = 'detecting';
@@ -143,7 +147,7 @@
   const batcher = detectLib.createBatcher(scan, 500);
 
   function scheduleScan() {
-    if (isLocked) return;
+    if (isDismissed || isLocked) return;
     if (state === 'analyzing') {
       // S5: Mutations during analyzing: DO NOT reset pill or drop the request;
       // queue new detections as a "+n new" badge shown after results arrive.
@@ -182,9 +186,28 @@
     if (isLocked) {
       if (observer) observer.disconnect();
     } else {
+      // Unlocking (popup auto-detect toggle, TOGGLE_LOCK, …) revives a
+      // dismissed pill: resume detection and let the counts re-show it.
+      const wasDismissed = isDismissed;
+      isDismissed = false;
       isAutoLocked = false;
       armObserver();
       scheduleScan();
+      if (wasDismissed) {
+        const raw = g.browser ?? g.chrome;
+        if (raw && raw.runtime && raw.runtime.sendMessage) {
+          raw.runtime.sendMessage({ type: 'PILL_RESUME' }, () => {});
+        }
+      }
+    }
+  }
+
+  function dismissPill() {
+    isDismissed = true;
+    if (observer) observer.disconnect();
+    const raw = g.browser ?? g.chrome;
+    if (raw && raw.runtime && raw.runtime.sendMessage) {
+      raw.runtime.sendMessage({ type: 'PILL_DISMISS' }, () => {});
     }
   }
 
@@ -354,6 +377,7 @@
   pillUi.init({
     onAnalyze: handleAnalyze,
     onToggleLock: (locked) => setLocked(locked),
+    onDismiss: dismissPill,
     onShowOverlay: (results) => {
       if (g.CyberGuardExt && g.CyberGuardExt.overlayUi) {
         g.CyberGuardExt.overlayUi.show(results);
@@ -370,6 +394,10 @@
         sendResponse({ ok: true, locked: isLocked });
         return true;
       }
+      if (msg.type === 'GET_PILL_STATE') {
+        sendResponse({ ok: true, locked: isLocked, dismissed: isDismissed });
+        return true;
+      }
       if (msg.type === 'SET_LOCK_STATE') {
         setLocked(Boolean(msg.locked));
         sendResponse({ ok: true, locked: isLocked });
@@ -383,8 +411,23 @@
     });
   }
 
+  async function loadDismissedState() {
+    const raw = g.browser ?? g.chrome;
+    if (!raw || !raw.runtime || !raw.runtime.sendMessage) return;
+    const res = await new Promise((resolve) => {
+      try {
+        raw.runtime.sendMessage({ type: 'GET_PILL_DISMISSED' }, (r) => resolve(r || {}));
+      } catch (e) {
+        resolve({});
+      }
+    });
+    if (res && res.ok && res.dismissed) isDismissed = true;
+  }
+
   (async () => {
     await loadSettings();
+    await loadDismissedState();
+    if (isDismissed) return; // stay hidden until auto-detect is re-toggled
     scan();
     armObserver();
   })();
@@ -394,8 +437,10 @@
     getState: () => state,
     setState: (s) => { state = s; },
     isLocked: () => isLocked,
+    isDismissed: () => isDismissed,
     setLocked,
     toggleLock,
+    dismissPill,
     scanDetections,
     scan,
     scheduleScan,

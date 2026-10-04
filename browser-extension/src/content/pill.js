@@ -20,12 +20,14 @@
   let items = []; // Array of detected item objects
   let counts = { email: 0, image: 0 };
   let isLocked = false;
+  let isDismissed = false; // sticky until an unlock (popup auto-detect toggle)
   let isExpanded = false;
   let newBadgeCount = 0;
   let handlers = {
     onAnalyze: null,
     onToggleLock: null,
     onShowOverlay: null,
+    onDismiss: null,
   };
 
   function ensurePill() {
@@ -154,7 +156,9 @@
 
     closeBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      isDismissed = true;
       pill.hidden = true;
+      if (typeof handlers.onDismiss === 'function') handlers.onDismiss();
     });
 
     panelClose.addEventListener('click', () => {
@@ -331,6 +335,7 @@
   }
 
   function setCounts(next) {
+    if (isDismissed) return;
     counts = next || { email: 0, image: 0 };
     const line = formatCountString(counts);
     const pill = ensurePill();
@@ -370,6 +375,8 @@
 
   function setLocked(locked) {
     isLocked = Boolean(locked);
+    // Unlocking (popup auto-detect toggle) revives a dismissed pill.
+    if (!isLocked) isDismissed = false;
     const pill = ensurePill();
     if (!pill) return;
     if (isLocked) pill.classList.add('cgext-pill--locked');
@@ -418,6 +425,7 @@
   }
 
   function setLoading(isLoading = true, message = 'Analyzing…') {
+    if (isDismissed) return;
     const pill = ensurePill();
     if (!pill) return;
     pill.hidden = false;
@@ -435,6 +443,7 @@
   }
 
   function setError(message = 'Analysis failed') {
+    if (isDismissed) return;
     const pill = ensurePill();
     if (!pill) return;
     pill.hidden = false;
@@ -499,6 +508,7 @@
     reset,
     setLocked,
     isLocked: () => isLocked,
+    isDismissed: () => isDismissed,
     setNewBadge,
     expand,
     collapse,
