@@ -528,3 +528,56 @@ test('22.10 pill v2: expand shows rows with checkboxes; analyze selected sends o
   assert.equal(sentItems.length, 1, 'only 1 item sent');
   assert.equal(sentItems[0].id, 'item-1', 'only checked item was analyzed');
 });
+
+// -----------------------------------------------------------------------------
+// Navigation Guard: search-engine results pages are exempt
+// -----------------------------------------------------------------------------
+
+test('22.11 guard: google/bing/ddg SERP URLs are never auto-blocked (query words are not destinations)', async () => {
+  let analyzed = 0;
+  const { sandbox, tabsUpdated } = createBackgroundContext({
+    analyzeUrl: async () => {
+      analyzed++;
+      return { risk_score: 99, severity: 'critical', recommended_action: 'block', indicators: [] };
+    },
+  });
+  const { handleBeforeNavigate, isSearchResultsPageExempt } = sandbox.CyberGuardBackground;
+  assert.equal(typeof isSearchResultsPageExempt, 'function', 'background exports SERP exemption helper');
+
+  const serps = [
+    'https://www.google.com/search?q=googke&oq=googke+&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTITCAEQABiDARixAxiABBiKBT&sourceid=chrome&ie=UTF-8',
+    'https://www.google.co.in/search?q=cheap+meds',
+    'https://www.bing.com/search?q=googke&form=QBLH',
+    'https://duckduckgo.com/?q=googke',
+    'https://search.yahoo.com/search?p=googke',
+    'https://search.brave.com/search?q=googke',
+  ];
+  for (const url of serps) {
+    await handleBeforeNavigate({ tabId: 1, url, frameId: 0 });
+    assert.ok(isSearchResultsPageExempt(url), `exempt: ${url}`);
+  }
+  assert.equal(analyzed, 0, 'no SERP URL may hit the analyzer');
+  assert.equal(tabsUpdated.length, 0, 'no SERP URL may be blocked');
+
+  // A look-alike destination is still guarded
+  await handleBeforeNavigate({ tabId: 1, url: 'https://goggle.com/search?q=x', frameId: 0 });
+  assert.equal(analyzed, 1, 'non-exempt URL still analyzed');
+});
+
+test('22.12 detect.isSearchResultsPage: engines, paths, and non-engine hosts', async () => {
+  const { isSearchResultsPage } = globalThis.CyberGuardExt.detect;
+  assert.equal(isSearchResultsPage('https://www.google.com/search?q=x'), true);
+  assert.equal(isSearchResultsPage('https://google.co.uk/search?q=x'), true);
+  assert.equal(isSearchResultsPage('https://www.bing.com/search?q=x'), true);
+  assert.equal(isSearchResultsPage('https://duckduckgo.com/?q=x'), true);
+  assert.equal(isSearchResultsPage('https://lite.duckduckgo.com/lite?q=x'), true);
+  assert.equal(isSearchResultsPage('https://www.baidu.com/s?wd=x'), true);
+  assert.equal(isSearchResultsPage('https://www.ecosia.org/search?q=x'), true);
+  assert.equal(isSearchResultsPage('https://www.startpage.com/sp/search?query=x'), true);
+  // Not SERPs
+  assert.equal(isSearchResultsPage('https://goggle.com/search?q=x'), false, 'look-alike host is guarded');
+  assert.equal(isSearchResultsPage('https://evil.test/search?q=x'), false, 'unknown host is guarded');
+  assert.equal(isSearchResultsPage('https://www.google.com/mail/u/0'), false, 'non-search path is guarded');
+  assert.equal(isSearchResultsPage('https://www.google.com/'), false, 'google homepage is guarded');
+  assert.equal(isSearchResultsPage('not a url'), false);
+});

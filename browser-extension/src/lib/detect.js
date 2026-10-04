@@ -189,11 +189,52 @@
     };
   }
 
+  /**
+   * Search-engine results pages are never auto-blocked: the guard must judge
+   * the SITE you navigate to, not the words you search for (a long Google
+   * query otherwise trips URL heuristics and blocks every search).
+   */
+  const SEARCH_PATH_ENGINES = [
+    [/^([a-z0-9-]+\.)*google\.[a-z]{2,}(\.[a-z]{2,})?$/, ['/search']],
+    [/^([a-z0-9-]+\.)*bing\.com$/, ['/search']],
+    [/^([a-z0-9-]+\.)*yahoo\.com$/, ['/search']],
+    [/^([a-z0-9-]+\.)*yandex\.[a-z]{2,}(\.[a-z]{2,})?$/, ['/search']],
+    [/^([a-z0-9-]+\.)*baidu\.com$/, ['/s']],
+    [/^([a-z0-9-]+\.)*ecosia\.org$/, ['/search']],
+    [/^([a-z0-9-]+\.)*startpage\.com$/, ['/sp/search', '/do/search']],
+    [/^search\.brave\.com$/, ['/search']],
+    [/^([a-z0-9-]+\.)*ask\.com$/, ['/web']],
+    [/^([a-z0-9-]+\.)*mojeek\.com$/, ['/search']],
+  ];
+  const SEARCH_ROOT_ENGINES = [
+    /^([a-z0-9-]+\.)*duckduckgo\.com$/,
+    /^([a-z0-9-]+\.)*qwant\.com$/,
+  ];
+
+  function isSearchResultsPage(url) {
+    let u;
+    try { u = new URL(String(url)); } catch (e) { return false; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase().replace(/^www\./, '');
+    const path = (u.pathname.replace(/\/+$/, '') || '/').toLowerCase();
+    const q = u.searchParams;
+    const hasQueryTerm = q.has('q') || q.has('query') || q.has('p') || q.has('text') || q.has('wd');
+    for (const [re, paths] of SEARCH_PATH_ENGINES) {
+      if (re.test(host) && paths.includes(path)) return true;
+    }
+    if (SEARCH_ROOT_ENGINES.some((re) => re.test(host)) && hasQueryTerm
+        && (path === '/' || path === '/html' || path === '/lite')) {
+      return true;
+    }
+    return false;
+  }
+
   global.CyberGuardExt = global.CyberGuardExt || {};
   global.CyberGuardExt.detect = {
     URL_RE,
     isExcludedHost,
     isInternalUrl,
+    isSearchResultsPage,
     detectUrls,
     detectEmail,
     detectImages,

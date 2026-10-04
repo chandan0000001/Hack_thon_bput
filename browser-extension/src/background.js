@@ -502,6 +502,8 @@ async function handleBeforeNavigate(details) {
   if (!/^https?:\/\//i.test(url)) return;
   if (isExtensionPage(url)) return;
   if (isWebOrigin(url)) return;
+  // Judge the destination site, not the search words: SERP URLs are exempt.
+  if (CyberGuardExt.detect && CyberGuardExt.detect.isSearchResultsPage(url)) return;
   if (await isNavAllowlisted(url)) return;
   if (!(await isAutoBlockNavigationEnabled())) return;
 
@@ -726,4 +728,7 @@ globalThis.CyberGuardBackground = {
   isNavAllowlisted,
   setNavAllowlist,
   isAutoBlockNavigationEnabled,
+  isSearchResultsPageExempt: (url) => (CyberGuardExt.detect
+    ? CyberGuardExt.detect.isSearchResultsPage(url)
+    : false),
 };
