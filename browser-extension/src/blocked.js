@@ -86,8 +86,13 @@
   }
 
   function goBack(win = (g.document ? g.document.defaultView : g)) {
-    if (win && win.history && win.history.length > 1) {
-      win.history.back();
+    // The guard pushed this page right after the blocked target, so session
+    // history is […, target, blockedPage]. A single back() re-lands on the
+    // blocked URL, the guard re-blocks it, and the two pages ping-pong
+    // forever. Skip past the target entry; if the target was the first
+    // entry in this tab, leave history entirely.
+    if (win && win.history && win.history.length > 2) {
+      win.history.go(-2);
     } else if (win && win.location) {
       win.location.replace('about:blank');
     }

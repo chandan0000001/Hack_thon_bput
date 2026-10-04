@@ -35,9 +35,11 @@
   }
 
   backEl.addEventListener('click', () => {
-    // history.length===1 can happen when the block page replaced the load;
-    // fall back to the new-tab page rather than trapping the user.
-    if (history.length > 1) history.back();
+    // The worker pushed this page right after the blocked target, so session
+    // history is […, target, blockedPage]: a single back() re-lands on the
+    // blocked URL and gets re-blocked — an infinite loop. Skip past the
+    // target entry; if the target was this tab's first entry, leave history.
+    if (history.length > 2) history.go(-2);
     else location.replace('about:blank');
   });
 

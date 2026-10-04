@@ -271,13 +271,15 @@ test('22.6 interstitial: Continue anyway -> allowlist set + navigate; Go back', 
 
   const sessionStore = {};
   let replacedWith = null;
-  let backCalled = false;
+  let backCalls = [];
+  let wentTo = null;
 
   const mockWin = {
     document: dom.window.document,
     history: {
       length: 3,
-      back: () => { backCalled = true; },
+      back: () => { backCalls.push('back'); },
+      go: (delta) => { backCalls.push(`go:${delta}`); },
     },
     location: {
       search: '?url=https%3A%2F%2Fbad.example%2Flogin',
@@ -303,9 +305,18 @@ test('22.6 interstitial: Continue anyway -> allowlist set + navigate; Go back', 
   assert.ok(sessionStore['https://bad.example/login'] > Date.now(), 'session allowlist must have URL');
   assert.equal(replacedWith, 'https://bad.example/login', 'must navigate to original URL');
 
-  // Go back
+  // Go back must SKIP the blocked target entry (session history is
+  // […, target, blockedPage]; a single back() re-lands on the target and
+  // the guard re-blocks it — infinite loop).
   goBack(mockWin);
-  assert.equal(backCalled, true, 'history.back must be called');
+  assert.deepEqual(backCalls, ['go:-2'], 'must history.go(-2) past the blocked target');
+
+  // Blocked target was the first entry in the tab -> leave history entirely
+  const shallowWin = { ...mockWin, history: { length: 2, back: () => {}, go: () => {} } };
+  new Function('global', readFileSync(join(ROOT, 'blocked.js'), 'utf8'))(shallowWin);
+  replacedWith = null;
+  shallowWin.CyberGuardBlocked.goBack(shallowWin);
+  assert.equal(replacedWith, 'about:blank', 'must leave history when target was the first entry');
 });
 
 // -----------------------------------------------------------------------------
