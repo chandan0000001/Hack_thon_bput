@@ -158,12 +158,6 @@
     top.appendChild(el('span', `score cg-score ${scoreColorClass(score)}`, Number.isFinite(score) ? String(score) : '—'));
     const right = el('div', 'score-head__right');
     right.appendChild(el('span', `cg-badge ${severityBadgeClass(sev)}`, String(sev).toUpperCase()));
-    const confPct = popupViews.resolveDisplayConfidence
-      ? popupViews.resolveDisplayConfidence(data)
-      : null;
-    if (confPct != null && confPct > 0) {
-      right.appendChild(el('p', 'result__meta cg-score', `confidence ${confPct}%`));
-    }
     top.appendChild(right);
     container.appendChild(top);
     if (data.explanation) container.appendChild(el('p', 'result__explanation', String(data.explanation)));
@@ -175,15 +169,12 @@
   function renderDeepfakeResult(container, data) {
     container.replaceChildren();
     const prob = Number(data.manipulation_probability);
-    const { verdict, confidence } = deepfakeVerdict(Number.isFinite(prob) ? prob : NaN);
+    const { verdict } = deepfakeVerdict(Number.isFinite(prob) ? prob : NaN);
     const sev = data.severity || 'low';
     const top = el('div', 'score-head');
     top.appendChild(el('span', `score score-verdict cg-score ${verdict === 'FAKE' ? 'score-critical' : verdict === 'REAL' ? 'score-safe' : 'score-low'}`, verdict));
     const right = el('div', 'score-head__right');
     right.appendChild(el('span', `cg-badge ${severityBadgeClass(sev)}`, String(sev).toUpperCase()));
-    if (confidence != null) {
-      right.appendChild(el('p', 'result__meta cg-score', `confidence ${Math.round(confidence * 100)}%`));
-    }
     top.appendChild(right);
     container.appendChild(top);
     if (Number.isFinite(prob)) {

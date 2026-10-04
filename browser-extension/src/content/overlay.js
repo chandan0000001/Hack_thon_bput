@@ -118,26 +118,12 @@
     if (card.kind === 'image') {
       const line = el('div', 'cgext-card__metrics');
       line.appendChild(el('span', `cgext-card__verdict cg-score ${card.verdict === 'FAKE' ? 'is-fake' : 'is-real'}`, card.verdict));
-      if (card.confidence != null && card.confidence > 0) {
-        const pct = card.confidence <= 1 ? Math.round(card.confidence * 100) : Math.round(card.confidence);
-        if (pct > 0) {
-          line.appendChild(el('span', 'cgext-card__meta cg-score', `confidence ${pct}%`));
-        }
-      }
       if (card.method) line.appendChild(el('span', 'cgext-card__meta cg-score', `method ${card.method}`));
       cardEl.appendChild(line);
     } else {
       const line = el('div', 'cgext-card__metrics');
       line.appendChild(el('span', 'cgext-card__score cg-score', Number.isFinite(card.score) ? String(card.score) : '—'));
       line.appendChild(el('span', `cgext-pill-sev ${badgeClass(card.severity)}`, String(card.severity).toUpperCase()));
-      const pct = card.confidencePct != null
-        ? card.confidencePct
-        : (Number.isFinite(card.confidence) && card.confidence > 0
-            ? (card.confidence <= 1 ? Math.round(card.confidence * 100) : Math.round(card.confidence))
-            : null);
-      if (pct != null && pct > 0) {
-        line.appendChild(el('span', 'cgext-card__meta cg-score', `confidence ${pct}%`));
-      }
       cardEl.appendChild(line);
     }
 
