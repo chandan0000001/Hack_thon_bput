@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 from app.ai.openrouter_client import call_openrouter
+from app.ai.llm_client import generate_heuristic_explanation
 from app.ai.prompt_templates import (
     ACCOUNT_TAKEOVER_SYSTEM_PROMPT,
     DEEPFAKE_SYSTEM_PROMPT,
@@ -31,8 +32,8 @@ from app.core.storage import (
     download_media,
     upload_media_to_supabase,
 )
-from app.db.models import Event, MediaFile
-from app.db.session import get_db
+from app.db.models import Alert, Event, MediaFile
+from app.db.session import async_session_maker, get_db
 from app.schemas.alerts import AlertResponse
 from app.services.account_takeover_detector import analyze_auth_log_heuristics
 from app.services.alert_service import create_alert
@@ -135,6 +136,48 @@ async def _create_analysis_event(
     return event_id
 
 
+async def _bg_generate_explanation(
+    alert_id: str,
+    system_prompt: str,
+    user_prompt: str,
+    module: str,
+    indicators: list[dict],
+    raw_data: dict[str, Any],
+    risk_score: int,
+    auth_warnings: Optional[list[str]] = None,
+    extra_notes: Optional[list[str]] = None,
+) -> None:
+    """Asynchronously generate LLM explanation and attach it to the persisted Alert."""
+    try:
+        llm_output = await call_openrouter(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            module=module,
+            indicators=indicators,
+            raw_data=raw_data,
+            risk_score=risk_score,
+        )
+        if llm_output and isinstance(llm_output, dict):
+            explanation = llm_output.get("explanation")
+            if explanation:
+                if auth_warnings:
+                    explanation = (explanation + " " + " ".join(auth_warnings)).strip()
+                if extra_notes:
+                    explanation = (explanation + " " + " ".join(extra_notes)).strip()
+                async with async_session_maker() as session:
+                    res = await session.execute(select(Alert).where(Alert.id == alert_id))
+                    db_alert = res.scalar_one_or_none()
+                    if db_alert:
+                        db_alert.explanation = explanation
+                        if llm_output.get("mitre_techniques"):
+                            db_alert.mitre = llm_output["mitre_techniques"]
+                        await session.commit()
+    except (asyncio.CancelledError, RuntimeError):
+        pass
+    except Exception as exc:
+        logger.warning("Background LLM explanation failed for alert %s: %s", alert_id, exc)
+
+
 async def _run_analysis_pipeline(
     db: AsyncSession,
     tenant: TenantContext,
@@ -147,11 +190,10 @@ async def _run_analysis_pipeline(
     system_prompt: str,
     user_prompt_builder: Any,
     min_score: int = 0,
+    auth_warnings: Optional[list[str]] = None,
+    extra_notes: Optional[list[str]] = None,
 ) -> Any:
-    """Shared async detection pipeline: persist event, score, explain, alert.
-
-    min_score (AUTH-VERIFY): floor for the hybrid score so independent
-    verification can raise, never lower, the final risk."""
+    """Shared async detection pipeline: persist event, score, alert immediately with explanation=None, explain in bg."""
     event_id = await _create_analysis_event(
         db,
         tenant=tenant,
@@ -176,19 +218,18 @@ async def _run_analysis_pipeline(
         # Baseline confidence from distance to ambiguity midpoint 50
         calculated_confidence = round(0.50 + abs(hybrid_score - 50) / 100.0, 2)
 
-    if callable(user_prompt_builder):
-        user_prompt = user_prompt_builder(raw_data, indicators, hybrid_score, severity)
-    else:
-        user_prompt = str(user_prompt_builder)
-
-    llm_output = await call_openrouter(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+    fast_meta = generate_heuristic_explanation(
         module=module,
         indicators=indicators,
         raw_data=raw_data,
         risk_score=hybrid_score,
     )
+
+    llm_output = {
+        "explanation": None,
+        "mitre_techniques": fast_meta.get("mitre_techniques", []),
+        "recommended_actions": fast_meta.get("recommended_actions", []),
+    }
 
     alert = await create_alert(
         db,
@@ -203,6 +244,26 @@ async def _run_analysis_pipeline(
         llm_output=llm_output,
         confidence=calculated_confidence,
     )
+
+    if callable(user_prompt_builder):
+        user_prompt = user_prompt_builder(raw_data, indicators, hybrid_score, severity)
+    else:
+        user_prompt = str(user_prompt_builder)
+
+    asyncio.create_task(
+        _bg_generate_explanation(
+            alert_id=alert.id,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            module=module,
+            indicators=indicators,
+            raw_data=raw_data,
+            risk_score=hybrid_score,
+            auth_warnings=auth_warnings,
+            extra_notes=extra_notes,
+        )
+    )
+
     return alert
 
 
@@ -279,6 +340,18 @@ async def analyze_email(
     if references_attachment(payload.body) and ATTACHMENT_REFERENCE_WARNING not in auth_warnings:
         auth_warnings.append(ATTACHMENT_REFERENCE_WARNING)
 
+    extra_notes: list[str] = []
+    try:
+        h100, _hybrid, ml_prob = score_with_ml(indicators)
+        url_indicator_count = sum(
+            1 for i in indicators if "url" in str(i.get("type", "")).lower()
+        )
+        conf = assess_confidence(h100 / 100.0, ml_prob, url_indicator_count, payload.body)
+        if conf.get("notes"):
+            extra_notes = conf["notes"]
+    except Exception as exc:
+        logger.warning("Manual-path confidence assessment failed: %s", exc)
+
     alert = await _run_analysis_pipeline(
         db,
         tenant,
@@ -290,31 +363,13 @@ async def analyze_email(
         system_prompt=PHISHING_SYSTEM_PROMPT,
         user_prompt_builder=format_phishing_user_prompt,
         min_score=min_score,
+        auth_warnings=auth_warnings,
+        extra_notes=extra_notes,
     )
 
     if auth_warnings:
-        suffix = " " + " ".join(auth_warnings)
-        alert.explanation = ((alert.explanation or "") + suffix).strip()
         alert.summary = ((alert.summary or "") + " " + auth_warnings[0]).strip()[:250]
         await db.commit()
-
-    # SE-HARDENING D3: low-confidence labelling on the manual path — weak
-    # heuristic + weak ML appends the manual-review note; a weak heuristic
-    # with no URL evidence but an attachment reference appends the separate-
-    # verification note.
-    try:
-        h100, _hybrid, ml_prob = score_with_ml(indicators)
-        url_indicator_count = sum(
-            1 for i in indicators if "url" in str(i.get("type", "")).lower()
-        )
-        conf = assess_confidence(h100 / 100.0, ml_prob, url_indicator_count, payload.body)
-        if conf.get("notes"):
-            alert.explanation = (
-                (alert.explanation or "") + " " + " ".join(conf["notes"])
-            ).strip()
-            await db.commit()
-    except Exception as exc:
-        logger.warning("Manual-path confidence assessment failed: %s", exc)
 
     response = AlertResponse.model_validate(alert)
     # AUTH-VERIFY: raw_data is not part of AlertResponse, so surface the
@@ -571,6 +626,16 @@ async def analyze_impersonation(
     )
 
 
+@router.post("/identity-fraud", response_model=AlertResponse)
+async def analyze_identity_fraud(
+    payload: ImpersonationAnalysisRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(require_role(["admin", "analyst"])),
+) -> Any:
+    """Full digital identity fraud / impersonation analysis pipeline."""
+    return await analyze_impersonation(payload, db=db, tenant=tenant)
+
+
 @router.post("/account-takeover", response_model=AlertResponse)
 async def analyze_account_takeover(
     payload: AccountTakeoverAnalysisRequest,
@@ -690,18 +755,17 @@ async def analyze_media_upload(
     # Forensics analysis in worker thread
     result = await asyncio.to_thread(analyze_media, file_bytes, file_name, content_type)
 
-    llm_output = await call_openrouter(
-        DEEPFAKE_SYSTEM_PROMPT,
-        format_deepfake_user_prompt(
-            result,
-            risk_score=result.get("risk_score", 0),
-            severity=result.get("severity", "safe"),
-        ),
+    fast_meta = generate_heuristic_explanation(
         module="deepfake",
-        indicators=result["indicators"],
-        raw_data={"file_name": file_name, "media_type": result["media_type"]},
-        risk_score=result["risk_score"],
+        indicators=result.get("indicators", []),
+        raw_data={"file_name": file_name, "media_type": result.get("media_type")},
+        risk_score=result.get("risk_score", 0),
     )
+    llm_output = {
+        "explanation": None,
+        "mitre_techniques": fast_meta.get("mitre_techniques", []),
+        "recommended_actions": fast_meta.get("recommended_actions", []),
+    }
 
     alert = await create_alert(
         db,
@@ -730,12 +794,29 @@ async def analyze_media_upload(
         llm_output=llm_output,
     )
 
+    user_prompt = format_deepfake_user_prompt(
+        result,
+        risk_score=result.get("risk_score", 0),
+        severity=result.get("severity", "safe"),
+    )
+    asyncio.create_task(
+        _bg_generate_explanation(
+            alert_id=alert.id,
+            system_prompt=DEEPFAKE_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            module="deepfake",
+            indicators=result["indicators"],
+            raw_data={"file_name": file_name, "media_type": result["media_type"]},
+            risk_score=result["risk_score"],
+        )
+    )
+
     return {
         **result,
         "event_id": event_id,
         "alert_id": alert.id,
         "storage_path": media_record["storage_path"],
-        "explanation": alert.explanation,
+        "explanation": None,
         "mitre_techniques": alert.mitre,
         "recommended_actions": [
             {
@@ -773,18 +854,18 @@ async def analyze_media_event(
 
     media_score = analysis_res.get("risk_score", 0)
     media_severity = analysis_res.get("severity", get_severity(media_score))
-    llm_output = await call_openrouter(
-        DEEPFAKE_SYSTEM_PROMPT,
-        format_deepfake_user_prompt(
-            analysis_res,
-            risk_score=media_score,
-            severity=media_severity,
-        ),
+
+    fast_meta = generate_heuristic_explanation(
         module="deepfake",
-        indicators=analysis_res["indicators"],
-        raw_data={"file_name": file_name, "media_type": analysis_res["media_type"]},
+        indicators=analysis_res.get("indicators", []),
+        raw_data={"file_name": file_name, "media_type": analysis_res.get("media_type")},
         risk_score=media_score,
     )
+    llm_output = {
+        "explanation": None,
+        "mitre_techniques": fast_meta.get("mitre_techniques", []),
+        "recommended_actions": fast_meta.get("recommended_actions", []),
+    }
 
     alert = await create_alert(
         db,
@@ -812,12 +893,29 @@ async def analyze_media_event(
         llm_output=llm_output,
     )
 
+    user_prompt = format_deepfake_user_prompt(
+        analysis_res,
+        risk_score=media_score,
+        severity=media_severity,
+    )
+    asyncio.create_task(
+        _bg_generate_explanation(
+            alert_id=alert.id,
+            system_prompt=DEEPFAKE_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            module="deepfake",
+            indicators=analysis_res["indicators"],
+            raw_data={"file_name": file_name, "media_type": analysis_res["media_type"]},
+            risk_score=media_score,
+        )
+    )
+
     return {
         **analysis_res,
         "event_id": event_id,
         "alert_id": alert.id,
         "storage_path": media.storage_path,
-        "explanation": alert.explanation,
+        "explanation": None,
         "mitre_techniques": alert.mitre,
         "recommended_actions": [
             {

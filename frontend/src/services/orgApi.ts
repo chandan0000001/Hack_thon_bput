@@ -102,6 +102,7 @@ export interface OrgEventDetail {
     mitre?: Array<{ id?: string; name?: string }>;
     engine?: string;
     available?: boolean;
+    explanation?: string | null;
   } | null;
   verdict: string;
   user_action: string | null;

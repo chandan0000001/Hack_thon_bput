@@ -152,9 +152,14 @@ export default function EmailAnalysisResultCard({
               {e.engine}: {normalizeScorePct(e.score)}/100
             </span>
           ))}
-          {enforcementDetail && (
+          {enforcementDetail ? (
             <span className="truncate max-w-2xl text-zinc-400">💡 {enforcementDetail}</span>
-          )}
+          ) : processingStatus === 'analyzing' ? (
+            <span className="flex items-center gap-1.5 text-zinc-500 font-mono text-[10px]">
+              <Loader2 className="h-3 w-3 animate-spin text-red-500" />
+              <span>Generating AI explanation...</span>
+            </span>
+          ) : null}
           {receivedAt && (
             <span className="text-zinc-600">· {formatLocal(receivedAt)}</span>
           )}

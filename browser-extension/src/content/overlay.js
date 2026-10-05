@@ -58,6 +58,7 @@
           confidencePct: confPct,
           explanation: r.data.explanation,
           indicators: r.data.indicators || [],
+          recommended_actions: r.data.recommended_actions || [],
         };
       }
       if (r.kind === 'email') {
@@ -69,6 +70,7 @@
           confidencePct: confPct,
           explanation: r.data.explanation,
           mitre: r.data.mitre || [],
+          recommended_actions: r.data.recommended_actions || [],
           network: (r.data.indicators || []).filter((i) =>
             String(i.type || '').toLowerCase().includes('url') ||
             String(i.type || '').toLowerCase().includes('domain') ||
@@ -82,6 +84,7 @@
         verdict: verdict.verdict, confidence: verdict.confidence,
         severity: r.data.severity || 'low', method: r.data.method,
         explanation: r.data.explanation,
+        recommended_actions: r.data.recommended_actions || [],
       };
     });
     return { summary: detectLib.summarizeSeverities(okResults), cards };
@@ -127,7 +130,16 @@
       cardEl.appendChild(line);
     }
 
-    if (card.explanation) cardEl.appendChild(el('p', 'cgext-card__explanation', card.explanation));
+    const expContainer = el('div', 'cgext-card__explanation-container');
+    if (card.explanation) {
+      expContainer.appendChild(el('p', 'cgext-card__explanation', card.explanation));
+    } else {
+      const loading = el('div', 'cgext-card__explanation-loading');
+      loading.appendChild(el('span', 'cgext-spinner cgext-spinner--sm'));
+      loading.appendChild(el('span', 'cgext-card__explanation-loading-text', 'Generating AI explanation...'));
+      expContainer.appendChild(loading);
+    }
+    cardEl.appendChild(expContainer);
 
     if (card.kind === 'email' && card.network && card.network.length) {
       const wrap = el('div', 'cgext-card__section');
@@ -153,6 +165,17 @@
         row.appendChild(el('span', `cgext-pill-sev ${badgeClass(ind.severity)}`, String(ind.severity || 'low').toUpperCase()));
         row.appendChild(el('span', 'cgext-card__tag cg-score', String(ind.value ?? '')));
         if (ind.description) row.appendChild(el('span', 'cgext-card__meta', String(ind.description)));
+        wrap.appendChild(row);
+      }
+      cardEl.appendChild(wrap);
+    }
+    if (card.recommended_actions && card.recommended_actions.length) {
+      const wrap = el('div', 'cgext-card__section');
+      wrap.appendChild(el('p', 'cgext-card__label', 'Recommended Actions'));
+      for (const act of card.recommended_actions) {
+        const text = typeof act === 'string' ? act : act.action || act.description;
+        if (!text) continue;
+        const row = el('div', 'cgext-card__meta', `• ${text}`);
         wrap.appendChild(row);
       }
       cardEl.appendChild(wrap);

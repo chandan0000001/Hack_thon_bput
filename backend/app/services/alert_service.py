@@ -62,7 +62,8 @@ async def create_alert(
     threat_type = raw_data.get("threat_type") or MODULE_DEFAULT_THREAT_TYPES.get(module, module)
     if threat_type:
         threat_type = str(threat_type)[:64]
-    explanation = str(llm_output.get("explanation", ""))
+    raw_exp = llm_output.get("explanation")
+    explanation = str(raw_exp) if raw_exp else None
     mitre = llm_output.get("mitre_techniques") or []
 
     # ORG-WIRE: fall back to the owner's active/personal org when the tenant

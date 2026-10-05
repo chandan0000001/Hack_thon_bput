@@ -24,6 +24,7 @@ import {
 } from '../services/orgApi';
 import { ApiError } from '../services/http';
 import SeverityBadge from '../components/common/SeverityBadge';
+import LoadingSpinner from '../components/common/LoadingSpinner';
 import { formatLocal } from '../utils/datetime';
 import { useAuthStore } from '../store/authStore';
 import {
@@ -243,6 +244,16 @@ export default function OrgEventReview() {
                 <span className="text-[10px] uppercase tracking-wider rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-400" data-testid="engine-badge">
                   {analysis.engine}
                 </span>
+              )}
+            </div>
+            <div className="rounded-lg border border-zinc-800/80 bg-zinc-950/40 p-3" data-testid="explanation-container">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-1">
+                AI Explanation
+              </div>
+              {analysis.explanation ? (
+                <p className="text-xs text-zinc-300 leading-relaxed">{analysis.explanation}</p>
+              ) : (
+                <LoadingSpinner text="Generating AI explanation..." />
               )}
             </div>
             {indicators.length === 0 && <div className="text-xs text-zinc-500">No indicators reported.</div>}

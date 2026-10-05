@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle2, Hourglass, ShieldCheck } from 'lucide-react';
 import type { FeatureAnalysis, ScanResult } from '../../types';
 import { normalizeScorePct } from '../../utils/score';
+import LoadingSpinner from './LoadingSpinner';
 
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'safe'] as const;
 
@@ -71,7 +72,11 @@ export default function VerboseResultPanel({ scan }: { scan: ScanResult }) {
         <h4 className="mb-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-red-400">
           Why this verdict
         </h4>
-        <p className="whitespace-pre-line text-sm leading-relaxed text-zinc-300">{scan.overall_explanation}</p>
+        {scan.overall_explanation ? (
+          <p className="whitespace-pre-line text-sm leading-relaxed text-zinc-300">{scan.overall_explanation}</p>
+        ) : (
+          <LoadingSpinner text="Generating AI explanation..." />
+        )}
       </div>
 
       {/* Per-engine feature analyses */}
@@ -134,7 +139,11 @@ function FeatureBlock({ analysis }: { analysis: FeatureAnalysis }) {
         <span className="font-mono text-xs text-zinc-500">score {normalizeScorePct(analysis.score)}/100</span>
       </div>
 
-      <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-zinc-400">{analysis.explanation}</p>
+      {analysis.explanation ? (
+        <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-zinc-400">{analysis.explanation}</p>
+      ) : (
+        <LoadingSpinner text="Generating AI explanation..." />
+      )}
 
       {hasEvidence ? (
         <div className="mt-3 overflow-hidden rounded-lg border border-zinc-800">

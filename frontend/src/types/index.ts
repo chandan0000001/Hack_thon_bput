@@ -93,7 +93,7 @@ export interface AnalysisResult {
   severity: Severity;
   confidence: number;
   indicators: Indicator[];
-  explanation: string;
+  explanation?: string | null;
   recommendedActions: RecommendedAction[];
   mitreTechniques: MitreTechnique[];
   timestamp: string;
@@ -128,7 +128,7 @@ export interface Alert {
   status: 'new' | 'acknowledged' | 'resolved' | 'dismissed';
   summary: string;
   indicators: Indicator[];
-  explanation: string;
+  explanation?: string | null;
   recommendedActions: RecommendedAction[];
   mitreTechniques: MitreTechnique[];
   // AUTH-VERIFY: non-fatal analysis caveats carried by AlertResponse
@@ -462,7 +462,7 @@ export interface FeatureAnalysis {
   engine: string;
   severity: string;
   score: number;
-  explanation: string;
+  explanation?: string | null;
   indicators: ScanIndicator[];
 }
 
@@ -474,7 +474,7 @@ export interface ScanResult {
   received_at: string | null;
   overall_severity: string;
   overall_score: number;
-  overall_explanation: string;
+  overall_explanation?: string | null;
   feature_analyses: FeatureAnalysis[];
   recommended_action: string;
   provider_operation_status: string;

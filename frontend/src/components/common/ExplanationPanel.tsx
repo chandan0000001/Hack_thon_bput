@@ -1,8 +1,13 @@
+import { useEffect, useState } from 'react';
 import { BrainCircuit } from 'lucide-react';
+import LoadingSpinner from './LoadingSpinner';
+import { getAlert } from '../../services/api';
 
 interface Props {
-  explanation: string;
+  explanation?: string | null;
   confidence: number;
+  eventId?: string;
+  onExplanationLoaded?: (exp: string) => void;
 }
 
 const KEY_PHRASES = [
@@ -12,7 +17,8 @@ const KEY_PHRASES = [
   'impersonation', 'brute force', 'credential stuffing', 'DNS tunneling',
 ];
 
-function highlight(text: string): React.ReactNode[] {
+function highlight(text?: string | null): React.ReactNode[] {
+  if (!text) return [];
   const parts: React.ReactNode[] = [];
   let remaining = text;
   let key = 0;
@@ -39,7 +45,41 @@ function highlight(text: string): React.ReactNode[] {
   return parts;
 }
 
-export default function ExplanationPanel({ explanation, confidence }: Props) {
+export default function ExplanationPanel({
+  explanation: initialExplanation,
+  confidence,
+  eventId,
+  onExplanationLoaded,
+}: Props) {
+  const [currentExplanation, setCurrentExplanation] = useState<string | null>(initialExplanation ?? null);
+
+  useEffect(() => {
+    setCurrentExplanation(initialExplanation ?? null);
+  }, [initialExplanation]);
+
+  useEffect(() => {
+    if (currentExplanation || !eventId) return;
+
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const alert = await getAlert(eventId);
+        if (!cancelled && alert?.explanation) {
+          setCurrentExplanation(alert.explanation);
+          onExplanationLoaded?.(alert.explanation);
+          clearInterval(interval);
+        }
+      } catch {
+        // Advisory polling
+      }
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [currentExplanation, eventId, onExplanationLoaded]);
+
   return (
     <div className="rounded-xl border border-zinc-700/50 bg-zinc-800/40 p-4">
       <div className="flex items-center gap-2">
@@ -47,7 +87,11 @@ export default function ExplanationPanel({ explanation, confidence }: Props) {
         <h3 className="text-sm font-semibold text-zinc-100">AI Explanation</h3>
         <span className="ml-auto text-[10px] uppercase tracking-wider text-zinc-500">XAI explanation</span>
       </div>
-      <p className="mt-3 text-[13px] leading-relaxed text-zinc-300">{highlight(explanation)}</p>
+      {!currentExplanation ? (
+        <LoadingSpinner text="Generating AI explanation..." />
+      ) : (
+        <p className="mt-3 text-[13px] leading-relaxed text-zinc-300">{highlight(currentExplanation)}</p>
+      )}
       <div className="mt-4">
         <div className="flex items-center justify-between text-xs">
           <span className="text-zinc-400">Detection Confidence</span>
@@ -63,3 +107,5 @@ export default function ExplanationPanel({ explanation, confidence }: Props) {
     </div>
   );
 }
+
+export { LoadingSpinner };

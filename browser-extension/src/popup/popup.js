@@ -150,6 +150,21 @@
     container.appendChild(wrap);
   }
 
+  function renderRecommendedActions(container, actions) {
+    const list = Array.isArray(actions) ? actions : [];
+    if (!list.length) return;
+    const wrap = el('div', 'indicators');
+    wrap.appendChild(el('p', 'result__label', 'Recommended Actions'));
+    for (const act of list) {
+      const text = typeof act === 'string' ? act : act.action || act.description;
+      if (!text) continue;
+      const row = el('div', 'indicator');
+      row.appendChild(el('span', 'indicator__desc', String(text)));
+      wrap.appendChild(row);
+    }
+    container.appendChild(wrap);
+  }
+
   function renderAlertResult(container, data, { mitre = false } = {}) {
     container.replaceChildren();
     const score = Number(data.risk_score);
@@ -160,9 +175,21 @@
     right.appendChild(el('span', `cg-badge ${severityBadgeClass(sev)}`, String(sev).toUpperCase()));
     top.appendChild(right);
     container.appendChild(top);
-    if (data.explanation) container.appendChild(el('p', 'result__explanation', String(data.explanation)));
+
+    const expContainer = el('div', 'result__explanation-container');
+    if (data.explanation) {
+      expContainer.appendChild(el('p', 'result__explanation', String(data.explanation)));
+    } else {
+      const loading = el('div', 'result__explanation-loading');
+      loading.appendChild(el('span', 'cg-spinner cg-spinner--sm'));
+      loading.appendChild(el('span', 'result__explanation-loading-text', 'Generating AI explanation...'));
+      expContainer.appendChild(loading);
+    }
+    container.appendChild(expContainer);
+
     if (mitre) renderMitre(container, data.mitre);
     renderIndicators(container, data.indicators);
+    renderRecommendedActions(container, data.recommended_actions);
     container.hidden = false;
   }
 
@@ -180,7 +207,18 @@
     if (Number.isFinite(prob)) {
       container.appendChild(el('p', 'result__meta cg-score', `manipulation probability ${Math.round(prob * 100)}% · authenticity ${Math.round((1 - prob) * 100)}%`));
     }
-    if (data.explanation) container.appendChild(el('p', 'result__explanation', String(data.explanation)));
+
+    const expContainer = el('div', 'result__explanation-container');
+    if (data.explanation) {
+      expContainer.appendChild(el('p', 'result__explanation', String(data.explanation)));
+    } else {
+      const loading = el('div', 'result__explanation-loading');
+      loading.appendChild(el('span', 'cg-spinner cg-spinner--sm'));
+      loading.appendChild(el('span', 'result__explanation-loading-text', 'Generating AI explanation...'));
+      expContainer.appendChild(loading);
+    }
+    container.appendChild(expContainer);
+
     const boxes = data.bounding_boxes || data.bboxes;
     if (Array.isArray(boxes) && boxes.length) {
       const wrap = el('div', 'indicators');
@@ -193,6 +231,7 @@
       container.appendChild(el('p', 'result__meta', 'No bounding-box regions returned by the API.'));
     }
     renderIndicators(container, data.indicators);
+    renderRecommendedActions(container, data.recommended_actions);
     container.hidden = false;
   }
 

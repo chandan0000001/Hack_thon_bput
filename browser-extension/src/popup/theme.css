@@ -324,6 +324,31 @@
   font-size: 12px;
   line-height: 1.45;
 }
+.result__explanation-container {
+  margin: 8px 0;
+}
+.result__explanation-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--cg-text-secondary);
+}
+.cg-spinner {
+  display: inline-block;
+  border-radius: 50%;
+  animation: cg-spin 0.7s linear infinite;
+}
+.cg-spinner--sm {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(239, 68, 68, 0.25);
+  border-top-color: #ef4444;
+}
 
 .indicators {
   display: flex;

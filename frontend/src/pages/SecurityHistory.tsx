@@ -10,6 +10,7 @@ import {
 import PageHeader from '../components/common/PageHeader';
 import { SEVERITY_STYLES } from '../components/common/VerboseResultPanel';
 import { normalizeScorePct } from '../utils/score';
+import LoadingSpinner from '../components/common/LoadingSpinner';
 import * as api from '../services/api';
 import type { SecurityEventRecord } from '../types';
 
@@ -255,12 +256,14 @@ export default function SecurityHistory() {
             {selected.subject && (
               <p className="mb-3 text-sm text-zinc-200">{selected.subject}</p>
             )}
-            {selected.explanation && (
-              <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-                <h4 className="mb-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-red-400">Why</h4>
+            <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+              <h4 className="mb-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-red-400">Why</h4>
+              {selected.explanation ? (
                 <p className="whitespace-pre-line text-xs leading-relaxed text-zinc-300">{selected.explanation}</p>
-              </div>
-            )}
+              ) : (
+                <LoadingSpinner text="Generating AI explanation..." />
+              )}
+            </div>
 
             <div className="mb-4 grid grid-cols-2 gap-3 text-xs">
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">

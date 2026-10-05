@@ -106,6 +106,32 @@
   color: #fafafa;
 }
 
+#cgext-overlay-root .cgext-card__explanation-container {
+  margin: 0 0 8px;
+}
+
+#cgext-overlay-root .cgext-card__explanation-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  font-size: 11px;
+  color: #a3a3a3;
+}
+
+#cgext-overlay-root .cgext-spinner--sm {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(239, 68, 68, 0.25);
+  border-top-color: #ef4444;
+  border-radius: 50%;
+  animation: cgext-spin 0.7s linear infinite;
+}
+
 #cgext-overlay-root .cgext-card__label {
   margin: 0 0 4px;
   color: #a3a3a3;
