@@ -78,11 +78,12 @@ export default function ExplanationPanel({
       try {
         const alert = await getAlert(eventId);
         if (!cancelled && alert?.explanation) {
+          console.log('[ExplanationPanel] Polling received explanation for eventId:', eventId, alert.explanation);
           setCurrentExplanation(alert.explanation);
           onExplanationLoaded?.(alert.explanation);
           clearInterval(interval);
         }
-      } catch {
+      } catch (err) {
         // Advisory polling
       }
     }, 1500);

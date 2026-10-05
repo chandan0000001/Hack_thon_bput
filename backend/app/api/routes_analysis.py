@@ -36,7 +36,7 @@ from app.core.storage import (
     upload_media_to_supabase,
 )
 from app.db.models import Alert, Event, MediaFile
-from app.db.session import async_session_maker, get_db
+from app.db.session import async_session_maker, get_db, set_session_user
 from app.schemas.alerts import AlertResponse
 from app.services.account_takeover_detector import analyze_auth_log_heuristics
 from app.services.alert_service import create_alert
@@ -150,12 +150,16 @@ async def _bg_generate_explanation(
     auth_warnings: Optional[list[str]] = None,
     extra_notes: Optional[list[str]] = None,
     timeout: float = 15.0,
+    *,
+    user_id: Optional[str] = None,
 ) -> None:
     """Asynchronously generate LLM explanation and attach it to the persisted Alert.
 
-    Wraps OpenRouter/LLM in asyncio.wait_for(timeout=15.0). On timeout, invokes
+    Wraps OpenRouter/LLM in asyncio.wait_for(timeout=15.0). On timeout or failure, invokes
     generate_heuristic_fallback_explanation and persists the fallback explanation to DB.
     """
+    print(f"[bg_explanation] Task started for alert_id={alert_id}, module={module}")
+    logger.info("Background explanation task started for alert %s", alert_id)
     explanation: Optional[str] = None
     mitre_techniques: Optional[list[Any]] = None
     try:
@@ -174,19 +178,33 @@ async def _bg_generate_explanation(
             if llm_output and isinstance(llm_output, dict):
                 explanation = llm_output.get("explanation")
                 mitre_techniques = llm_output.get("mitre_techniques")
+                if explanation:
+                    print(f"[bg_explanation] LLM success for alert_id={alert_id}")
+                    logger.info("LLM explanation succeeded for alert %s", alert_id)
         except (asyncio.TimeoutError, TimeoutError):
+            print(f"[bg_explanation] LLM timed out after {timeout:.1f}s for alert_id={alert_id}; using heuristic fallback")
             logger.warning(
                 "LLM explanation timed out after %.1fs for alert %s; using heuristic fallback",
                 timeout,
                 alert_id,
             )
+        except Exception as llm_err:
+            print(f"[bg_explanation] LLM call failed for alert_id={alert_id}: {llm_err}; using heuristic fallback")
+            logger.warning(
+                "LLM explanation failed for alert %s: %s; using heuristic fallback",
+                alert_id,
+                llm_err,
+            )
+
+        if not explanation:
+            print(f"[bg_explanation] Generating heuristic fallback explanation for alert_id={alert_id}")
             fast_meta = generate_heuristic_explanation(
                 module=module,
                 indicators=indicators,
                 raw_data=raw_data,
                 risk_score=risk_score,
             )
-            mitre_techniques = fast_meta.get("mitre_techniques", [])
+            mitre_techniques = mitre_techniques or fast_meta.get("mitre_techniques", [])
             recommended_actions = fast_meta.get("recommended_actions", [])
             explanation = generate_heuristic_fallback_explanation(
                 score=risk_score,
@@ -195,13 +213,18 @@ async def _bg_generate_explanation(
                 recommended_actions=recommended_actions,
                 module=module,
             )
+            print(f"[bg_explanation] Heuristic fallback generated for alert_id={alert_id}")
 
         if explanation:
             if auth_warnings:
                 explanation = (explanation + " " + " ".join(auth_warnings)).strip()
             if extra_notes:
                 explanation = (explanation + " " + " ".join(extra_notes)).strip()
+
+            print(f"[bg_explanation] Opening DB session to save explanation for alert_id={alert_id}")
             async with async_session_maker() as session:
+                if user_id:
+                    await set_session_user(session, user_id)
                 res = await session.execute(select(Alert).where(Alert.id == alert_id))
                 db_alert = res.scalar_one_or_none()
                 if db_alert:
@@ -209,10 +232,16 @@ async def _bg_generate_explanation(
                     if mitre_techniques:
                         db_alert.mitre = mitre_techniques
                     await session.commit()
+                    print(f"[bg_explanation] Successfully saved explanation to DB for alert_id={alert_id}")
+                    logger.info("Saved explanation to DB for alert %s", alert_id)
+                else:
+                    print(f"[bg_explanation] ERROR: Alert {alert_id} not found in DB!")
+                    logger.error("Alert %s not found in DB during background explanation update", alert_id)
     except (asyncio.CancelledError, RuntimeError):
         pass
     except Exception as exc:
-        logger.warning("Background LLM explanation failed for alert %s: %s", alert_id, exc)
+        print(f"[bg_explanation] Fatal error for alert_id={alert_id}: {exc}")
+        logger.error("Background LLM explanation failed for alert %s: %s", alert_id, exc)
 
 
 async def _run_analysis_pipeline(
@@ -298,6 +327,7 @@ async def _run_analysis_pipeline(
             risk_score=hybrid_score,
             auth_warnings=auth_warnings,
             extra_notes=extra_notes,
+            user_id=tenant.user_id,
         )
     )
 
@@ -845,6 +875,7 @@ async def analyze_media_upload(
             indicators=result["indicators"],
             raw_data={"file_name": file_name, "media_type": result["media_type"]},
             risk_score=result["risk_score"],
+            user_id=tenant.user_id,
         )
     )
 
@@ -944,6 +975,7 @@ async def analyze_media_event(
             indicators=analysis_res["indicators"],
             raw_data={"file_name": file_name, "media_type": analysis_res["media_type"]},
             risk_score=media_score,
+            user_id=tenant.user_id,
         )
     )
 

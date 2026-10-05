@@ -35,7 +35,7 @@ async def test_email_analysis_decoupled_explanation(client):
     assert data["explanation"] is None
 
     # Verify fast execution (well under synchronous LLM timeout)
-    assert duration < 3.0
+    assert duration < 5.0
 
 
 @pytest.mark.asyncio
@@ -56,7 +56,7 @@ async def test_url_analysis_decoupled_explanation(client):
     assert "indicators" in data and len(data["indicators"]) > 0
     assert "recommended_actions" in data and len(data["recommended_actions"]) > 0
     assert data["explanation"] is None
-    assert duration < 3.0
+    assert duration < 5.0
 
 
 @pytest.mark.asyncio

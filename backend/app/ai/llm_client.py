@@ -192,11 +192,14 @@ def generate_heuristic_fallback_explanation(
     module: Optional[str] = None,
 ) -> str:
     """Construct a concise, factual paragraph based purely on heuristic data when LLM times out."""
-    indicators = indicators or []
-    mitre_tags = mitre_tags or []
+    safe_indicators = indicators if isinstance(indicators, (list, tuple)) else []
+    safe_mitre_tags = mitre_tags if isinstance(mitre_tags, (list, tuple)) else []
+    safe_recommended_actions = recommended_actions if isinstance(recommended_actions, (list, tuple)) else []
 
     ind_labels: list[str] = []
-    for ind in indicators:
+    for ind in safe_indicators:
+        if not ind:
+            continue
         if isinstance(ind, dict):
             label = ind.get("description") or ind.get("value") or ind.get("type")
             if label:
@@ -211,7 +214,9 @@ def generate_heuristic_fallback_explanation(
     indicators_str = "; ".join(ind_labels[:3]) if ind_labels else "system behavioral heuristics"
 
     tag_labels: list[str] = []
-    for tag in mitre_tags:
+    for tag in safe_mitre_tags:
+        if not tag:
+            continue
         if isinstance(tag, dict):
             tag_id = tag.get("id") or ""
             tag_name = tag.get("name") or ""
@@ -227,19 +232,24 @@ def generate_heuristic_fallback_explanation(
             tag_labels.append(f"{getattr(tag, 'id', '')} {getattr(tag, 'name', '')}".strip())
     tags_str = ", ".join(tag_labels) if tag_labels else "None"
 
-    if not recommended_actions and module:
-        fast_meta = generate_heuristic_explanation(module=module, indicators=indicators, risk_score=score)
-        recommended_actions = fast_meta.get("recommended_actions", [])
+    if not safe_recommended_actions and module:
+        try:
+            fast_meta = generate_heuristic_explanation(module=module, indicators=safe_indicators, risk_score=score)
+            safe_recommended_actions = fast_meta.get("recommended_actions", [])
+        except Exception:
+            safe_recommended_actions = []
 
     act_labels: list[str] = []
-    for act in recommended_actions or []:
+    for act in safe_recommended_actions:
+        if not act:
+            continue
         if isinstance(act, dict):
             act_text = act.get("action") or act.get("description")
             if act_text:
                 act_labels.append(str(act_text))
         elif isinstance(act, str):
             act_labels.append(act)
-        elif hasattr(act, "action"):
+        elif hasattr(act, "action") and getattr(act, "action", None):
             act_labels.append(str(act.action))
     actions_str = ", ".join(act_labels[:3]) if act_labels else "Review security alerts and verify source"
 

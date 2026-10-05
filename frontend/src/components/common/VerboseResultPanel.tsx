@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Hourglass, ShieldCheck } from 'lucide-react';
 import type { FeatureAnalysis, ScanResult } from '../../types';
 import { normalizeScorePct } from '../../utils/score';
+import { getAlert } from '../../services/api';
 import LoadingSpinner from './LoadingSpinner';
 
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'safe'] as const;
@@ -29,14 +30,20 @@ const ACTION_LABELS: Record<string, string> = {
  * per-engine explanations with evidence tables, and the honest provider
  * operation status (analysis results are never presented as actions).
  */
-export default function VerboseResultPanel({ scan }: { scan: ScanResult }) {
+export default function VerboseResultPanel({ scan, alertId }: { scan: ScanResult; alertId?: string }) {
   const severityStyle = SEVERITY_STYLES[scan.overall_severity] ?? SEVERITY_STYLES.safe;
   const scorePct = normalizeScorePct(scan.overall_score);
   const deferred = scan.provider_operation_status === 'deferred_to_phase_4';
+  const [overallExplanation, setOverallExplanation] = useState<string | null>(scan.overall_explanation ?? null);
   const [overallSpinnerText, setOverallSpinnerText] = useState<string>('Generating AI explanation...');
+  const targetId = alertId || (scan as any).alert_id || (scan as any).id || (scan as any).eventId;
 
   useEffect(() => {
-    if (scan.overall_explanation) {
+    setOverallExplanation(scan.overall_explanation ?? null);
+  }, [scan.overall_explanation]);
+
+  useEffect(() => {
+    if (overallExplanation) {
       setOverallSpinnerText('Generating AI explanation...');
       return;
     }
@@ -45,7 +52,28 @@ export default function VerboseResultPanel({ scan }: { scan: ScanResult }) {
       setOverallSpinnerText('Generating heuristic explanation...');
     }, 10000);
     return () => clearTimeout(timer);
-  }, [scan.overall_explanation]);
+  }, [overallExplanation]);
+
+  useEffect(() => {
+    if (overallExplanation || !targetId) return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const alert = await getAlert(targetId);
+        if (!cancelled && alert?.explanation) {
+          console.log('[VerboseResultPanel] Polling received explanation for alertId:', targetId, alert.explanation);
+          setOverallExplanation(alert.explanation);
+          clearInterval(interval);
+        }
+      } catch (err) {
+        // advisory
+      }
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [overallExplanation, targetId]);
 
   const sortedAnalyses = [...scan.feature_analyses].sort(
     (a, b) =>
@@ -86,8 +114,8 @@ export default function VerboseResultPanel({ scan }: { scan: ScanResult }) {
         <h4 className="mb-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-red-400">
           Why this verdict
         </h4>
-        {scan.overall_explanation ? (
-          <p className="whitespace-pre-line text-sm leading-relaxed text-zinc-300">{scan.overall_explanation}</p>
+        {overallExplanation ? (
+          <p className="whitespace-pre-line text-sm leading-relaxed text-zinc-300">{overallExplanation}</p>
         ) : (
           <LoadingSpinner text={overallSpinnerText} />
         )}

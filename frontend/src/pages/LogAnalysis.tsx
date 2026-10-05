@@ -196,7 +196,12 @@ export default function LogAnalysis() {
 
           {result.mitreTechniques.length > 0 && <MitreTags techniques={result.mitreTechniques} />}
           <IndicatorList indicators={result.indicators} />
-          <ExplanationPanel explanation={result.explanation} confidence={result.confidence} />
+          <ExplanationPanel
+            explanation={result.explanation}
+            confidence={result.confidence}
+            eventId={result.eventId}
+            onExplanationLoaded={(exp) => setResult((prev) => (prev ? { ...prev, explanation: exp } : prev))}
+          />
           <RecommendedActionsPanel
             actions={result.recommendedActions}
             onExecute={(actionId) => {

@@ -165,7 +165,12 @@ export default function PhishingAnalysis() {
                 <AuthVerificationPanel verification={result.authVerification} />
                 <IndicatorTable indicators={result.indicators} attachmentName={analyzedAttachmentName} />
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <ExplanationPanel explanation={result.explanation} confidence={result.confidence} />
+                  <ExplanationPanel
+                    explanation={result.explanation}
+                    confidence={result.confidence}
+                    eventId={result.eventId}
+                    onExplanationLoaded={(exp) => setResult((prev) => (prev ? { ...prev, explanation: exp } : prev))}
+                  />
                   <div className="space-y-4">
                     <div>
                       <h3 className="mb-2 text-sm font-semibold text-zinc-200">MITRE ATT&CK Mapping</h3>

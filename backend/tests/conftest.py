@@ -30,6 +30,9 @@ for _key in (
     "GEMINI_API_KEY", "GEMINI_API_KEYS", "GOOGLE_API_KEY",
 ):
     os.environ.setdefault(_key, "")
+os.environ.setdefault("SUPABASE_URL", "http://127.0.0.1:54321")
+os.environ.setdefault("SUPABASE_ANON_KEY", "dummy-anon-key-for-test-suite-000000000")
+os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "dummy-service-role-key-for-test-suite-000000000")
 # AUTH-VERIFY: keep DNS verification fully offline in the harness (zero
 # network I/O; independent checks degrade to "unavailable" + mx_parsed
 # fallback). Individual auth tests override with injected fake resolvers.
