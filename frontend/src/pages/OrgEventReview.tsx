@@ -62,6 +62,8 @@ export default function OrgEventReview() {
   const role = useAuthStore((s) => s.role);
 
   const [event, setEvent] = useState<OrgEventDetail | null>(null);
+  const [explanationText, setExplanationText] = useState<string | null>(null);
+  const [spinnerText, setSpinnerText] = useState<string>('Generating AI explanation...');
   const [blockedValues, setBlockedValues] = useState<string[]>([]);
   const [acting, setActing] = useState<TriageAction | null>(null);
   const [flash, setFlash] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
@@ -72,6 +74,45 @@ export default function OrgEventReview() {
     // clipboard write can reject (document not focused / no permission)
     void navigator.clipboard?.writeText(text).catch(() => {});
   };
+
+  useEffect(() => {
+    if (event?.analysis_result?.explanation) {
+      setExplanationText(event.analysis_result.explanation);
+    }
+  }, [event]);
+
+  useEffect(() => {
+    if (explanationText) {
+      setSpinnerText('Generating AI explanation...');
+      return;
+    }
+    setSpinnerText('Generating AI explanation...');
+    const timer = setTimeout(() => {
+      setSpinnerText('Generating heuristic explanation...');
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [explanationText]);
+
+  // Polling fallback while explanation is missing
+  useEffect(() => {
+    if (explanationText || !orgId || !projectId || !eventId) return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const detail = await orgApi.getEventDetail(orgId, projectId, eventId);
+        if (!cancelled && detail?.analysis_result?.explanation) {
+          setExplanationText(detail.analysis_result.explanation);
+          clearInterval(interval);
+        }
+      } catch {
+        // advisory polling
+      }
+    }, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [explanationText, orgId, projectId, eventId]);
 
   useEffect(() => {
     if (!orgId || !projectId || !eventId) return;
@@ -250,10 +291,10 @@ export default function OrgEventReview() {
               <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-1">
                 AI Explanation
               </div>
-              {analysis.explanation ? (
-                <p className="text-xs text-zinc-300 leading-relaxed">{analysis.explanation}</p>
+              {explanationText || analysis.explanation ? (
+                <p className="text-xs text-zinc-300 leading-relaxed">{explanationText || analysis.explanation}</p>
               ) : (
-                <LoadingSpinner text="Generating AI explanation..." />
+                <LoadingSpinner text={spinnerText} />
               )}
             </div>
             {indicators.length === 0 && <div className="text-xs text-zinc-500">No indicators reported.</div>}

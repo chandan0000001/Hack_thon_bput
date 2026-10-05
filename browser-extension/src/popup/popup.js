@@ -176,21 +176,52 @@
     top.appendChild(right);
     container.appendChild(top);
 
+    renderExplanationSection(container, data);
+
+    if (mitre) renderMitre(container, data.mitre);
+    renderIndicators(container, data.indicators);
+    renderRecommendedActions(container, data.recommended_actions);
+    container.hidden = false;
+  }
+
+  function renderExplanationSection(container, data) {
     const expContainer = el('div', 'result__explanation-container');
     if (data.explanation) {
       expContainer.appendChild(el('p', 'result__explanation', String(data.explanation)));
     } else {
       const loading = el('div', 'result__explanation-loading');
       loading.appendChild(el('span', 'cg-spinner cg-spinner--sm'));
-      loading.appendChild(el('span', 'result__explanation-loading-text', 'Generating AI explanation...'));
+      const textSpan = el('span', 'result__explanation-loading-text', 'Generating AI explanation...');
+      loading.appendChild(textSpan);
       expContainer.appendChild(loading);
+
+      const timerId = setTimeout(() => {
+        textSpan.textContent = 'Generating heuristic explanation...';
+      }, 10000);
+
+      const alertId = data.id || data.alert_id || data.eventId || data.event_id;
+      if (alertId && CFG && CFG.API_BASE_URL) {
+        let attempts = 0;
+        const intervalId = setInterval(async () => {
+          attempts++;
+          if (attempts > 30) {
+            clearInterval(intervalId);
+            return;
+          }
+          try {
+            const updated = await apiClient.getAlert(CFG.API_BASE_URL, alertId);
+            if (updated && updated.explanation) {
+              clearTimeout(timerId);
+              clearInterval(intervalId);
+              expContainer.replaceChildren(el('p', 'result__explanation', String(updated.explanation)));
+            }
+          } catch (e) {
+            // advisory
+          }
+        }, 1500);
+      }
     }
     container.appendChild(expContainer);
-
-    if (mitre) renderMitre(container, data.mitre);
-    renderIndicators(container, data.indicators);
-    renderRecommendedActions(container, data.recommended_actions);
-    container.hidden = false;
   }
 
   function renderDeepfakeResult(container, data) {
@@ -208,16 +239,7 @@
       container.appendChild(el('p', 'result__meta cg-score', `manipulation probability ${Math.round(prob * 100)}% · authenticity ${Math.round((1 - prob) * 100)}%`));
     }
 
-    const expContainer = el('div', 'result__explanation-container');
-    if (data.explanation) {
-      expContainer.appendChild(el('p', 'result__explanation', String(data.explanation)));
-    } else {
-      const loading = el('div', 'result__explanation-loading');
-      loading.appendChild(el('span', 'cg-spinner cg-spinner--sm'));
-      loading.appendChild(el('span', 'result__explanation-loading-text', 'Generating AI explanation...'));
-      expContainer.appendChild(loading);
-    }
-    container.appendChild(expContainer);
+    renderExplanationSection(container, data);
 
     const boxes = data.bounding_boxes || data.bboxes;
     if (Array.isArray(boxes) && boxes.length) {

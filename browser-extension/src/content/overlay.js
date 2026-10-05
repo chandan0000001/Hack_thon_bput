@@ -136,8 +136,13 @@
     } else {
       const loading = el('div', 'cgext-card__explanation-loading');
       loading.appendChild(el('span', 'cgext-spinner cgext-spinner--sm'));
-      loading.appendChild(el('span', 'cgext-card__explanation-loading-text', 'Generating AI explanation...'));
+      const textSpan = el('span', 'cgext-card__explanation-loading-text', 'Generating AI explanation...');
+      loading.appendChild(textSpan);
       expContainer.appendChild(loading);
+
+      setTimeout(() => {
+        textSpan.textContent = 'Generating heuristic explanation...';
+      }, 10000);
     }
     cardEl.appendChild(expContainer);
 

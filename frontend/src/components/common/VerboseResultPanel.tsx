@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Hourglass, ShieldCheck } from 'lucide-react';
 import type { FeatureAnalysis, ScanResult } from '../../types';
 import { normalizeScorePct } from '../../utils/score';
@@ -32,6 +33,19 @@ export default function VerboseResultPanel({ scan }: { scan: ScanResult }) {
   const severityStyle = SEVERITY_STYLES[scan.overall_severity] ?? SEVERITY_STYLES.safe;
   const scorePct = normalizeScorePct(scan.overall_score);
   const deferred = scan.provider_operation_status === 'deferred_to_phase_4';
+  const [overallSpinnerText, setOverallSpinnerText] = useState<string>('Generating AI explanation...');
+
+  useEffect(() => {
+    if (scan.overall_explanation) {
+      setOverallSpinnerText('Generating AI explanation...');
+      return;
+    }
+    setOverallSpinnerText('Generating AI explanation...');
+    const timer = setTimeout(() => {
+      setOverallSpinnerText('Generating heuristic explanation...');
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [scan.overall_explanation]);
 
   const sortedAnalyses = [...scan.feature_analyses].sort(
     (a, b) =>
@@ -75,7 +89,7 @@ export default function VerboseResultPanel({ scan }: { scan: ScanResult }) {
         {scan.overall_explanation ? (
           <p className="whitespace-pre-line text-sm leading-relaxed text-zinc-300">{scan.overall_explanation}</p>
         ) : (
-          <LoadingSpinner text="Generating AI explanation..." />
+          <LoadingSpinner text={overallSpinnerText} />
         )}
       </div>
 
@@ -127,6 +141,20 @@ export default function VerboseResultPanel({ scan }: { scan: ScanResult }) {
 function FeatureBlock({ analysis }: { analysis: FeatureAnalysis }) {
   const style = SEVERITY_STYLES[analysis.severity] ?? SEVERITY_STYLES.safe;
   const hasEvidence = analysis.indicators.length > 0;
+  const [spinnerText, setSpinnerText] = useState<string>('Generating AI explanation...');
+
+  useEffect(() => {
+    if (analysis.explanation) {
+      setSpinnerText('Generating AI explanation...');
+      return;
+    }
+    setSpinnerText('Generating AI explanation...');
+    const timer = setTimeout(() => {
+      setSpinnerText('Generating heuristic explanation...');
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [analysis.explanation]);
+
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -142,7 +170,7 @@ function FeatureBlock({ analysis }: { analysis: FeatureAnalysis }) {
       {analysis.explanation ? (
         <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-zinc-400">{analysis.explanation}</p>
       ) : (
-        <LoadingSpinner text="Generating AI explanation..." />
+        <LoadingSpinner text={spinnerText} />
       )}
 
       {hasEvidence ? (

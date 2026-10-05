@@ -52,10 +52,23 @@ export default function ExplanationPanel({
   onExplanationLoaded,
 }: Props) {
   const [currentExplanation, setCurrentExplanation] = useState<string | null>(initialExplanation ?? null);
+  const [spinnerText, setSpinnerText] = useState<string>('Generating AI explanation...');
 
   useEffect(() => {
     setCurrentExplanation(initialExplanation ?? null);
   }, [initialExplanation]);
+
+  useEffect(() => {
+    if (currentExplanation) {
+      setSpinnerText('Generating AI explanation...');
+      return;
+    }
+    setSpinnerText('Generating AI explanation...');
+    const timer = setTimeout(() => {
+      setSpinnerText('Generating heuristic explanation...');
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [currentExplanation]);
 
   useEffect(() => {
     if (currentExplanation || !eventId) return;
@@ -88,7 +101,7 @@ export default function ExplanationPanel({
         <span className="ml-auto text-[10px] uppercase tracking-wider text-zinc-500">XAI explanation</span>
       </div>
       {!currentExplanation ? (
-        <LoadingSpinner text="Generating AI explanation..." />
+        <LoadingSpinner text={spinnerText} />
       ) : (
         <p className="mt-3 text-[13px] leading-relaxed text-zinc-300">{highlight(currentExplanation)}</p>
       )}

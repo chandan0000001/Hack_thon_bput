@@ -184,6 +184,72 @@ def generate_heuristic_explanation(
     }
 
 
+def generate_heuristic_fallback_explanation(
+    score: int,
+    indicators: Optional[list[Any]] = None,
+    mitre_tags: Optional[list[Any]] = None,
+    recommended_actions: Optional[list[Any]] = None,
+    module: Optional[str] = None,
+) -> str:
+    """Construct a concise, factual paragraph based purely on heuristic data when LLM times out."""
+    indicators = indicators or []
+    mitre_tags = mitre_tags or []
+
+    ind_labels: list[str] = []
+    for ind in indicators:
+        if isinstance(ind, dict):
+            label = ind.get("description") or ind.get("value") or ind.get("type")
+            if label:
+                ind_labels.append(str(label))
+        elif isinstance(ind, str):
+            ind_labels.append(ind)
+        elif hasattr(ind, "description") and ind.description:
+            ind_labels.append(str(ind.description))
+        elif hasattr(ind, "type") and ind.type:
+            ind_labels.append(str(ind.type))
+
+    indicators_str = "; ".join(ind_labels[:3]) if ind_labels else "system behavioral heuristics"
+
+    tag_labels: list[str] = []
+    for tag in mitre_tags:
+        if isinstance(tag, dict):
+            tag_id = tag.get("id") or ""
+            tag_name = tag.get("name") or ""
+            if tag_id and tag_name:
+                tag_labels.append(f"{tag_id} ({tag_name})")
+            elif tag_id:
+                tag_labels.append(str(tag_id))
+            elif tag_name:
+                tag_labels.append(str(tag_name))
+        elif isinstance(tag, str):
+            tag_labels.append(tag)
+        elif hasattr(tag, "id"):
+            tag_labels.append(f"{getattr(tag, 'id', '')} {getattr(tag, 'name', '')}".strip())
+    tags_str = ", ".join(tag_labels) if tag_labels else "None"
+
+    if not recommended_actions and module:
+        fast_meta = generate_heuristic_explanation(module=module, indicators=indicators, risk_score=score)
+        recommended_actions = fast_meta.get("recommended_actions", [])
+
+    act_labels: list[str] = []
+    for act in recommended_actions or []:
+        if isinstance(act, dict):
+            act_text = act.get("action") or act.get("description")
+            if act_text:
+                act_labels.append(str(act_text))
+        elif isinstance(act, str):
+            act_labels.append(act)
+        elif hasattr(act, "action"):
+            act_labels.append(str(act.action))
+    actions_str = ", ".join(act_labels[:3]) if act_labels else "Review security alerts and verify source"
+
+    return (
+        f"LLM timed out. Heuristic analysis: Risk score {score} driven by {indicators_str}. "
+        f"MITRE tags: {tags_str}. Recommended action: {actions_str}."
+    )
+
+
+
 def _enforce_severity_consistency(output: dict[str, Any], risk_score: int) -> dict[str, Any]:
     """Ensure LLM generated explanation and MITRE techniques strictly match assessed severity."""
     severity = _normalize_severity(risk_score)

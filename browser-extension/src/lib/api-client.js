@@ -134,6 +134,13 @@
     return analyzeDeepfakeForm(baseUrl, form);
   }
 
+  /** GET /alerts/{alertId} -> AlertResponse. */
+  async function getAlert(baseUrl, alertId) {
+    return authedFetch(`${baseUrl}/alerts/${encodeURIComponent(alertId)}`, {
+      method: 'GET',
+    });
+  }
+
   /** GET /auth/me -> identity payload (email, active_role, ...). */
   async function fetchMe({ baseUrl, token, fetchImpl = wiring.fetchImpl || global.fetch }) {
     if (!baseUrl || !token) throw new Error('fetchMe: missing baseUrl/token');
@@ -154,6 +161,7 @@
     configure,
     AuthLostError,
     fetchMe,
+    getAlert,
     analyzeUrl,
     analyzeUrlVisual,
     getVisualResult,

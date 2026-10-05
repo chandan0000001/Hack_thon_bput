@@ -17,7 +17,7 @@ describe('LLM-DECUPLE-UX Test Suite', () => {
     const panelSrc = fs.readFileSync(path.resolve('src/components/common/ExplanationPanel.tsx'), 'utf8');
     assert.match(panelSrc, /LoadingSpinner/);
     assert.match(panelSrc, /!currentExplanation/);
-    assert.match(panelSrc, /<LoadingSpinner text="Generating AI explanation\.\.\." \/>/);
+    assert.match(panelSrc, /<LoadingSpinner text=\{spinnerText\} \/>/);
     // Verifies the spinner is inside the container without replacing header/confidence metrics
     assert.match(panelSrc, /AI Explanation/);
     assert.match(panelSrc, /Detection Confidence/);
@@ -27,7 +27,7 @@ describe('LLM-DECUPLE-UX Test Suite', () => {
     const verboseSrc = fs.readFileSync(path.resolve('src/components/common/VerboseResultPanel.tsx'), 'utf8');
     assert.match(verboseSrc, /LoadingSpinner/);
     assert.match(verboseSrc, /scan\.overall_explanation \?/);
-    assert.match(verboseSrc, /<LoadingSpinner text="Generating AI explanation\.\.\." \/>/);
+    assert.match(verboseSrc, /<LoadingSpinner text=\{overallSpinnerText\} \/>/);
     assert.match(verboseSrc, /analysis\.explanation \?/);
     assert.match(verboseSrc, /Recommended action/);
   });
@@ -43,8 +43,8 @@ describe('LLM-DECUPLE-UX Test Suite', () => {
     const orgSrc = fs.readFileSync(path.resolve('src/pages/OrgEventReview.tsx'), 'utf8');
     assert.match(orgSrc, /LoadingSpinner/);
     assert.match(orgSrc, /data-testid="explanation-container"/);
-    assert.match(orgSrc, /analysis\.explanation \?/);
-    assert.match(orgSrc, /<LoadingSpinner text="Generating AI explanation\.\.\." \/>/);
+    assert.match(orgSrc, /analysis\.explanation/);
+    assert.match(orgSrc, /<LoadingSpinner text=\{spinnerText\} \/>/);
   });
 
   it('6 SecurityHistory renders LoadingSpinner in explanation section when explanation is null', () => {
@@ -90,5 +90,47 @@ describe('LLM-DECUPLE-UX Test Suite', () => {
   it('8 TypeScript types define explanation as optional or nullable', () => {
     const typesSrc = fs.readFileSync(path.resolve('src/types/index.ts'), 'utf8');
     assert.match(typesSrc, /explanation\?: string \| null/);
+  });
+
+  it('9 LoadingSpinner supports dynamic timer transitioning from AI explanation to heuristic explanation', () => {
+    const spinnerSrc = fs.readFileSync(path.resolve('src/components/common/LoadingSpinner.tsx'), 'utf8');
+    assert.match(spinnerSrc, /fallbackText = 'Generating heuristic explanation\.\.\.'/);
+    assert.match(spinnerSrc, /timeoutMs = 10000/);
+    assert.match(spinnerSrc, /setCurrentText\(fallbackText\)/);
+  });
+
+  it('10 ExplanationPanel implements 10-second timer switching to heuristic explanation with polling fallback', () => {
+    const panelSrc = fs.readFileSync(path.resolve('src/components/common/ExplanationPanel.tsx'), 'utf8');
+    assert.match(panelSrc, /Generating AI explanation\.\.\./);
+    assert.match(panelSrc, /Generating heuristic explanation\.\.\./);
+    assert.match(panelSrc, /10000/);
+    assert.match(panelSrc, /<LoadingSpinner text=\{spinnerText\} \/>/);
+    assert.match(panelSrc, /getAlert\(eventId\)/);
+  });
+
+  it('11 VerboseResultPanel and OrgEventReview implement dynamic loading text on slow response', () => {
+    const verboseSrc = fs.readFileSync(path.resolve('src/components/common/VerboseResultPanel.tsx'), 'utf8');
+    assert.match(verboseSrc, /overallSpinnerText/);
+    assert.match(verboseSrc, /Generating heuristic explanation\.\.\./);
+    assert.match(verboseSrc, /<LoadingSpinner text=\{overallSpinnerText\} \/>/);
+
+    const orgSrc = fs.readFileSync(path.resolve('src/pages/OrgEventReview.tsx'), 'utf8');
+    assert.match(orgSrc, /spinnerText/);
+    assert.match(orgSrc, /Generating heuristic explanation\.\.\./);
+    assert.match(orgSrc, /<LoadingSpinner text=\{spinnerText\} \/>/);
+    assert.match(orgSrc, /orgApi\.getEventDetail/);
+  });
+
+  it('12 Browser extension popup and overlay implement 10-second timer to heuristic explanation and polling', () => {
+    const popupSrc = fs.readFileSync(path.resolve('../browser-extension/src/popup/popup.js'), 'utf8');
+    assert.match(popupSrc, /Generating AI explanation\.\.\./);
+    assert.match(popupSrc, /Generating heuristic explanation\.\.\./);
+    assert.match(popupSrc, /10000/);
+    assert.match(popupSrc, /apiClient\.getAlert/);
+
+    const overlaySrc = fs.readFileSync(path.resolve('../browser-extension/src/content/overlay.js'), 'utf8');
+    assert.match(overlaySrc, /Generating AI explanation\.\.\./);
+    assert.match(overlaySrc, /Generating heuristic explanation\.\.\./);
+    assert.match(overlaySrc, /10000/);
   });
 });

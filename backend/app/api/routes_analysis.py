@@ -9,8 +9,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
-from app.ai.openrouter_client import call_openrouter
-from app.ai.llm_client import generate_heuristic_explanation
+from app.ai.openrouter_client import (
+    call_openrouter,
+    generate_heuristic_explanation,
+    generate_heuristic_fallback_explanation,
+)
 from app.ai.prompt_templates import (
     ACCOUNT_TAKEOVER_SYSTEM_PROMPT,
     DEEPFAKE_SYSTEM_PROMPT,
@@ -146,32 +149,66 @@ async def _bg_generate_explanation(
     risk_score: int,
     auth_warnings: Optional[list[str]] = None,
     extra_notes: Optional[list[str]] = None,
+    timeout: float = 15.0,
 ) -> None:
-    """Asynchronously generate LLM explanation and attach it to the persisted Alert."""
+    """Asynchronously generate LLM explanation and attach it to the persisted Alert.
+
+    Wraps OpenRouter/LLM in asyncio.wait_for(timeout=15.0). On timeout, invokes
+    generate_heuristic_fallback_explanation and persists the fallback explanation to DB.
+    """
+    explanation: Optional[str] = None
+    mitre_techniques: Optional[list[Any]] = None
     try:
-        llm_output = await call_openrouter(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            module=module,
-            indicators=indicators,
-            raw_data=raw_data,
-            risk_score=risk_score,
-        )
-        if llm_output and isinstance(llm_output, dict):
-            explanation = llm_output.get("explanation")
-            if explanation:
-                if auth_warnings:
-                    explanation = (explanation + " " + " ".join(auth_warnings)).strip()
-                if extra_notes:
-                    explanation = (explanation + " " + " ".join(extra_notes)).strip()
-                async with async_session_maker() as session:
-                    res = await session.execute(select(Alert).where(Alert.id == alert_id))
-                    db_alert = res.scalar_one_or_none()
-                    if db_alert:
-                        db_alert.explanation = explanation
-                        if llm_output.get("mitre_techniques"):
-                            db_alert.mitre = llm_output["mitre_techniques"]
-                        await session.commit()
+        try:
+            llm_output = await asyncio.wait_for(
+                call_openrouter(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    module=module,
+                    indicators=indicators,
+                    raw_data=raw_data,
+                    risk_score=risk_score,
+                ),
+                timeout=timeout,
+            )
+            if llm_output and isinstance(llm_output, dict):
+                explanation = llm_output.get("explanation")
+                mitre_techniques = llm_output.get("mitre_techniques")
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(
+                "LLM explanation timed out after %.1fs for alert %s; using heuristic fallback",
+                timeout,
+                alert_id,
+            )
+            fast_meta = generate_heuristic_explanation(
+                module=module,
+                indicators=indicators,
+                raw_data=raw_data,
+                risk_score=risk_score,
+            )
+            mitre_techniques = fast_meta.get("mitre_techniques", [])
+            recommended_actions = fast_meta.get("recommended_actions", [])
+            explanation = generate_heuristic_fallback_explanation(
+                score=risk_score,
+                indicators=indicators,
+                mitre_tags=mitre_techniques,
+                recommended_actions=recommended_actions,
+                module=module,
+            )
+
+        if explanation:
+            if auth_warnings:
+                explanation = (explanation + " " + " ".join(auth_warnings)).strip()
+            if extra_notes:
+                explanation = (explanation + " " + " ".join(extra_notes)).strip()
+            async with async_session_maker() as session:
+                res = await session.execute(select(Alert).where(Alert.id == alert_id))
+                db_alert = res.scalar_one_or_none()
+                if db_alert:
+                    db_alert.explanation = explanation
+                    if mitre_techniques:
+                        db_alert.mitre = mitre_techniques
+                    await session.commit()
     except (asyncio.CancelledError, RuntimeError):
         pass
     except Exception as exc:

@@ -15,6 +15,7 @@ from app.ai.llm_client import (
     call_llm,
     call_openrouter,
     generate_heuristic_explanation,
+    generate_heuristic_fallback_explanation,
 )
 
 __all__ = [
@@ -28,5 +29,6 @@ __all__ = [
     "call_llm",
     "call_openrouter",
     "generate_heuristic_explanation",
+    "generate_heuristic_fallback_explanation",
 ]
 
