@@ -62,6 +62,9 @@ class ApiClient:
             self._post_json = lambda url, payload: requests.post(  # noqa: E731
                 url, json=payload, headers=self.headers, timeout=60
             )
+            self._patch_json = lambda url, payload: requests.patch(  # noqa: E731
+                url, json=payload, headers=self.headers, timeout=60
+            )
             self._get = lambda url: requests.get(url, headers=self.headers, timeout=30)  # noqa: E731
         except ImportError:
             import httpx  # type: ignore
@@ -69,10 +72,16 @@ class ApiClient:
             self._post_json = lambda url, payload: httpx.post(  # noqa: E731
                 url, json=payload, headers=self.headers, timeout=60
             )
+            self._patch_json = lambda url, payload: httpx.patch(  # noqa: E731
+                url, json=payload, headers=self.headers, timeout=60
+            )
             self._get = lambda url: httpx.get(url, headers=self.headers, timeout=30)  # noqa: E731
 
     def post_json(self, path: str, payload: dict):
         return self._post_json(f"{self.base}{path}", payload)
+
+    def patch_json(self, path: str, payload: dict):
+        return self._patch_json(f"{self.base}{path}", payload)
 
     def get(self, path: str):
         return self._get(f"{self.base}{path}")
