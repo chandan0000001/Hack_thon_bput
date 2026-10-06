@@ -54,6 +54,85 @@ export function sortAtoTimeline<T extends AtoTimelineEvent>(events: T[]): T[] {
   );
 }
 
+/** ATO-UI-OVERHAUL: row of GET /analysis/account-takeover/events. */
+export interface AtoEventSummary {
+  id: string;
+  timestamp: string;
+  user_email: string;
+  risk_score: number;
+  action_taken: string;
+  tier: string;
+  severity?: string;
+  account_restricted?: boolean;
+}
+
+/** Real-time search filter: case-insensitive substring on event id or
+ * account email. Empty/whitespace query returns the list unchanged. */
+export function filterAtoEvents<T extends { id: string; user_email: string }>(
+  events: T[],
+  query: string
+): T[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return events;
+  return events.filter(
+    (e) => e.id.toLowerCase().includes(q) || e.user_email.toLowerCase().includes(q)
+  );
+}
+
+/** Status pill for the enforcement action. */
+export function atoStatusTone(
+  actionTaken?: string
+): { label: string; className: string } {
+  switch (actionTaken) {
+    case 'ACCOUNT_RESTRICTED':
+      return {
+        label: 'Restricted',
+        className: 'bg-red-500/10 text-red-300 ring-1 ring-red-500/40',
+      };
+    case 'USER_NOTIFIED':
+      return {
+        label: 'Notified',
+        className: 'bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/40',
+      };
+    default:
+      return {
+        label: 'Allowed',
+        className: 'bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/40',
+      };
+  }
+}
+
+/** Risk-score badge tone following the 3-tier bands. */
+export function atoScoreTone(score: number): string {
+  if (score < 30) return 'bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/40';
+  if (score < 75) return 'bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/40';
+  return 'bg-red-500/10 text-red-300 ring-1 ring-red-500/40';
+}
+
+/** Detail banner text for the enforced action. */
+export function atoBannerLabel(actionTaken?: string): string {
+  switch (actionTaken) {
+    case 'ACCOUNT_RESTRICTED':
+      return 'ACCOUNT RESTRICTED & USER NOTIFIED';
+    case 'USER_NOTIFIED':
+      return 'USER NOTIFIED';
+    default:
+      return 'ACTIVITY ALLOWED — NO ACTION REQUIRED';
+  }
+}
+
+/** Detail banner styling per tier. */
+export function atoBannerTone(actionTaken?: string): string {
+  switch (actionTaken) {
+    case 'ACCOUNT_RESTRICTED':
+      return 'border-red-500/50 bg-red-500/10 text-red-200';
+    case 'USER_NOTIFIED':
+      return 'border-amber-500/50 bg-amber-500/10 text-amber-200';
+    default:
+      return 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200';
+  }
+}
+
 /** Demo payload (mirrors scenarios/scenario-3/assets) for one-click runs. */
 export const ATO_DEMO_BASELINE = {
   account_id: 'sarah.chen@acme.com',

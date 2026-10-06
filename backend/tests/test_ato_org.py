@@ -504,3 +504,206 @@ async def test_ato_viewer_role_denied(client):
         await db.commit()
 
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# ATO-UI-OVERHAUL: 3-tier enforcement + list/detail endpoints
+# ---------------------------------------------------------------------------
+
+from app.services.ato_detector import TIER_MEDIUM_MAX, TIER_SAFE_MAX, classify_enforcement
+
+
+class TestThreeTierEnforcement:
+    def test_safe_band(self):
+        assert classify_enforcement(0)["action_taken"] == "ALLOWED"
+        assert classify_enforcement(TIER_SAFE_MAX - 1)["action_taken"] == "ALLOWED"
+        safe = classify_enforcement(10)
+        assert safe["tier"] == "safe"
+        assert safe["notified"] is False
+        assert safe["account_restricted"] is False
+
+    def test_medium_band(self):
+        assert classify_enforcement(TIER_SAFE_MAX)["action_taken"] == "USER_NOTIFIED"
+        assert classify_enforcement(TIER_MEDIUM_MAX - 1)["action_taken"] == "USER_NOTIFIED"
+        medium = classify_enforcement(50)
+        assert medium["tier"] == "medium"
+        assert medium["notified"] is True
+        assert medium["account_restricted"] is False
+
+    def test_critical_band(self):
+        assert classify_enforcement(TIER_MEDIUM_MAX)["action_taken"] == "ACCOUNT_RESTRICTED"
+        assert classify_enforcement(92)["action_taken"] == "ACCOUNT_RESTRICTED"
+        assert classify_enforcement(100)["action_taken"] == "ACCOUNT_RESTRICTED"
+        critical = classify_enforcement(92)
+        assert critical["tier"] == "critical"
+        assert critical["notified"] is True
+        assert critical["account_restricted"] is True
+        assert critical["actions"] == ["ACCOUNT_RESTRICTED", "USER_NOTIFIED"]
+
+    def test_score_clamped(self):
+        assert classify_enforcement(-5)["tier"] == "safe"
+        assert classify_enforcement(500)["tier"] == "critical"
+
+    def test_demo_timeline_is_critical(self):
+        assert classify_enforcement(92)["account_restricted"] is True
+
+
+MEDIUM_TIMELINE = [
+    {
+        "timestamp": "2026-10-06T03:30:00",
+        "event_type": "login_success",
+        "source_ip": "198.51.100.9",
+        "country": "CA",
+        "device_id": "WIN-NEW-BOX",
+    }
+]
+SAFE_TIMELINE = [
+    {
+        "timestamp": "2026-10-06T09:20:00",
+        "event_type": "login_success",
+        "source_ip": "98.42.117.6",
+        "country": "US",
+        "device_id": "MAC-BOOK-A7F3",
+    }
+]
+
+
+async def _post_ato(client, org_id: str, payload: dict):
+    return await client.post(
+        "/api/v1/analysis/account-takeover",
+        json={**FUSION_PAYLOAD, **payload},
+        headers={"X-Organization-Id": str(org_id)},
+    )
+
+
+@pytest.mark.asyncio
+async def test_ato_events_list_and_tier_actions(client):
+    """The org list endpoint returns the org's own ATO events with the
+    3-tier action_taken; other orgs' events never appear."""
+    from app.db.models import User
+    from app.db.session import async_session_maker
+
+    async with async_session_maker() as db:
+        user = (
+            await db.execute(User.__table__.select().where(User.id == "user-eval"))
+        ).first()
+        if user is None:
+            user = (
+                await db.execute(
+                    User.__table__.select().where(User.email == "eval@cyberguard.local")
+                )
+            ).first()
+        owner_id = user._mapping["id"] if user is not None else "user-eval"
+        org, project = await _seed_org(db, owner_id, "ATO List Org", f"list-{uuid.uuid4().hex[:8]}")
+        other, _ = await _seed_org(db, f"other-{uuid.uuid4().hex[:12]}", "ATO List Other", f"listo-{uuid.uuid4().hex[:8]}")
+        await db.commit()
+
+    # Seed one event per tier inside the org.
+    r_crit = await _post_ato(client, org.id, {"account_id": "critical@acme.com"})
+    r_med = await _post_ato(
+        client,
+        org.id,
+        {"account_id": "medium@acme.com", "suspicious_events": MEDIUM_TIMELINE},
+    )
+    r_safe = await _post_ato(
+        client,
+        org.id,
+        {"account_id": "safe@acme.com", "suspicious_events": SAFE_TIMELINE},
+    )
+    assert r_crit.status_code == 200 and r_med.status_code == 200 and r_safe.status_code == 200
+    assert r_crit.json()["action_taken"] == "ACCOUNT_RESTRICTED"
+    assert r_med.json()["action_taken"] == "USER_NOTIFIED"
+    assert r_safe.json()["action_taken"] == "ALLOWED"
+
+    # List from the owning org: all three visible, desc order.
+    listed = await client.get(
+        "/api/v1/analysis/account-takeover/events",
+        headers={"X-Organization-Id": str(org.id)},
+    )
+    assert listed.status_code == 200, listed.text
+    rows = listed.json()["events"]
+    by_email = {r["user_email"]: r for r in rows}
+    assert {"critical@acme.com", "medium@acme.com", "safe@acme.com"} <= set(by_email)
+    assert by_email["critical@acme.com"]["action_taken"] == "ACCOUNT_RESTRICTED"
+    assert by_email["critical@acme.com"]["risk_score"] == 92
+    assert by_email["medium@acme.com"]["action_taken"] == "USER_NOTIFIED"
+    assert by_email["safe@acme.com"]["action_taken"] == "ALLOWED"
+    for row in rows:
+        assert set(row) >= {"id", "timestamp", "user_email", "risk_score", "action_taken"}
+
+    # Isolation: listing from another org (non-member) is denied outright,
+    # and the other org's context cannot see these events.
+    denied = await client.get(
+        "/api/v1/analysis/account-takeover/events",
+        headers={"X-Organization-Id": str(other.id)},
+    )
+    assert denied.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_ato_event_detail_readonly(client):
+    """Detail endpoint returns baseline + annotated timeline + enforcement;
+    another org's event id 404s instead of leaking."""
+    from app.db.models import User
+    from app.db.session import async_session_maker
+
+    async with async_session_maker() as db:
+        user = (
+            await db.execute(User.__table__.select().where(User.id == "user-eval"))
+        ).first()
+        if user is None:
+            user = (
+                await db.execute(
+                    User.__table__.select().where(User.email == "eval@cyberguard.local")
+                )
+            ).first()
+        owner_id = user._mapping["id"] if user is not None else "user-eval"
+        org, _ = await _seed_org(db, owner_id, "ATO Detail Org", f"detail-{uuid.uuid4().hex[:8]}")
+        other, _ = await _seed_org(db, f"other-{uuid.uuid4().hex[:12]}", "ATO Detail Other", f"detailo-{uuid.uuid4().hex[:8]}")
+        # Eval user IS a member of the other org: the tenant resolves there,
+        # so the cross-tenant read must 404 (scoped empty), never leak.
+        from app.db.models import OrgMember
+
+        db.add(
+            OrgMember(
+                id=str(uuid.uuid4()),
+                organization_id=other.id,
+                user_id=owner_id,
+                role="admin",
+            )
+        )
+        await db.commit()
+
+    created = await _post_ato(client, org.id, {"account_id": "detail@acme.com"})
+    event_id = created.json()["event_id"]
+
+    detail = await client.get(
+        f"/api/v1/analysis/account-takeover/events/{event_id}",
+        headers={"X-Organization-Id": str(org.id)},
+    )
+    assert detail.status_code == 200, detail.text
+    data = detail.json()
+    assert data["event_id"] == event_id
+    assert data["action_taken"] == "ACCOUNT_RESTRICTED"
+    assert data["enforcement"]["notified"] is True
+    assert data["baseline_profile"]["home_country"] == "US"
+    assert len(data["suspicious_events"]) == len(DEMO_TIMELINE)
+    assert all("flagged" in e for e in data["suspicious_events"])
+    assert data["explanation"]
+    assert data["alert_id"]
+    assert data["indicators"]
+
+    # Cross-tenant read: 404, never a leak.
+    cross = await client.get(
+        f"/api/v1/analysis/account-takeover/events/{event_id}",
+        headers={"X-Organization-Id": str(other.id)},
+    )
+    assert cross.status_code == 404
+
+    # Personal JWT (no org) is denied on list and detail.
+    assert (
+        await client.get("/api/v1/analysis/account-takeover/events")
+    ).status_code == 403
+    assert (
+        await client.get(f"/api/v1/analysis/account-takeover/events/{event_id}")
+    ).status_code == 403

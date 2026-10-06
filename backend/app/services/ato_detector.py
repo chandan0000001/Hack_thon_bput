@@ -58,6 +58,45 @@ RISK_LEVELS: list[tuple[int, str]] = [
     (0, "low"),
 ]
 
+# ATO-UI-OVERHAUL: strict 3-tier enforcement bands (independent of the
+# descriptive risk_level above — these decide what the platform DOES).
+TIER_SAFE_MAX = 30  # score < 30  -> ALLOWED
+TIER_MEDIUM_MAX = 75  # 30 <= score < 75 -> USER_NOTIFIED; >= 75 -> ACCOUNT_RESTRICTED
+
+
+def classify_enforcement(score: int) -> dict[str, Any]:
+    """Map a fused risk score to the enforced action tier.
+
+    SAFE     (< 30):  ALLOWED — no notification.
+    MEDIUM   (30-74): USER_NOTIFIED (mock notification).
+    CRITICAL (>= 75): ACCOUNT_RESTRICTED (mock account lock recorded in
+                      metadata) AND USER_NOTIFIED.
+    """
+    score = max(0, min(100, int(score)))
+    if score < TIER_SAFE_MAX:
+        return {
+            "tier": "safe",
+            "action_taken": "ALLOWED",
+            "actions": ["ALLOWED"],
+            "account_restricted": False,
+            "notified": False,
+        }
+    if score < TIER_MEDIUM_MAX:
+        return {
+            "tier": "medium",
+            "action_taken": "USER_NOTIFIED",
+            "actions": ["USER_NOTIFIED"],
+            "account_restricted": False,
+            "notified": True,
+        }
+    return {
+        "tier": "critical",
+        "action_taken": "ACCOUNT_RESTRICTED",
+        "actions": ["ACCOUNT_RESTRICTED", "USER_NOTIFIED"],
+        "account_restricted": True,
+        "notified": True,
+    }
+
 RECOMMENDED_RESPONSE_HIGH = [
     "Temporarily restrict the session/account.",
     "Force credential reset & ask for additional verification.",

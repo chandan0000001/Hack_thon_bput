@@ -44,7 +44,8 @@ import ProjectSelector from './pages/ProjectSelector';
 import OrgWorkspaceShell from './pages/OrgWorkspaceShell';
 import ProjectSettings, { type ProjectSettingsSection } from './pages/ProjectSettings';
 import OrgDashboard from './pages/OrgDashboard';
-import OrgAccountTakeover from './pages/OrgAccountTakeover';
+import OrgAccountTakeoverList from './pages/OrgAccountTakeoverList';
+import OrgAccountTakeoverDetail from './pages/OrgAccountTakeoverDetail';
 import OrgEventReview from './pages/OrgEventReview';
 import EventsListPage from './pages/EventsListPage';
 import { useAuthStore } from './store/authStore';
@@ -141,13 +142,23 @@ export default function App() {
             </OrgGuard>
           }
         />
-        {/* SCENARIO-3: org-scoped account-takeover analysis in the shell */}
+        {/* ATO-UI-OVERHAUL: list -> detail flow in the org shell */}
         <Route
           path="/org/:orgId/projects/:projectId/analysis/account-takeover"
           element={
             <OrgGuard>
               <OrgWorkspaceShell>
-                <OrgAccountTakeover />
+                <OrgAccountTakeoverList />
+              </OrgWorkspaceShell>
+            </OrgGuard>
+          }
+        />
+        <Route
+          path="/org/:orgId/projects/:projectId/analysis/account-takeover/:eventId"
+          element={
+            <OrgGuard>
+              <OrgWorkspaceShell>
+                <OrgAccountTakeoverDetail />
               </OrgWorkspaceShell>
             </OrgGuard>
           }

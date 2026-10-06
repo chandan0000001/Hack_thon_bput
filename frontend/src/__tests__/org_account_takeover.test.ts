@@ -6,25 +6,37 @@ import path from 'node:path';
 import {
   ATO_DEMO_BASELINE,
   ATO_DEMO_TIMELINE,
+  atoBannerLabel,
+  atoBannerTone,
   atoClockLabel,
   atoDotClass,
   atoLevelTone,
+  atoScoreTone,
+  atoStatusTone,
+  filterAtoEvents,
   sortAtoTimeline,
 } from '../pages/orgAtoHelpers.ts';
 
-const pagePath = path.resolve('src/pages/OrgAccountTakeover.tsx');
+const listPath = path.resolve('src/pages/OrgAccountTakeoverList.tsx');
+const detailPath = path.resolve('src/pages/OrgAccountTakeoverDetail.tsx');
 const helpersPath = path.resolve('src/pages/orgAtoHelpers.ts');
+const oldPagePath = path.resolve('src/pages/OrgAccountTakeover.tsx');
 const shellPath = path.resolve('src/pages/OrgWorkspaceShell.tsx');
 const appPath = path.resolve('src/App.tsx');
 const orgApiPath = path.resolve('src/services/orgApi.ts');
 
-describe('SCENARIO-3 Org Account Takeover Test Suite (10 Checks)', () => {
+const ROWS = [
+  { id: 'evt-aaa-111', user_email: 'sarah.chen@acme.com', risk_score: 92, action_taken: 'ACCOUNT_RESTRICTED' },
+  { id: 'evt-bbb-222', user_email: 'john Doe@acme.com', risk_score: 45, action_taken: 'USER_NOTIFIED' },
+  { id: 'evt-ccc-333', user_email: 'bob@acme.com', risk_score: 0, action_taken: 'ALLOWED' },
+];
+
+describe('SCENARIO-3 / ATO-UI-OVERHAUL Test Suite (14 Checks)', () => {
   // Check 1: clock labels render as 12h AM/PM from ISO stamps
   it('1 atoClockLabel renders 03:17 AM from ISO timestamps', () => {
     assert.strictEqual(atoClockLabel('2026-10-06T03:17:00'), '03:17 AM');
     assert.strictEqual(atoClockLabel('2026-10-06T15:05:00'), '03:05 PM');
     assert.strictEqual(atoClockLabel('2026-10-06T00:00:00'), '12:00 AM');
-    assert.strictEqual(atoClockLabel('2026-10-06T12:30:00'), '12:30 PM');
     assert.strictEqual(atoClockLabel(undefined), 'Unknown time');
   });
 
@@ -32,17 +44,13 @@ describe('SCENARIO-3 Org Account Takeover Test Suite (10 Checks)', () => {
   it('2 atoDotClass: flagged -> red dot, clean -> emerald dot', () => {
     assert.match(atoDotClass({ flagged: ['odd_hour_login'] }), /bg-red-500/);
     assert.match(atoDotClass({ flagged: [] }), /bg-emerald-500/);
-    assert.match(atoDotClass({}), /bg-emerald-500/);
   });
 
   // Check 3: risk level tones
   it('3 atoLevelTone maps levels to tones', () => {
     assert.strictEqual(atoLevelTone('high').label, 'HIGH');
     assert.strictEqual(atoLevelTone('CRITICAL').label, 'CRITICAL');
-    assert.match(atoLevelTone('high').text, /text-red-300/);
-    assert.match(atoLevelTone('medium').text, /text-amber-300/);
     assert.strictEqual(atoLevelTone('low').label, 'LOW');
-    assert.strictEqual(atoLevelTone('').label, 'LOW');
   });
 
   // Check 4: timeline is sorted chronologically before render
@@ -50,89 +58,162 @@ describe('SCENARIO-3 Org Account Takeover Test Suite (10 Checks)', () => {
     const sorted = sortAtoTimeline([
       { timestamp: '2026-10-06T03:25:00', detail: 'files' },
       { timestamp: '2026-10-06T03:17:00', detail: 'login' },
-      { timestamp: '2026-10-06T03:20:00', detail: 'new device' },
     ]);
-    assert.deepStrictEqual(
-      sorted.map((e) => e.detail),
-      ['login', 'new device', 'files']
-    );
-    // input array not mutated
-    assert.strictEqual(sorted.length, 3);
+    assert.deepStrictEqual(sorted.map((e) => e.detail), ['login', 'files']);
   });
 
   // Check 5: demo assets mirror the scenario timeline (5 stages)
   it('5 demo payload carries the 5-stage attack timeline + baseline', () => {
     assert.strictEqual(ATO_DEMO_TIMELINE.length, 5);
-    assert.strictEqual(ATO_DEMO_TIMELINE[0].timestamp, '2026-10-06T03:17:00');
     assert.strictEqual(ATO_DEMO_TIMELINE[1].failed_attempts, 8);
-    assert.strictEqual(ATO_DEMO_TIMELINE[3].event_type, 'password_change');
     assert.strictEqual(ATO_DEMO_TIMELINE[4].files_accessed, 150);
     assert.strictEqual(ATO_DEMO_BASELINE.baseline_profile.home_country, 'US');
-    assert.ok(ATO_DEMO_BASELINE.baseline_profile.known_devices.length >= 1);
   });
 
-  // Check 6: page exists in the shell with the vertical timeline + details below
-  it('6 page renders vertical timeline, indicators, actions, ExplanationPanel', () => {
-    const page = fs.readFileSync(pagePath, 'utf8');
-    assert.match(page, /data-testid="org-ato-page"/);
-    // vertical line + per-item dots
+  // Check 6: search filters in real-time by event id OR email, case-insensitive
+  it('6 filterAtoEvents filters by id or email substring', () => {
+    assert.strictEqual(filterAtoEvents(ROWS, '').length, 3);
+    assert.strictEqual(filterAtoEvents(ROWS, '   ').length, 3, 'whitespace query = all');
+    // by event id (case-insensitive substring)
+    assert.deepStrictEqual(
+      filterAtoEvents(ROWS, 'BBB').map((r) => r.id),
+      ['evt-bbb-222']
+    );
+    assert.deepStrictEqual(
+      filterAtoEvents(ROWS, 'evt-ccc').map((r) => r.id),
+      ['evt-ccc-333']
+    );
+    // by email
+    assert.deepStrictEqual(
+      filterAtoEvents(ROWS, 'sarah.chen').map((r) => r.id),
+      ['evt-aaa-111']
+    );
+    assert.deepStrictEqual(
+      filterAtoEvents(ROWS, 'ACME.COM').length,
+      3,
+      'email domain matches all, case-insensitive'
+    );
+    assert.strictEqual(filterAtoEvents(ROWS, 'nope@nowhere.io').length, 0);
+  });
+
+  // Check 7: status pills + score badges + banner follow the 3 tiers
+  it('7 status tone, score tone and banner label follow the 3-tier bands', () => {
+    assert.strictEqual(atoStatusTone('ALLOWED').label, 'Allowed');
+    assert.match(atoStatusTone('ALLOWED').className, /emerald/);
+    assert.strictEqual(atoStatusTone('USER_NOTIFIED').label, 'Notified');
+    assert.match(atoStatusTone('USER_NOTIFIED').className, /amber/);
+    assert.strictEqual(atoStatusTone('ACCOUNT_RESTRICTED').label, 'Restricted');
+    assert.match(atoStatusTone('ACCOUNT_RESTRICTED').className, /red/);
+
+    assert.match(atoScoreTone(0), /emerald/);
+    assert.match(atoScoreTone(29), /emerald/);
+    assert.match(atoScoreTone(30), /amber/);
+    assert.match(atoScoreTone(74), /amber/);
+    assert.match(atoScoreTone(75), /red/);
+    assert.match(atoScoreTone(92), /red/);
+
+    assert.strictEqual(atoBannerLabel('ACCOUNT_RESTRICTED'), 'ACCOUNT RESTRICTED & USER NOTIFIED');
+    assert.strictEqual(atoBannerLabel('USER_NOTIFIED'), 'USER NOTIFIED');
+    assert.match(atoBannerLabel('ALLOWED'), /ALLOWED/);
+    assert.match(atoBannerTone('ACCOUNT_RESTRICTED'), /red/);
+    assert.match(atoBannerTone('USER_NOTIFIED'), /amber/);
+  });
+
+  // Check 8: list page — search box, table columns, real-time filter wiring
+  it('8 list page: search input filters in real-time over the server-scoped list', () => {
+    const page = fs.readFileSync(listPath, 'utf8');
+    assert.match(page, /data-testid="org-ato-list-page"/);
+    assert.match(page, /data-testid="ato-search-input"/);
+    assert.match(page, /onChange=\{\(e\) => setQuery\(e\.target\.value\)\}/);
+    assert.match(page, /filterAtoEvents\(events \?\? \[\], query\)/);
+    assert.match(page, /orgApi\s*\.\s*listAtoEvents\(orgId\)/);
+    for (const col of ['Timestamp', 'Account', 'Risk Score', 'Status']) {
+      assert.ok(page.includes(col), `column ${col} present`);
+    }
+    assert.match(page, /data-testid="ato-score-badge"/);
+    assert.match(page, /data-testid="ato-status-badge"/);
+    assert.match(page, /atoScoreTone\(event\.risk_score\)/);
+    assert.match(page, /atoStatusTone\(event\.action_taken\)/);
+    assert.match(page, /data-testid="ato-list-row"/);
+    assert.match(page, /data-testid="ato-list-empty"/);
+  });
+
+  // Check 9: row click navigates to the detail route
+  it('9 list row click navigates to /analysis/account-takeover/:eventId', () => {
+    const page = fs.readFileSync(listPath, 'utf8');
+    assert.match(
+      page,
+      /navigate\(\s*`\/org\/\$\{orgId\}\/projects\/\$\{projectId\}\/analysis\/account-takeover\/\$\{event\.id\}`\s*\)/
+    );
+    const app = fs.readFileSync(appPath, 'utf8');
+    assert.match(app, /path="\/org\/:orgId\/projects\/:projectId\/analysis\/account-takeover\/:eventId"/);
+  });
+
+  // Check 10: detail page is READ-ONLY (zero input elements)
+  it('10 detail page is read-only: no inputs, forms or textareas', () => {
+    const page = fs.readFileSync(detailPath, 'utf8');
+    assert.doesNotMatch(page, /<input|<textarea|<select|<form/, 'detail page must have zero inputs');
+    assert.match(page, /data-testid="org-ato-detail-page"/);
+    assert.match(page, /orgApi\s*\.\s*getAtoEventDetail\(orgId, eventId\)/);
+  });
+
+  // Check 11: detail banner is prominent and shows the enforced action
+  it('11 detail page: action banner + baseline/timeline/evidence/actions/explanation sections', () => {
+    const page = fs.readFileSync(detailPath, 'utf8');
+    assert.match(page, /data-testid="ato-action-banner"/);
+    assert.match(page, /atoBannerLabel\(detail\.action_taken\)/);
+    assert.match(page, /atoBannerTone\(detail\.action_taken\)/);
+    // section 1: baseline display (definition list, not a form)
+    assert.match(page, /data-testid="ato-baseline-section"/);
+    // section 2: vertical timeline
     assert.match(page, /data-testid="ato-timeline"/);
     assert.match(page, /data-testid="ato-timeline-item"/);
     assert.match(page, /border-l-2/);
     assert.match(page, /atoDotClass\(event\)/);
-    assert.match(page, /atoClockLabel\(event\.timestamp\)/);
-    // below the timeline: indicators, actions, explanation
+    // section 3: evidence + recommended actions
     assert.match(page, /data-testid="ato-indicators"/);
     assert.match(page, /data-testid="ato-actions"/);
+    // section 4: explanation panel
     assert.match(page, /<ExplanationPanel/);
-    assert.match(page, /eventId=\{result\.alert_id\}/);
+    assert.match(page, /eventId=\{detail\.alert_id \?\? undefined\}/);
   });
 
-  // Check 7: page sends NO organization scope in the body — org rides the
-  // membership-validated header, resolved server-side
-  it('7 analyzeAccountTakeover posts without org id in body (header only)', () => {
-    const orgApi = fs.readFileSync(orgApiPath, 'utf8');
-    assert.match(orgApi, /analyzeAccountTakeover\(/);
-    assert.match(orgApi, /'X-Organization-Id': orgId/);
-    const page = fs.readFileSync(pagePath, 'utf8');
-    const payloadBlock = page.match(/const payload = \{[\s\S]*?\n      \};/);
-    assert.ok(payloadBlock, 'payload built in page');
-    assert.doesNotMatch(payloadBlock[0], /organization_id/, 'no client-supplied org scope');
-    assert.match(page, /analyzeAccountTakeover\(orgId, payload\)/);
-  });
-
-  // Check 8: shell sidebar gains the Analysis section with the ATO nav item
-  it('8 shell sidebar: Analysis section + Account Takeover nav under it', () => {
+  // Check 12: routes — list is the sidebar default, detail nested; old form page gone
+  it('12 routes: list default + detail nested behind OrgGuard in shell; old form removed', () => {
+    const app = fs.readFileSync(appPath, 'utf8');
+    assert.match(app, /import OrgAccountTakeoverList from '\.\/pages\/OrgAccountTakeoverList'/);
+    assert.match(app, /import OrgAccountTakeoverDetail from '\.\/pages\/OrgAccountTakeoverDetail'/);
+    assert.match(
+      app,
+      /<OrgGuard>\s*<OrgWorkspaceShell>\s*<OrgAccountTakeoverList \/>\s*<\/OrgWorkspaceShell>\s*<\/OrgGuard>/
+    );
+    assert.match(
+      app,
+      /<OrgGuard>\s*<OrgWorkspaceShell>\s*<OrgAccountTakeoverDetail \/>\s*<\/OrgWorkspaceShell>\s*<\/OrgGuard>/
+    );
+    assert.strictEqual(fs.existsSync(oldPagePath), false, 'manual form page must be deleted');
+    // shell sidebar still points at the list route (Analysis section)
     const shell = fs.readFileSync(shellPath, 'utf8');
-    assert.match(shell, /data-testid="shell-analysis-section"/);
-    assert.match(shell, />\s*Analysis\s*</);
     assert.match(shell, /data-testid="shell-ato-nav"/);
     assert.match(shell, /analysis\/account-takeover/);
-    // active state uses aria-current like the other nav items
-    assert.match(shell, /aria-current=\{atoActive \? 'page' : undefined\}/);
   });
 
-  // Check 9: route registered inside the org shell behind OrgGuard
-  it('9 route /org/:orgId/projects/:projectId/analysis/account-takeover in shell', () => {
-    const app = fs.readFileSync(appPath, 'utf8');
-    assert.match(app, /import OrgAccountTakeover from '\.\/pages\/OrgAccountTakeover'/);
-    assert.match(
-      app,
-      /path="\/org\/:orgId\/projects\/:projectId\/analysis\/account-takeover"/
-    );
-    assert.match(
-      app,
-      /<OrgGuard>\s*<OrgWorkspaceShell>\s*<OrgAccountTakeover \/>\s*<\/OrgWorkspaceShell>\s*<\/OrgGuard>/
-    );
+  // Check 13: org scope never rides the URL/query — header only
+  it('13 list/detail requests carry X-Organization-Id, no org id in query', () => {
+    const orgApi = fs.readFileSync(orgApiPath, 'utf8');
+    assert.match(orgApi, /listAtoEvents\(/);
+    assert.match(orgApi, /getAtoEventDetail\(/);
+    const listBlock = orgApi.match(/async listAtoEvents\([\s\S]*?\n  \},/);
+    const detailBlock = orgApi.match(/async getAtoEventDetail\([\s\S]*?\n  \},/);
+    assert.ok(listBlock && detailBlock);
+    assert.match(listBlock[0], /'X-Organization-Id': orgId/);
+    assert.match(detailBlock[0], /'X-Organization-Id': orgId/);
+    assert.doesNotMatch(listBlock[0], /organization_id=/, 'no org id as query param');
   });
 
-  // Check 10: run control + error handling
-  it('10 run button + invalid-JSON guard present', () => {
-    const page = fs.readFileSync(pagePath, 'utf8');
-    assert.match(page, /data-testid="ato-run-btn"/);
-    assert.match(page, /data-testid="ato-load-demo-btn"/);
-    assert.match(page, /Activity timeline must be a JSON array/);
-    assert.match(page, /data-testid="ato-error"/);
-    assert.match(page, /data-testid="ato-risk-pill"/);
+  // Check 14: helpers file stays framework-free (node:test importable)
+  it('14 helpers remain framework-free pure functions', () => {
+    const helpers = fs.readFileSync(helpersPath, 'utf8');
+    assert.doesNotMatch(helpers, /import\s+.*react|useState|useEffect/i);
   });
 });

@@ -5,7 +5,7 @@ import difflib
 import hashlib
 import uuid
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Header, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Header, Query, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
@@ -47,7 +47,7 @@ from app.db.models import Alert, Event, MediaFile, OrgOrganization, OrgProject, 
 from app.db.session import async_session_maker, get_db, set_session_user
 from app.schemas.alerts import AlertResponse
 from app.services.account_takeover_detector import analyze_auth_log_heuristics
-from app.services.ato_detector import AccountTakeoverDetector
+from app.services.ato_detector import AccountTakeoverDetector, classify_enforcement
 from app.services.alert_service import create_alert
 from app.core.config import get_settings
 from app.services import auth_verifier
@@ -854,6 +854,27 @@ async def analyze_account_takeover(
         ]
         account = (payload.account_id or "unknown account").strip()
 
+        # ATO-UI-OVERHAUL: strict 3-tier enforcement decided by the fused
+        # score (SAFE<30 ALLOWED / MEDIUM USER_NOTIFIED / CRITICAL
+        # ACCOUNT_RESTRICTED+USER_NOTIFIED). The account "lock" and the
+        # notification are mocks recorded in the persisted metadata — no
+        # real mailbox/session side effects leave this service.
+        enforcement = classify_enforcement(score)
+        if enforcement["notified"]:
+            logger.info(
+                "[mock] ATO USER_NOTIFIED: account=%s org=%s score=%d",
+                account,
+                tenant.organization_id,
+                score,
+            )
+        if enforcement["account_restricted"]:
+            logger.info(
+                "[mock] ATO ACCOUNT_RESTRICTED: account=%s org=%s score=%d",
+                account,
+                tenant.organization_id,
+                score,
+            )
+
         event_id = await _create_analysis_event(
             db,
             tenant=tenant,
@@ -865,6 +886,7 @@ async def analyze_account_takeover(
                 "baseline_profile": payload.baseline_profile,
                 "suspicious_events": payload.suspicious_events,
                 "source": payload.source,
+                "enforcement": enforcement,
             },
         )
 
@@ -884,6 +906,7 @@ async def analyze_account_takeover(
                 "subject": f"Account takeover risk: {account}",
                 "account_id": payload.account_id,
                 "target_user": payload.account_id,
+                "enforcement": enforcement,
             },
             indicators=indicators,
             score=score,
@@ -902,6 +925,8 @@ async def analyze_account_takeover(
             "risk_level": result["risk_level"],
             "risk_score": score,
             "account_id": payload.account_id,
+            "enforcement": enforcement,
+            "action_taken": enforcement["action_taken"],
             "indicators": indicators,
             "suspicious_events": result["timeline"],
             "recommended_actions": result["recommended_actions"],
@@ -932,6 +957,125 @@ async def analyze_account_takeover(
         user_prompt_builder=lambda data, ind, score, sev: format_account_takeover_user_prompt(payload.events, ind, score, sev),
     )
     return AlertResponse.model_validate(alert)
+
+
+def _require_org_tenant(tenant: TenantContext) -> None:
+    """The ATO event list/detail views are org-scoped by design."""
+    if not tenant.organization_id:
+        raise PermissionDeniedError(
+            "Account-takeover analysis requires an organization context"
+        )
+
+
+@router.get("/account-takeover/events")
+async def list_account_takeover_events(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(require_account_takeover_auth),
+) -> dict:
+    """Recent org-flow ATO events for the authenticated org/project.
+
+    Summaries only (id, timestamp, user_email, risk_score, action_taken);
+    the organization/project scope comes from the credential, never a query
+    parameter, so one tenant cannot list another's events.
+    """
+    _require_org_tenant(tenant)
+    conditions = [
+        tenant_criteria(Event, tenant),
+        Event.event_type == "account_takeover",
+        Event.source == "ato_org_api",
+    ]
+    if tenant.project_id:
+        conditions.append(Event.project_id == tenant.project_id)
+    rows = (
+        await db.execute(
+            select(Event, Alert)
+            .join(Alert, Alert.event_id == Event.id)
+            .where(*conditions)
+            .order_by(Event.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+
+    events = []
+    for event, alert in rows:
+        raw = event.raw_data or {}
+        score = int(alert.risk_score or 0)
+        stored = raw.get("enforcement") or {}
+        # Rows written before enforcement metadata existed are classified on
+        # read from the score — single source of truth either way.
+        enforcement = stored if stored.get("action_taken") else classify_enforcement(score)
+        events.append(
+            {
+                "id": str(event.id),
+                "timestamp": event.created_at,
+                "user_email": raw.get("account_id") or alert.target_user or "unknown",
+                "risk_score": score,
+                "action_taken": enforcement.get("action_taken"),
+                "tier": enforcement.get("tier"),
+                "severity": alert.severity,
+                "account_restricted": bool(enforcement.get("account_restricted")),
+            }
+        )
+    return {"events": events, "count": len(events)}
+
+
+@router.get("/account-takeover/events/{event_id}")
+async def get_account_takeover_event(
+    event_id: str,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(require_account_takeover_auth),
+) -> dict:
+    """Read-only detail view payload for one org-flow ATO event.
+
+    The annotated timeline is recomputed deterministically from the stored
+    baseline + suspicious events; the persisted Alert remains the authority
+    for risk score and explanation. Cross-tenant ids 404, never leak.
+    """
+    _require_org_tenant(tenant)
+    event = (
+        await db.execute(
+            select(Event).where(tenant_criteria(Event, tenant), Event.id == event_id)
+        )
+    ).scalar_one_or_none()
+    if event is None or event.event_type != "account_takeover" or event.source != "ato_org_api":
+        raise NotFoundError("Event", event_id)
+
+    alert = (
+        await db.execute(
+            select(Alert).where(tenant_criteria(Alert, tenant), Alert.event_id == event_id)
+        )
+    ).scalar_one_or_none()
+
+    raw = event.raw_data or {}
+    result = AccountTakeoverDetector().analyze(
+        raw.get("baseline_profile"), raw.get("suspicious_events") or []
+    )
+    score = int(alert.risk_score) if alert is not None else int(result["risk_score"])
+    stored = raw.get("enforcement") or {}
+    enforcement = stored if stored.get("action_taken") else classify_enforcement(score)
+
+    return {
+        "event_id": str(event.id),
+        "alert_id": str(alert.id) if alert is not None else None,
+        "account_id": raw.get("account_id"),
+        "created_at": event.created_at,
+        "risk_score": score,
+        "risk_level": result["risk_level"],
+        "enforcement": enforcement,
+        "action_taken": enforcement.get("action_taken"),
+        "baseline_profile": raw.get("baseline_profile") or {},
+        "suspicious_events": result["timeline"],
+        "indicators": (alert.indicators if alert is not None else None)
+        or [{**i, "source": "ato_detector"} for i in result["indicators"]],
+        "recommended_actions": result["recommended_actions"],
+        "explanation": alert.explanation if alert is not None else None,
+        "organization": {
+            "id": tenant.organization_id,
+            "name": tenant.organization_name,
+        },
+        "project": {"id": tenant.project_id} if tenant.project_id else None,
+    }
 
 
 @router.post("/network", response_model=AlertResponse)

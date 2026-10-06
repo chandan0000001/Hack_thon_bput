@@ -203,7 +203,69 @@ export interface AtoAnalysisPayload {
   suspicious_events?: AtoSuspiciousEvent[];
 }
 
+/** ATO-UI-OVERHAUL: row of GET /analysis/account-takeover/events (org
+ * scope resolved server-side from the JWT). */
+export interface AtoEventSummary {
+  id: string;
+  timestamp: string;
+  user_email: string;
+  risk_score: number;
+  action_taken: string;
+  tier: string;
+  severity?: string;
+  account_restricted?: boolean;
+}
+
+/** GET /analysis/account-takeover/events/{eventId} — read-only detail. */
+export interface AtoEventDetail {
+  event_id: string;
+  alert_id: string | null;
+  account_id: string | null;
+  created_at: string;
+  risk_score: number;
+  risk_level: string;
+  enforcement: {
+    tier: string;
+    action_taken: string;
+    actions: string[];
+    account_restricted: boolean;
+    notified: boolean;
+  };
+  action_taken: string;
+  baseline_profile: AtoBaseline;
+  suspicious_events: Array<AtoSuspiciousEvent & { flagged?: string[]; event_score?: number }>;
+  indicators: Array<{
+    type: string;
+    severity: string;
+    description: string;
+    signal: string;
+    source?: string;
+  }>;
+  recommended_actions: string[];
+  explanation?: string | null;
+  organization: { id: string; name: string };
+  project: { id: string } | null;
+}
+
 export const orgApi = {
+  // ATO-UI-OVERHAUL: recent org-flow ATO events for the list view (org
+  // scope rides the membership-validated header; never a query param).
+  async listAtoEvents(orgId: string, limit = 100): Promise<AtoEventSummary[]> {
+    const data = await apiFetch(
+      `/analysis/account-takeover/events?limit=${limit}`,
+      { headers: { 'X-Organization-Id': orgId } }
+    );
+    return data.events || [];
+  },
+
+  // ATO-UI-OVERHAUL: read-only detail for one ATO event.
+  async getAtoEventDetail(orgId: string, eventId: string): Promise<AtoEventDetail> {
+    return apiFetch(
+      `/analysis/account-takeover/events/${encodeURIComponent(eventId)}`,
+      { headers: { 'X-Organization-Id': orgId } }
+    );
+  },
+
   // SCENARIO-3: org-scoped account-takeover analysis. The org scope is
   // resolved server-side from the JWT (X-Organization-Id is membership-
   // validated like every other org endpoint); the body carries no org id.
