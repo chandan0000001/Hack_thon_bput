@@ -1,0 +1,12 @@
+{
+  "account_id": "sarah.chen@acme.com",
+  "baseline_profile": {
+    "user": "sarah.chen@acme.com",
+    "role": "Finance Director",
+    "typical_login_start": "09:00",
+    "typical_login_end": "10:00",
+    "home_country": "US",
+    "known_ips": ["98.42.117.6", "10.0.4.15"],
+    "known_devices": ["MAC-BOOK-A7F3", "IPHONE-12-SARAH"]
+  }
+}

@@ -47,6 +47,7 @@ from app.db.models import Alert, Event, MediaFile, OrgOrganization, OrgProject, 
 from app.db.session import async_session_maker, get_db, set_session_user
 from app.schemas.alerts import AlertResponse
 from app.services.account_takeover_detector import analyze_auth_log_heuristics
+from app.services.ato_detector import AccountTakeoverDetector
 from app.services.alert_service import create_alert
 from app.core.config import get_settings
 from app.services import auth_verifier
@@ -111,7 +112,15 @@ class ImpersonationAnalysisRequest(BaseModel):
 
 class AccountTakeoverAnalysisRequest(BaseModel):
     source: str = Field(default="api", min_length=1)
-    events: list[dict[str, Any]]
+    # Legacy personal-workspace flow: authentication-log records run through
+    # analyze_auth_log_heuristics + the shared analysis pipeline.
+    events: list[dict[str, Any]] = []
+    # SCENARIO-3 org-scoped fusion flow: baseline vs abnormal activity
+    # timeline. Its presence selects the org flow; organization scope is
+    # resolved server-side from the credential, never from this body.
+    account_id: Optional[str] = Field(default=None, max_length=255)
+    baseline_profile: Optional[dict[str, Any]] = None
+    suspicious_events: Optional[list[dict[str, Any]]] = None
 
 
 class NetworkAnalysisRequest(BaseModel):
@@ -711,26 +720,218 @@ async def analyze_identity_fraud(
     return await analyze_impersonation(payload, db=db, tenant=tenant)
 
 
-@router.post("/account-takeover", response_model=AlertResponse)
+# SCENARIO-3: The /account-takeover path serves two flows behind one auth
+# dependency. An org API key (cg_org_...) or a JWT selects the tenant
+# SERVER-SIDE (key row / membership check) — the request body never carries
+# an organization_id. A payload with baseline_profile/suspicious_events runs
+# the strictly org-scoped ATO fusion engine; legacy {events} payloads keep
+# the personal auth-log pipeline unchanged.
+async def require_account_takeover_auth(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    x_organization_id: Optional[str] = Header(None, alias="X-Organization-Id"),
+    db: AsyncSession = Depends(get_db),
+) -> TenantContext:
+    """Resolve the tenant from a Supabase JWT or an org API key."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise UnauthorizedError("Missing bearer credentials")
+
+    token = authorization[7:].strip()
+    if not token:
+        raise UnauthorizedError("Empty bearer token")
+
+    # Path A: organization API key (cg_org_...), same validation path as the
+    # project gateway / Scenario 2 (cyberguard.validate_org_api_key).
+    if token.startswith("cg_org_"):
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        res = await db.execute(
+            text(
+                "SELECT key_id, project_id, organization_id, role, owner_user_id, status "
+                "FROM cyberguard.validate_org_api_key(:h)"
+            ),
+            {"h": token_hash},
+        )
+        key_row = res.mappings().first()
+        if not key_row or key_row["status"] != "active":
+            raise UnauthorizedError("Invalid or inactive API key")
+        if key_row["role"] == "viewer":
+            raise PermissionDeniedError("Viewer keys cannot perform account-takeover analysis")
+
+        # Stamp the RLS identity before any tenant-scoped query runs.
+        await set_session_user(db, str(key_row["owner_user_id"]))
+        try:
+            await db.execute(
+                text("UPDATE cyberguard.org_api_keys SET last_used_at = now() WHERE id = :kid"),
+                {"kid": str(key_row["key_id"])},
+            )
+            await db.commit()
+        except Exception:  # noqa: BLE001 - usage stamping must never fail auth
+            await db.rollback()
+
+        organization = (
+            await db.execute(
+                select(OrgOrganization).where(OrgOrganization.id == str(key_row["organization_id"]))
+            )
+        ).scalar_one_or_none()
+        project = (
+            await db.execute(select(OrgProject).where(OrgProject.id == str(key_row["project_id"])))
+        ).scalar_one_or_none()
+
+        return TenantContext(
+            user_id=str(key_row["owner_user_id"]),
+            owner_user_id=str(key_row["owner_user_id"]),
+            organization_id=str(key_row["organization_id"]),
+            organization_name=organization.name if organization else "Organization",
+            role="admin" if key_row["role"] == "master" else str(key_row["role"]),
+            is_single_user=False,
+            project_id=str(key_row["project_id"]) if key_row["project_id"] else None,
+        )
+
+    # Path B: Supabase JWT through the standard tenant resolution. The
+    # X-Organization-Id header is forwarded explicitly (membership-validated
+    # inside get_tenant_context); defaults must never be passed implicitly —
+    # direct calls would leak FastAPI's Header marker objects into queries.
+    user = await get_current_user(
+        credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token),
+        db=db,
+    )
+    tenant = await get_tenant_context(
+        user=user, db=db, x_organization_id=x_organization_id, org_id=None
+    )
+    if tenant.role == "viewer":
+        raise PermissionDeniedError("Role does not have permission for account-takeover analysis")
+    return tenant
+
+
+@router.post("/account-takeover")
 async def analyze_account_takeover(
     payload: AccountTakeoverAnalysisRequest,
     db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = Depends(require_role(["admin", "analyst"])),
+    tenant: TenantContext = Depends(require_account_takeover_auth),
 ) -> Any:
-    """Full account takeover analysis pipeline for authentication logs."""
-    raw_data = payload.model_dump(mode="json")
+    """Account-takeover analysis.
+
+    - Org flow (baseline_profile/suspicious_events present): strictly
+      organization-scoped 3-signal fusion (rules + anomaly + threat intel).
+      Fails closed when the credential carries no organization context.
+    - Legacy flow ({events}): authentication-log heuristics pipeline.
+    """
+    if payload.suspicious_events is not None or payload.baseline_profile is not None:
+        if not tenant.organization_id:
+            # Fail closed: the ATO fusion flow is org-only by design and must
+            # never fall back to a personal workspace.
+            raise PermissionDeniedError(
+                "Account-takeover analysis requires an organization context"
+            )
+
+        # JWT path: stamp the user's active project when it belongs to the
+        # resolved organization (org API keys already carry project_id from
+        # the key row).
+        if tenant.project_id is None:
+            from app.db.models import User
+
+            user_row = (
+                await db.execute(select(User).where(User.id == tenant.user_id))
+            ).scalar_one_or_none()
+            active_project_id = getattr(user_row, "active_project_id", None)
+            if active_project_id:
+                belongs = (
+                    await db.execute(
+                        select(OrgProject.id).where(
+                            OrgProject.id == active_project_id,
+                            OrgProject.organization_id == tenant.organization_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if belongs:
+                    tenant.project_id = str(belongs)
+
+        result = AccountTakeoverDetector().analyze(
+            payload.baseline_profile, payload.suspicious_events or []
+        )
+        score = int(result["risk_score"])
+        indicators = [
+            {**i, "source": "ato_detector"} for i in result["indicators"]
+        ]
+        account = (payload.account_id or "unknown account").strip()
+
+        event_id = await _create_analysis_event(
+            db,
+            tenant=tenant,
+            created_by=tenant.user_id,
+            event_type="account_takeover",
+            source="ato_org_api",
+            raw_data={
+                "account_id": payload.account_id,
+                "baseline_profile": payload.baseline_profile,
+                "suspicious_events": payload.suspicious_events,
+                "source": payload.source,
+            },
+        )
+
+        explanation = (
+            f"Account-takeover analysis for '{account}': {result['risk_level'].upper()} "
+            f"risk ({score}/100) from {len(result['indicators'])} fused indicators "
+            f"(rules, anomaly vs baseline, threat intel). Verdict "
+            f"{result['verdict']}."
+        )
+        alert = await create_alert(
+            db,
+            tenant=tenant,
+            created_by=tenant.user_id,
+            event_id=event_id,
+            module="account_takeover",
+            raw_data={
+                "subject": f"Account takeover risk: {account}",
+                "account_id": payload.account_id,
+                "target_user": payload.account_id,
+            },
+            indicators=indicators,
+            score=score,
+            severity=get_severity(score),
+            llm_output={
+                "explanation": explanation,
+                "summary": explanation[:250],
+                "recommended_actions": [
+                    {"action": action} for action in result["recommended_actions"]
+                ],
+            },
+        )
+
+        return {
+            "verdict": result["verdict"],
+            "risk_level": result["risk_level"],
+            "risk_score": score,
+            "account_id": payload.account_id,
+            "indicators": indicators,
+            "suspicious_events": result["timeline"],
+            "recommended_actions": result["recommended_actions"],
+            "threat_intel": result["threat_intel"],
+            "explanation": explanation,
+            "organization": {
+                "id": tenant.organization_id,
+                "name": tenant.organization_name,
+            },
+            "project": {"id": tenant.project_id} if tenant.project_id else None,
+            "event_id": event_id,
+            "alert_id": alert.id,
+        }
+
+    # Legacy personal/org auth-log pipeline (unchanged contract). The shared
+    # pipeline returns the raw Alert ORM row — the route previously converted
+    # it via response_model=AlertResponse, so validate explicitly here.
     indicators = await asyncio.to_thread(analyze_auth_log_heuristics, payload.events)
-    return await _run_analysis_pipeline(
+    alert = await _run_analysis_pipeline(
         db,
         tenant,
         event_type="account_takeover",
         module="account_takeover",
         source=payload.source,
-        raw_data=raw_data,
+        raw_data=payload.model_dump(mode="json", exclude={"baseline_profile", "suspicious_events"}),
         indicators=indicators,
         system_prompt=ACCOUNT_TAKEOVER_SYSTEM_PROMPT,
         user_prompt_builder=lambda data, ind, score, sev: format_account_takeover_user_prompt(payload.events, ind, score, sev),
     )
+    return AlertResponse.model_validate(alert)
 
 
 @router.post("/network", response_model=AlertResponse)

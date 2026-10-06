@@ -31,6 +31,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.config import get_settings
+from app.api.routes_analysis import require_account_takeover_auth
 from app.core.security import CurrentUser, TenantContext, get_current_user, get_tenant_context
 from app.db.models import Organization, OrganizationMember, User
 from app.db.session import async_session_maker, current_user_id, init_db
@@ -142,6 +143,11 @@ async def run_tests():
 
     app.dependency_overrides[get_current_user] = mock_get_current_user
     app.dependency_overrides[get_tenant_context] = mock_get_tenant_context
+    # SCENARIO-3: the /analysis/account-takeover route resolves its tenant
+    # through the combined org-key/JWT dependency (require_account_takeover_auth)
+    # rather than get_tenant_context directly; override it with the same
+    # tenant mock so the harness's legacy {events} ATO check keeps running.
+    app.dependency_overrides[require_account_takeover_auth] = mock_get_tenant_context
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

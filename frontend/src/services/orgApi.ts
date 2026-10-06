@@ -145,7 +145,79 @@ export interface CreatedProjectKey extends ProjectApiKey {
   api_key: string;
 }
 
+/** SCENARIO-3: baseline profile submitted with the ATO analysis. */
+export interface AtoBaseline {
+  user?: string;
+  role?: string;
+  typical_login_start?: string;
+  typical_login_end?: string;
+  home_country?: string;
+  known_ips?: string[];
+  known_devices?: string[];
+}
+
+/** SCENARIO-3: one suspicious activity event in the attack timeline. */
+export interface AtoSuspiciousEvent {
+  timestamp?: string;
+  event_type?: string;
+  source_ip?: string;
+  country?: string;
+  device_id?: string;
+  failed_attempts?: number;
+  files_accessed?: number;
+  detail?: string;
+  [key: string]: unknown;
+}
+
+/** POST /analysis/account-takeover response (org flow). The organization is
+ * resolved server-side from the credential — never from the request body. */
+export interface AtoAnalysisResult {
+  verdict: string;
+  risk_level: string;
+  risk_score: number;
+  account_id?: string | null;
+  indicators: Array<{
+    type: string;
+    severity: string;
+    description: string;
+    signal: string;
+    source?: string;
+  }>;
+  suspicious_events: Array<AtoSuspiciousEvent & { flagged?: string[]; event_score?: number }>;
+  recommended_actions: string[];
+  threat_intel?: { watchlist_size: number; hits: string[] };
+  explanation?: string | null;
+  organization: { id: string; name: string };
+  project: { id: string } | null;
+  event_id: string;
+  alert_id: string;
+}
+
+/** SCENARIO-3 request body: baseline + abnormal timeline. orgId only rides
+ * the validated X-Organization-Id header (membership-checked server-side),
+ * never the body. */
+export interface AtoAnalysisPayload {
+  source?: string;
+  account_id?: string;
+  baseline_profile?: AtoBaseline;
+  suspicious_events?: AtoSuspiciousEvent[];
+}
+
 export const orgApi = {
+  // SCENARIO-3: org-scoped account-takeover analysis. The org scope is
+  // resolved server-side from the JWT (X-Organization-Id is membership-
+  // validated like every other org endpoint); the body carries no org id.
+  async analyzeAccountTakeover(
+    orgId: string,
+    payload: AtoAnalysisPayload
+  ): Promise<AtoAnalysisResult> {
+    return apiFetch('/analysis/account-takeover', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'X-Organization-Id': orgId },
+    });
+  },
+
   // List organizations for current user
   async listOrgs(): Promise<Organization[]> {
     const data = await apiFetch('/orgs');

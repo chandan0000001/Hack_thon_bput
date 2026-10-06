@@ -44,6 +44,7 @@ import ProjectSelector from './pages/ProjectSelector';
 import OrgWorkspaceShell from './pages/OrgWorkspaceShell';
 import ProjectSettings, { type ProjectSettingsSection } from './pages/ProjectSettings';
 import OrgDashboard from './pages/OrgDashboard';
+import OrgAccountTakeover from './pages/OrgAccountTakeover';
 import OrgEventReview from './pages/OrgEventReview';
 import EventsListPage from './pages/EventsListPage';
 import { useAuthStore } from './store/authStore';
@@ -136,6 +137,17 @@ export default function App() {
             <OrgGuard>
               <OrgWorkspaceShell>
                 <EventsListPage />
+              </OrgWorkspaceShell>
+            </OrgGuard>
+          }
+        />
+        {/* SCENARIO-3: org-scoped account-takeover analysis in the shell */}
+        <Route
+          path="/org/:orgId/projects/:projectId/analysis/account-takeover"
+          element={
+            <OrgGuard>
+              <OrgWorkspaceShell>
+                <OrgAccountTakeover />
               </OrgWorkspaceShell>
             </OrgGuard>
           }

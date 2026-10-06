@@ -1,0 +1,104 @@
+/**
+ * SCENARIO-3: pure helpers for the org Account-Takeover timeline UI.
+ * Kept framework-free so node:test can exercise them directly.
+ */
+
+export interface AtoTimelineEvent {
+  timestamp?: string;
+  event_type?: string;
+  detail?: string;
+  flagged?: string[];
+  event_score?: number;
+  [key: string]: unknown;
+}
+
+/** "2026-10-06T03:17:00" -> "03:17 AM" (falls back to the raw value). */
+export function atoClockLabel(timestamp?: string): string {
+  if (!timestamp) return 'Unknown time';
+  const match = /T(\d{2}):(\d{2})/.exec(timestamp);
+  if (!match) return timestamp;
+  const hour = Number(match[1]);
+  const minute = match[2];
+  const suffix = hour < 12 ? 'AM' : 'PM';
+  const display = hour % 12 || 12;
+  return `${String(display).padStart(2, '0')}:${minute} ${suffix}`;
+}
+
+/** Timeline dot color: flagged events get the red dot, clean ones emerald. */
+export function atoDotClass(event: AtoTimelineEvent): string {
+  return event.flagged && event.flagged.length > 0
+    ? 'bg-red-500 ring-red-500/30'
+    : 'bg-emerald-500 ring-emerald-500/30';
+}
+
+/** Verdict tone for the risk-level pill. */
+export function atoLevelTone(
+  level: string
+): { text: string; ring: string; label: string } {
+  switch ((level || '').toLowerCase()) {
+    case 'critical':
+      return { text: 'text-red-300', ring: 'ring-red-500/40 bg-red-500/10', label: 'CRITICAL' };
+    case 'high':
+      return { text: 'text-red-300', ring: 'ring-red-500/40 bg-red-500/10', label: 'HIGH' };
+    case 'medium':
+      return { text: 'text-amber-300', ring: 'ring-amber-500/40 bg-amber-500/10', label: 'MEDIUM' };
+    default:
+      return { text: 'text-emerald-300', ring: 'ring-emerald-500/40 bg-emerald-500/10', label: 'LOW' };
+  }
+}
+
+/** Stable chronological ordering for the vertical timeline. */
+export function sortAtoTimeline<T extends AtoTimelineEvent>(events: T[]): T[] {
+  return [...events].sort((a, b) =>
+    String(a.timestamp ?? '').localeCompare(String(b.timestamp ?? ''))
+  );
+}
+
+/** Demo payload (mirrors scenarios/scenario-3/assets) for one-click runs. */
+export const ATO_DEMO_BASELINE = {
+  account_id: 'sarah.chen@acme.com',
+  baseline_profile: {
+    user: 'sarah.chen@acme.com',
+    role: 'Finance Director',
+    typical_login_start: '09:00',
+    typical_login_end: '10:00',
+    home_country: 'US',
+    known_ips: ['98.42.117.6', '10.0.4.15'],
+    known_devices: ['MAC-BOOK-A7F3', 'IPHONE-12-SARAH'],
+  },
+};
+
+export const ATO_DEMO_TIMELINE = [
+  {
+    timestamp: '2026-10-06T03:17:00',
+    event_type: 'login_success',
+    source_ip: '203.0.113.77',
+    country: 'RU',
+    device_id: 'WIN-XK22B9',
+    detail: 'Login from unfamiliar IP (Country mismatch)',
+  },
+  {
+    timestamp: '2026-10-06T03:18:00',
+    event_type: 'failed_login',
+    failed_attempts: 8,
+    source_ip: '203.0.113.77',
+    country: 'RU',
+    device_id: 'WIN-XK22B9',
+    detail: '8 failed login attempts',
+  },
+  {
+    timestamp: '2026-10-06T03:20:00',
+    event_type: 'login_success',
+    source_ip: '203.0.113.77',
+    country: 'RU',
+    device_id: 'WIN-XK22B9',
+    detail: 'Successful login from new device',
+  },
+  { timestamp: '2026-10-06T03:22:00', event_type: 'password_change', detail: 'Password changed' },
+  {
+    timestamp: '2026-10-06T03:25:00',
+    event_type: 'file_access',
+    files_accessed: 150,
+    detail: '150 files accessed/downloaded',
+  },
+];

@@ -1,5 +1,5 @@
 import { Link, Navigate, useLocation, useParams } from 'react-router-dom';
-import { Building2, FolderKanban, LayoutDashboard, ScrollText, Settings } from 'lucide-react';
+import { Building2, FolderKanban, KeyRound, LayoutDashboard, ScrollText, Settings } from 'lucide-react';
 import Topbar from '../components/layout/Topbar';
 import { useAuthStore } from '../store/authStore';
 import type { Organization, Project } from '../types';
@@ -61,9 +61,12 @@ export default function OrgWorkspaceShell({
   const workspacePath = `/org/${orgId}/projects/${projectId}/workspace`;
   const eventsPath = `/org/${orgId}/projects/${projectId}/events`;
   const settingsPath = `/org/${orgId}/projects/${projectId}/settings`;
+  // SCENARIO-3: Analysis section (org-scoped deep analyses)
+  const atoPath = `/org/${orgId}/projects/${projectId}/analysis/account-takeover`;
   const dashboardActive = Boolean(orgId && projectId) && location.pathname.startsWith(workspacePath);
   const eventsActive = Boolean(orgId && projectId) && location.pathname.startsWith(eventsPath);
   const settingsActive = Boolean(orgId && projectId) && location.pathname.startsWith(settingsPath);
+  const atoActive = Boolean(orgId && projectId) && location.pathname.startsWith(atoPath);
   const showSettingsItem = Boolean(org && project && project.status !== 'archived');
 
   return (
@@ -124,6 +127,27 @@ export default function OrgWorkspaceShell({
               >
                 <ScrollText className="h-4 w-4 shrink-0" />
                 <span>Events</span>
+              </Link>
+
+              {/* SCENARIO-3: Analysis section — org-scoped deep analyses */}
+              <div
+                className="mt-4 px-2.5 text-[10px] uppercase tracking-wider text-zinc-600"
+                data-testid="shell-analysis-section"
+              >
+                Analysis
+              </div>
+              <Link
+                to={atoPath}
+                data-testid="shell-ato-nav"
+                aria-current={atoActive ? 'page' : undefined}
+                className={`mt-1 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs transition ${
+                  atoActive
+                    ? 'bg-zinc-900 font-semibold text-red-400 ring-1 ring-red-500/30'
+                    : 'text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-100'
+                }`}
+              >
+                <KeyRound className="h-4 w-4 shrink-0" />
+                <span>Account Takeover</span>
               </Link>
             </nav>
           )}
