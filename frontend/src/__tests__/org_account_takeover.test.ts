@@ -4,8 +4,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  ATO_ACTION_KEYS,
   ATO_DEMO_BASELINE,
   ATO_DEMO_TIMELINE,
+  atoActionAfterManual,
+  atoActionBadge,
+  atoActionButtonClass,
+  atoActionLabel,
+  atoActionToastText,
+  atoActionUiState,
   atoBannerLabel,
   atoBannerTone,
   atoClockLabel,
@@ -31,7 +38,7 @@ const ROWS = [
   { id: 'evt-ccc-333', user_email: 'bob@acme.com', risk_score: 0, action_taken: 'ALLOWED' },
 ];
 
-describe('SCENARIO-3 / ATO-UI-OVERHAUL Test Suite (14 Checks)', () => {
+describe('SCENARIO-3 / ATO-UI-OVERHAUL Test Suite (18 Checks)', () => {
   // Check 1: clock labels render as 12h AM/PM from ISO stamps
   it('1 atoClockLabel renders 03:17 AM from ISO timestamps', () => {
     assert.strictEqual(atoClockLabel('2026-10-06T03:17:00'), '03:17 AM');
@@ -215,5 +222,79 @@ describe('SCENARIO-3 / ATO-UI-OVERHAUL Test Suite (14 Checks)', () => {
   it('14 helpers remain framework-free pure functions', () => {
     const helpers = fs.readFileSync(helpersPath, 'utf8');
     assert.doesNotMatch(helpers, /import\s+.*react|useState|useEffect/i);
+  });
+
+  // Check 15: action UI state derivation from the ledger (hybrid actions)
+  it('15 atoActionUiState: pending / done_auto / done_manual from ledger', () => {
+    assert.strictEqual(atoActionUiState(undefined), 'pending');
+    assert.strictEqual(atoActionUiState({}), 'pending');
+    assert.strictEqual(atoActionUiState({ status: 'pending' }), 'pending');
+    assert.strictEqual(atoActionUiState({ status: 'done_auto', via: 'auto' }), 'done_auto');
+    assert.strictEqual(atoActionUiState({ status: 'done_manual', via: 'manual' }), 'done_manual');
+  });
+
+  // Check 16: badges, labels, buttons and the manual transition
+  it('16 action badges Pending/Done(Auto)/Done(Manual), pure manual transition, toast text', () => {
+    assert.deepStrictEqual(ATO_ACTION_KEYS, ['notify_user', 'restrict_account', 'force_password_reset']);
+    assert.strictEqual(atoActionBadge('pending').label, 'Pending');
+    assert.match(atoActionBadge('pending').className, /zinc/);
+    assert.strictEqual(atoActionBadge('done_auto').label, 'Done (Auto)');
+    assert.match(atoActionBadge('done_auto').className, /blue/);
+    assert.strictEqual(atoActionBadge('done_manual').label, 'Done (Manual)');
+    assert.match(atoActionBadge('done_manual').className, /emerald/);
+
+    assert.strictEqual(atoActionLabel('notify_user'), 'Notify User');
+    assert.strictEqual(atoActionLabel('restrict_account'), 'Restrict Account');
+    assert.strictEqual(atoActionLabel('force_password_reset'), 'Force Password Reset');
+    // pending Notify User button is [YELLOW]
+    assert.match(atoActionButtonClass('notify_user'), /amber/);
+
+    // transition: pending -> Done (Manual), immutably, other entries kept
+    const before = {
+      notify_user: { status: 'done_auto', via: 'auto' },
+      restrict_account: { status: 'pending' },
+    };
+    const after = atoActionAfterManual(before as never, 'restrict_account');
+    assert.strictEqual(after.restrict_account.status, 'done_manual');
+    assert.strictEqual(after.restrict_account.via, 'manual');
+    assert.strictEqual(after.notify_user.status, 'done_auto', 'auto entry untouched');
+    assert.strictEqual(before.restrict_account.status, 'pending', 'original ledger not mutated');
+    // executing an auto-done action manually would still be pending-gated in UI
+    assert.strictEqual(atoActionUiState(before.notify_user), 'done_auto');
+
+    assert.strictEqual(atoActionToastText('notify_user'), 'Action executed manually: User Notified');
+    assert.strictEqual(atoActionToastText('restrict_account'), 'Action executed manually: Account Restricted');
+  });
+
+  // Check 17: detail page renders the unified action center
+  it('17 detail page: action center shows state badges, disables non-pending, PATCH wiring, toast', () => {
+    const page = fs.readFileSync(detailPath, 'utf8');
+    assert.match(page, /data-testid="ato-actions-panel"/);
+    assert.match(page, /data-testid=\{`ato-action-\$\{action\}`\}/);
+    assert.match(page, /data-testid=\{`ato-action-badge-\$\{action\}`\}/);
+    assert.match(page, /data-testid=\{`ato-action-btn-\$\{action\}`\}/);
+    // state drives the button: disabled unless pending
+    assert.match(page, /disabled=\{state !== 'pending' \|\| acting !== null\}/);
+    // PATCH through the unified endpoint, then optimistic ledger update
+    assert.match(page, /orgApi\.executeAtoAction\(orgId, eventId, action\)/);
+    assert.match(page, /atoActionAfterManual\(prev, action\)/);
+    assert.match(page, /atoActionUiState\(ledger\[action\]\)/);
+    // success toast
+    assert.match(page, /data-testid="ato-toast"/);
+    assert.match(page, /atoActionToastText\(action\)/);
+    // auto-execution state comes from the fetched ledger
+    assert.match(page, /setLedger\(data\.action_ledger \?\? \{\}\)/);
+    // detail page remains read-only except for the action buttons (no inputs)
+    assert.doesNotMatch(page, /<input|<textarea|<select|<form/);
+  });
+
+  // Check 18: PATCH request carries only the action — org scope header-only
+  it('18 executeAtoAction uses PATCH with X-Organization-Id header, no org in body', () => {
+    const orgApi = fs.readFileSync(orgApiPath, 'utf8');
+    const block = orgApi.match(/async executeAtoAction\([\s\S]*?\n  \},/);
+    assert.ok(block, 'executeAtoAction defined');
+    assert.match(block[0], /method: 'PATCH'/);
+    assert.match(block[0], /'X-Organization-Id': orgId/);
+    assert.match(block[0], /JSON\.stringify\(\{ action \}\)/);
   });
 });

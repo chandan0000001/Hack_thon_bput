@@ -4,7 +4,7 @@ import asyncio
 import difflib
 import hashlib
 import uuid
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Header, Query, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
@@ -47,6 +47,7 @@ from app.db.models import Alert, Event, MediaFile, OrgOrganization, OrgProject, 
 from app.db.session import async_session_maker, get_db, set_session_user
 from app.schemas.alerts import AlertResponse
 from app.services.account_takeover_detector import analyze_auth_log_heuristics
+from app.services.ato_action_executor import ATO_ACTIONS, AtoActionExecutor
 from app.services.ato_detector import AccountTakeoverDetector, classify_enforcement
 from app.services.alert_service import create_alert
 from app.core.config import get_settings
@@ -856,24 +857,9 @@ async def analyze_account_takeover(
 
         # ATO-UI-OVERHAUL: strict 3-tier enforcement decided by the fused
         # score (SAFE<30 ALLOWED / MEDIUM USER_NOTIFIED / CRITICAL
-        # ACCOUNT_RESTRICTED+USER_NOTIFIED). The account "lock" and the
-        # notification are mocks recorded in the persisted metadata — no
-        # real mailbox/session side effects leave this service.
-        enforcement = classify_enforcement(score)
-        if enforcement["notified"]:
-            logger.info(
-                "[mock] ATO USER_NOTIFIED: account=%s org=%s score=%d",
-                account,
-                tenant.organization_id,
-                score,
-            )
-        if enforcement["account_restricted"]:
-            logger.info(
-                "[mock] ATO ACCOUNT_RESTRICTED: account=%s org=%s score=%d",
-                account,
-                tenant.organization_id,
-                score,
-            )
+        # ACCOUNT_RESTRICTED+USER_NOTIFIED). Execution itself is deferred to
+        # the ATO-HYBRID-ACTIONS executor below — nothing here side-effects.
+        enforcement = {**classify_enforcement(score), "risk_score": score}
 
         event_id = await _create_analysis_event(
             db,
@@ -920,6 +906,24 @@ async def analyze_account_takeover(
             },
         )
 
+        # ATO-HYBRID-ACTIONS: immediate automatic execution of the enforced
+        # tier — through the SAME executor the manual PATCH path uses, so
+        # behaviour and audit records are identical regardless of trigger.
+        event_row = (
+            await db.execute(select(Event).where(Event.id == event_id))
+        ).scalar_one()
+        executor = AtoActionExecutor(db, event_row)
+        auto_execution: list[dict[str, Any]] = []
+        if enforcement["tier"] == "critical":
+            auto_execution.append(await executor.execute("restrict_account", "auto"))
+            auto_execution.append(await executor.execute("notify_user", "auto"))
+        elif enforcement["tier"] == "medium":
+            auto_execution.append(await executor.execute("notify_user", "auto"))
+        # SAFE: no action by design.
+
+        ledger = (event_row.raw_data or {}).get("action_ledger") or {}
+        action_status = (event_row.raw_data or {}).get("action_status") or "pending"
+
         return {
             "verdict": result["verdict"],
             "risk_level": result["risk_level"],
@@ -927,6 +931,9 @@ async def analyze_account_takeover(
             "account_id": payload.account_id,
             "enforcement": enforcement,
             "action_taken": enforcement["action_taken"],
+            "action_ledger": ledger,
+            "action_status": action_status,
+            "auto_execution": auto_execution,
             "indicators": indicators,
             "suspicious_events": result["timeline"],
             "recommended_actions": result["recommended_actions"],
@@ -1064,6 +1071,9 @@ async def get_account_takeover_event(
         "risk_level": result["risk_level"],
         "enforcement": enforcement,
         "action_taken": enforcement.get("action_taken"),
+        "action_ledger": raw.get("action_ledger") or {},
+        "action_status": raw.get("action_status") or "pending",
+        "manual_action": raw.get("manual_action"),
         "baseline_profile": raw.get("baseline_profile") or {},
         "suspicious_events": result["timeline"],
         "indicators": (alert.indicators if alert is not None else None)
@@ -1075,6 +1085,51 @@ async def get_account_takeover_event(
             "name": tenant.organization_name,
         },
         "project": {"id": tenant.project_id} if tenant.project_id else None,
+    }
+
+
+class AtoManualActionRequest(BaseModel):
+    """Body for the manual analyst action endpoint (ATO-HYBRID-ACTIONS)."""
+
+    action: Literal["notify_user", "restrict_account", "force_password_reset"]
+
+
+@router.patch("/account-takeover/events/{event_id}/action")
+async def execute_account_takeover_action(
+    event_id: str,
+    payload: AtoManualActionRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(require_account_takeover_auth),
+) -> dict:
+    """Manually execute one ATO response action as an analyst.
+
+    Calls the SAME AtoActionExecutor the automatic pipeline uses — only the
+    ``via`` tag differs, so UI state ("Done (Auto)" vs "Done (Manual)") is
+    derived from the same ledger the automatic path writes. Idempotent: a
+    repeated PATCH on an already-executed action returns ``executed=False``
+    without re-running it (no duplicate emails / locks).
+    """
+    _require_org_tenant(tenant)
+    event = (
+        await db.execute(
+            select(Event).where(tenant_criteria(Event, tenant), Event.id == event_id)
+        )
+    ).scalar_one_or_none()
+    if event is None or event.event_type != "account_takeover" or event.source != "ato_org_api":
+        raise NotFoundError("Event", event_id)
+
+    executor = AtoActionExecutor(db, event)
+    result = await executor.execute(payload.action, "manual")
+    raw = event.raw_data or {}
+    return {
+        "event_id": str(event.id),
+        "action": result["action"],
+        "executed": result["executed"],
+        "already_done": result["already_done"],
+        "status": result["status"],
+        "action_status": raw.get("action_status") or "pending",
+        "manual_action": raw.get("manual_action"),
+        "action_ledger": raw.get("action_ledger") or {},
     }
 
 

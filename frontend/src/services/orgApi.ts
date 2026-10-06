@@ -232,6 +232,12 @@ export interface AtoEventDetail {
     notified: boolean;
   };
   action_taken: string;
+  action_ledger: Record<
+    string,
+    { status: string; via: string; executed_at?: string; [key: string]: unknown }
+  >;
+  action_status: string;
+  manual_action?: string | null;
   baseline_profile: AtoBaseline;
   suspicious_events: Array<AtoSuspiciousEvent & { flagged?: string[]; event_score?: number }>;
   indicators: Array<{
@@ -263,6 +269,32 @@ export const orgApi = {
     return apiFetch(
       `/analysis/account-takeover/events/${encodeURIComponent(eventId)}`,
       { headers: { 'X-Organization-Id': orgId } }
+    );
+  },
+
+  // ATO-HYBRID-ACTIONS: analyst executes one response action manually.
+  // Same backend executor the automatic pipeline uses (idempotent).
+  async executeAtoAction(
+    orgId: string,
+    eventId: string,
+    action: 'notify_user' | 'restrict_account' | 'force_password_reset'
+  ): Promise<{
+    event_id: string;
+    action: string;
+    executed: boolean;
+    already_done: boolean;
+    status: string;
+    action_status: string;
+    manual_action?: string | null;
+    action_ledger: AtoEventDetail['action_ledger'];
+  }> {
+    return apiFetch(
+      `/analysis/account-takeover/events/${encodeURIComponent(eventId)}/action`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ action }),
+        headers: { 'X-Organization-Id': orgId },
+      }
     );
   },
 

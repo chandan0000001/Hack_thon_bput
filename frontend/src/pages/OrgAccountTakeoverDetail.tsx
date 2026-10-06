@@ -15,12 +15,21 @@ import { Clock, Lock, ShieldCheck, UserCheck } from 'lucide-react';
 import { orgApi, type AtoEventDetail } from '../services/orgApi';
 import ExplanationPanel from '../components/common/ExplanationPanel';
 import {
+  ATO_ACTION_KEYS,
+  atoActionAfterManual,
+  atoActionBadge,
+  atoActionButtonClass,
+  atoActionLabel,
+  atoActionToastText,
+  atoActionUiState,
   atoBannerLabel,
   atoBannerTone,
   atoClockLabel,
   atoDotClass,
   atoLevelTone,
   sortAtoTimeline,
+  type AtoActionKey,
+  type AtoActionLedgerEntry,
 } from './orgAtoHelpers';
 
 function BaselineDisplay({ baseline }: { baseline: Record<string, unknown> }) {
@@ -51,6 +60,10 @@ export default function OrgAccountTakeoverDetail() {
   const { orgId, eventId } = useParams<{ orgId: string; eventId: string }>();
   const [detail, setDetail] = useState<AtoEventDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ledger, setLedger] = useState<Record<string, AtoActionLedgerEntry>>({});
+  const [acting, setActing] = useState<AtoActionKey | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!orgId || !eventId) return;
@@ -58,7 +71,10 @@ export default function OrgAccountTakeoverDetail() {
     orgApi
       .getAtoEventDetail(orgId, eventId)
       .then((data) => {
-        if (!cancelled) setDetail(data);
+        if (!cancelled) {
+          setDetail(data);
+          setLedger(data.action_ledger ?? {});
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load ATO event.');
@@ -67,6 +83,29 @@ export default function OrgAccountTakeoverDetail() {
       cancelled = true;
     };
   }, [orgId, eventId]);
+
+  async function runManualAction(action: AtoActionKey) {
+    if (!orgId || !eventId || !detail) return;
+    setActing(action);
+    setActionError(null);
+    try {
+      const result = await orgApi.executeAtoAction(orgId, eventId, action);
+      if (result.executed) {
+        // Pending -> Done (Manual); button disables itself.
+        setLedger((prev) => atoActionAfterManual(prev, action));
+        setToast(atoActionToastText(action));
+        setTimeout(() => setToast(null), 4000);
+      } else {
+        // Already executed (auto or a previous manual click) — reflect truth.
+        setLedger(result.action_ledger ?? {});
+        setToast(null);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Action failed.');
+    } finally {
+      setActing(null);
+    }
+  }
 
   if (error) {
     return (
@@ -198,11 +237,75 @@ export default function OrgAccountTakeoverDetail() {
         </div>
       </div>
 
+      {/* ATO-HYBRID-ACTIONS: unified action center — shows the STATE of each
+          action (Pending / Done (Auto) / Done (Manual)), not just buttons.
+          Automatic executions arrive in the ledger as done_auto; manual ones
+          go through the same backend executor via PATCH. */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4" data-testid="ato-actions-panel">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-sm text-zinc-300">Analyst actions</div>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-600">
+            same executor as the automatic pipeline
+          </div>
+        </div>
+        <div className="space-y-3">
+          {ATO_ACTION_KEYS.map((action) => {
+            const state = atoActionUiState(ledger[action]);
+            const badge = atoActionBadge(state);
+            return (
+              <div
+                key={action}
+                className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2.5"
+                data-testid={`ato-action-${action}`}
+              >
+                <span
+                  className={`inline-block rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${badge.className}`}
+                  data-testid={`ato-action-badge-${action}`}
+                >
+                  {badge.label}
+                </span>
+                <span className="text-sm text-zinc-300">{atoActionLabel(action)}</span>
+                {typeof ledger[action]?.executed_at === 'string' && (
+                  <span className="text-[10px] text-zinc-600">
+                    {new String(ledger[action].executed_at).slice(0, 19).replace('T', ' ')}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => runManualAction(action)}
+                  disabled={state !== 'pending' || acting !== null}
+                  className={`ml-auto rounded-lg px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40 ${atoActionButtonClass(action)}`}
+                  data-testid={`ato-action-btn-${action}`}
+                >
+                  {acting === action ? 'Executing…' : atoActionLabel(action)}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        {actionError && (
+          <div className="mt-3 text-xs text-red-400" data-testid="ato-action-error">
+            {actionError}
+          </div>
+        )}
+      </div>
+
       <ExplanationPanel
         explanation={detail.explanation}
         confidence={detail.risk_score}
         eventId={detail.alert_id ?? undefined}
       />
+
+      {/* Success toast for manual actions */}
+      {toast && (
+        <div
+          className="fixed bottom-6 right-6 z-50 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-300 shadow-lg"
+          data-testid="ato-toast"
+          role="status"
+        >
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

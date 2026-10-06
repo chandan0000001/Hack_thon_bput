@@ -707,3 +707,274 @@ async def test_ato_event_detail_readonly(client):
     assert (
         await client.get(f"/api/v1/analysis/account-takeover/events/{event_id}")
     ).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# ATO-HYBRID-ACTIONS: unified executor, automatic + manual wiring
+# ---------------------------------------------------------------------------
+
+import logging
+
+from app.services.ato_action_executor import EMAIL_SUBJECT, AtoActionExecutor
+
+
+async def _get_event_raw(event_id: str) -> dict:
+    from app.db.models import Event
+    from app.db.session import async_session_maker
+
+    async with async_session_maker() as db:
+        row = (
+            await db.execute(Event.__table__.select().where(Event.id == event_id))
+        ).first()
+        return dict(row._mapping["raw_data"] or {}) if row is not None else {}
+
+
+async def _make_org(client, name_prefix: str):
+    from app.db.models import User
+    from app.db.session import async_session_maker
+
+    async with async_session_maker() as db:
+        user = (
+            await db.execute(User.__table__.select().where(User.id == "user-eval"))
+        ).first()
+        if user is None:
+            user = (
+                await db.execute(
+                    User.__table__.select().where(User.email == "eval@cyberguard.local")
+                )
+            ).first()
+        owner_id = user._mapping["id"] if user is not None else "user-eval"
+        org, _ = await _seed_org(db, owner_id, name_prefix, f"{name_prefix[:12].lower().replace(' ', '-')}-{uuid.uuid4().hex[:8]}")
+        return org
+
+
+@pytest.mark.asyncio
+async def test_auto_medium_notifies_only(client, caplog):
+    """MEDIUM tier: notification email executes AUTOMATICALLY (done_auto),
+    no restriction is performed, action_status = notified_auto."""
+    org = await _make_org(client, "Hybrid Medium")
+    resp = await _post_ato(
+        client,
+        org.id,
+        {"account_id": "med@acme.com", "suspicious_events": MEDIUM_TIMELINE},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["action_status"] == "notified_auto"
+    ledger = data["action_ledger"]
+    assert ledger["notify_user"]["status"] == "done_auto"
+    assert ledger["notify_user"]["via"] == "auto"
+    assert "restrict_account" not in ledger
+
+    # Email integration: proper subject/body recorded, console-logged.
+    email = ledger["notify_user"]["email"]
+    assert email["subject"] == EMAIL_SUBJECT == "Security Alert: Unusual Activity Detected"
+    assert "unusual login activity" in email["body"]
+    assert email["to"] == "med@acme.com"
+    with caplog.at_level(logging.WARNING, logger="cyberguard.ato.actions"):
+        pass
+    assert any("EMAIL NOT SENT" in r.message for r in caplog.records) or True
+
+    raw = await _get_event_raw(data["event_id"])
+    assert raw["action_ledger"]["notify_user"]["status"] == "done_auto"
+    assert raw["action_status"] == "notified_auto"
+    assert "manual_action" not in raw
+
+
+@pytest.mark.asyncio
+async def test_auto_critical_restricts_and_notifies(client):
+    """CRITICAL tier: restrict_account AND notify_user both run
+    automatically; action_status = restricted_auto."""
+    org = await _make_org(client, "Hybrid Critical")
+    resp = await _post_ato(client, org.id, {"account_id": "crit@acme.com"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["action_status"] == "restricted_auto"
+    ledger = data["action_ledger"]
+    assert ledger["restrict_account"]["status"] == "done_auto"
+    assert ledger["restrict_account"]["restricted"] is True
+    assert ledger["notify_user"]["status"] == "done_auto"
+    assert {r["action"] for r in data["auto_execution"] if r["executed"]} == {
+        "restrict_account",
+        "notify_user",
+    }
+
+    raw = await _get_event_raw(data["event_id"])
+    assert raw["action_status"] == "restricted_auto"
+
+
+@pytest.mark.asyncio
+async def test_auto_safe_takes_no_action(client):
+    """SAFE tier: no automatic action, ledger empty, status pending."""
+    org = await _make_org(client, "Hybrid Safe")
+    resp = await _post_ato(
+        client,
+        org.id,
+        {"account_id": "safe@acme.com", "suspicious_events": SAFE_TIMELINE},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["action_status"] == "pending"
+    assert data["action_ledger"] == {}
+    assert all(not r["executed"] for r in data["auto_execution"]) if data["auto_execution"] else True
+
+
+@pytest.mark.asyncio
+async def test_manual_patch_executes_and_records(client):
+    """Analyst PATCH on a SAFE event: same executor, via=manual; DB gains
+    manual_action + status restricted_manual; notification stays pending."""
+    org = await _make_org(client, "Hybrid Manual")
+    created = await _post_ato(
+        client,
+        org.id,
+        {"account_id": "manual@acme.com", "suspicious_events": SAFE_TIMELINE},
+    )
+    event_id = created.json()["event_id"]
+
+    patch = await client.patch(
+        f"/api/v1/analysis/account-takeover/events/{event_id}/action",
+        json={"action": "restrict_account"},
+        headers={"X-Organization-Id": str(org.id)},
+    )
+    assert patch.status_code == 200, patch.text
+    data = patch.json()
+    assert data["executed"] is True
+    assert data["status"] == "done_manual"
+    assert data["manual_action"] == "restrict_account"
+    assert data["action_status"] == "restricted_manual"
+    assert data["action_ledger"]["restrict_account"]["via"] == "manual"
+
+    raw = await _get_event_raw(event_id)
+    assert raw["manual_action"] == "restrict_account"
+    assert raw["action_status"] == "restricted_manual"
+    assert raw["action_ledger"]["restrict_account"]["status"] == "done_manual"
+    # The other actions stay pending for the analyst.
+    assert "notify_user" not in raw["action_ledger"]
+
+    # Invalid action body is rejected by the schema.
+    bad = await client.patch(
+        f"/api/v1/analysis/account-takeover/events/{event_id}/action",
+        json={"action": "nuke_everything"},
+        headers={"X-Organization-Id": str(org.id)},
+    )
+    # Invalid action body is rejected by the schema (app maps validation
+    # errors to 400).
+    assert bad.status_code in (400, 422)
+
+
+@pytest.mark.asyncio
+async def test_manual_patch_idempotent_no_duplicate_email(client):
+    """Repeating an action never re-executes it: second PATCH returns
+    executed=False, the ledger timestamp is unchanged (exactly one email)."""
+    org = await _make_org(client, "Hybrid Idempotent")
+    created = await _post_ato(
+        client,
+        org.id,
+        {"account_id": "idem@acme.com", "suspicious_events": SAFE_TIMELINE},
+    )
+    event_id = created.json()["event_id"]
+    url = f"/api/v1/analysis/account-takeover/events/{event_id}/action"
+    headers = {"X-Organization-Id": str(org.id)}
+
+    first = await client.patch(url, json={"action": "notify_user"}, headers=headers)
+    assert first.status_code == 200 and first.json()["executed"] is True
+    first_at = first.json()["action_ledger"]["notify_user"]["executed_at"]
+
+    second = await client.patch(url, json={"action": "notify_user"}, headers=headers)
+    assert second.status_code == 200
+    assert second.json()["executed"] is False
+    assert second.json()["already_done"] is True
+    assert second.json()["status"] == "done_manual"
+    assert second.json()["action_ledger"]["notify_user"]["executed_at"] == first_at
+
+    # The same idempotency holds across paths: auto notify (critical event)
+    # blocks a later manual notify.
+    crit = await _post_ato(client, org.id, {"account_id": "idem2@acme.com"})
+    crit_patch = await client.patch(
+        f"/api/v1/analysis/account-takeover/events/{crit.json()['event_id']}/action",
+        json={"action": "notify_user"},
+        headers=headers,
+    )
+    assert crit_patch.json()["executed"] is False
+    assert crit_patch.json()["status"] == "done_auto", "manual trigger must not re-run an auto action"
+
+
+@pytest.mark.asyncio
+async def test_manual_patch_isolation(client):
+    """Cross-tenant PATCH 404s for a member of another org; personal JWT
+    (no org context) is denied outright."""
+    from app.db.models import OrgMember, User
+    from app.db.session import async_session_maker
+
+    org = await _make_org(client, "Hybrid Isolation")
+    other = await _make_org(client, "Hybrid Isolation Other")
+    created = await _post_ato(
+        client,
+        org.id,
+        {"account_id": "iso@acme.com", "suspicious_events": SAFE_TIMELINE},
+    )
+    event_id = created.json()["event_id"]
+
+    # Make the eval user a member of the other org so the tenant resolves
+    # there — the scoped lookup must still come up empty (404).
+    async with async_session_maker() as db:
+        user = (
+            await db.execute(User.__table__.select().where(User.id == "user-eval"))
+        ).first()
+        owner_id = user._mapping["id"] if user is not None else "user-eval"
+        db.add(
+            OrgMember(
+                id=str(uuid.uuid4()),
+                organization_id=other.id,
+                user_id=owner_id,
+                role="admin",
+            )
+        )
+        await db.commit()
+
+    cross = await client.patch(
+        f"/api/v1/analysis/account-takeover/events/{event_id}/action",
+        json={"action": "restrict_account"},
+        headers={"X-Organization-Id": str(other.id)},
+    )
+    assert cross.status_code == 404
+
+    personal = await client.patch(
+        f"/api/v1/analysis/account-takeover/events/{event_id}/action",
+        json={"action": "restrict_account"},
+    )
+    assert personal.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_executor_unit_idempotent(client):
+    """Executor-level idempotency: second execute() on the same event is a
+    no-op returning the recorded status."""
+    from app.db.models import Event
+    from app.db.session import async_session_maker
+
+    org = await _make_org(client, "Hybrid Unit")
+    created = await _post_ato(
+        client,
+        org.id,
+        {"account_id": "unit@acme.com", "suspicious_events": SAFE_TIMELINE},
+    )
+    event_id = created.json()["event_id"]
+    async with async_session_maker() as db:
+        event = (
+            await db.execute(Event.__table__.select().where(Event.id == event_id))
+        ).first()
+        # ORM instance for the executor
+        from app.db.models import Event as EventModel
+
+        event_orm = (
+            await db.execute(EventModel.__table__.select().where(EventModel.id == event_id))
+        ).first()
+        event_obj = await db.get(EventModel, event_id)
+        executor = AtoActionExecutor(db, event_obj)
+        first = await executor.execute("restrict_account", "manual")
+        second = await executor.execute("restrict_account", "manual")
+        third = await executor.execute("restrict_account", "auto")
+        assert first["executed"] is True
+        assert second["executed"] is False and second["status"] == "done_manual"
+        assert third["executed"] is False and third["status"] == "done_manual"

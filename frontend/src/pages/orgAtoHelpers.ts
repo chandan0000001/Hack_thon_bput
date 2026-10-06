@@ -133,6 +133,102 @@ export function atoBannerTone(actionTaken?: string): string {
   }
 }
 
+/** ATO-HYBRID-ACTIONS: the three unified response actions. */
+export type AtoActionKey = 'notify_user' | 'restrict_account' | 'force_password_reset';
+
+export const ATO_ACTION_KEYS: AtoActionKey[] = [
+  'notify_user',
+  'restrict_account',
+  'force_password_reset',
+];
+
+export interface AtoActionLedgerEntry {
+  status?: string;
+  via?: string;
+  executed_at?: string;
+  [key: string]: unknown;
+}
+
+/** UI state of one action from its ledger entry. */
+export function atoActionUiState(
+  entry?: AtoActionLedgerEntry
+): 'pending' | 'done_auto' | 'done_manual' {
+  if (entry?.status === 'done_auto') return 'done_auto';
+  if (entry?.status === 'done_manual') return 'done_manual';
+  return 'pending';
+}
+
+/** Badge for the action state: Pending (gray) / Done (Auto) (blue) /
+ * Done (Manual) (green). */
+export function atoActionBadge(state: 'pending' | 'done_auto' | 'done_manual'): {
+  label: string;
+  className: string;
+} {
+  switch (state) {
+    case 'done_auto':
+      return {
+        label: 'Done (Auto)',
+        className: 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/40',
+      };
+    case 'done_manual':
+      return {
+        label: 'Done (Manual)',
+        className: 'bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/40',
+      };
+    default:
+      return {
+        label: 'Pending',
+        className: 'bg-zinc-500/10 text-zinc-400 ring-1 ring-zinc-500/40',
+      };
+  }
+}
+
+/** Human label for an action key. */
+export function atoActionLabel(action: AtoActionKey): string {
+  switch (action) {
+    case 'notify_user':
+      return 'Notify User';
+    case 'restrict_account':
+      return 'Restrict Account';
+    case 'force_password_reset':
+      return 'Force Password Reset';
+  }
+}
+
+/** Button styling for a pending action. */
+export function atoActionButtonClass(action: AtoActionKey): string {
+  switch (action) {
+    case 'notify_user':
+      return 'bg-amber-500 text-zinc-950 hover:bg-amber-400'; // [YELLOW]
+    case 'restrict_account':
+      return 'bg-red-600 text-white hover:bg-red-500';
+    case 'force_password_reset':
+      return 'border border-zinc-600 bg-zinc-800 text-zinc-100 hover:bg-zinc-700';
+  }
+}
+
+/** Pure transition: analyst executes `action` manually -> ledger updated to
+ * done_manual (immutably; returns a NEW ledger). */
+export function atoActionAfterManual(
+  ledger: Record<string, AtoActionLedgerEntry>,
+  action: AtoActionKey
+): Record<string, AtoActionLedgerEntry> {
+  return {
+    ...ledger,
+    [action]: { ...ledger[action], status: 'done_manual', via: 'manual' },
+  };
+}
+
+/** Success toast text for a manual action (past tense, as executed). */
+export function atoActionToastText(action: AtoActionKey): string {
+  const past: Record<AtoActionKey, string> = {
+    notify_user: 'User Notified',
+    restrict_account: 'Account Restricted',
+    force_password_reset: 'Password Reset Forced',
+  };
+  return `Action executed manually: ${past[action]}`;
+}
+
 /** Demo payload (mirrors scenarios/scenario-3/assets) for one-click runs. */
 export const ATO_DEMO_BASELINE = {
   account_id: 'sarah.chen@acme.com',
