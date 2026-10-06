@@ -133,7 +133,7 @@ async def run_migration_fresh_db_tests(runner: Any) -> None:
 
             success_c2 = (
                 proc.returncode == 0
-                and table_count == 33
+                and table_count == 34  # 33 squashed-base tables + verified_identities (0104)
                 and sorted(org_tables) == expected_org
                 and len(legacy_tables) == 0
                 and len(functions) == 2
@@ -143,7 +143,7 @@ async def run_migration_fresh_db_tests(runner: Any) -> None:
 
             runner.assert_true(
                 success_c2,
-                "Check 2: Fresh database provisioning (alembic upgrade head exits 0, 33 tables, 6 org_*, 0 legacy, RLS enabled)",
+                "Check 2: Fresh database provisioning (alembic upgrade head exits 0, 34 tables, 6 org_*, 0 legacy, RLS enabled)",
                 details=f"rc={proc.returncode}, tables={table_count}, org={len(org_tables)}, legacy={len(legacy_tables)}, rls_disabled={len(disabled_rls)}, out={out_text[-200:]}",
             )
 
@@ -165,7 +165,7 @@ async def run_migration_fresh_db_tests(runner: Any) -> None:
                 )).scalar() or 0
 
             runner.assert_true(
-                proc_idemp.returncode == 0 and table_count_idemp == 33,
+                proc_idemp.returncode == 0 and table_count_idemp == 34,
                 "Check 3: Migration idempotency (second alembic upgrade head exits 0 as no-op, table count unchanged)",
                 details=f"rc={proc_idemp.returncode}, tables={table_count_idemp}",
             )

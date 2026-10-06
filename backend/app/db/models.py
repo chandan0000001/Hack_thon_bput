@@ -215,6 +215,32 @@ class OrgBlockedIndicator(Base):
     blocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
 
 
+class VerifiedIdentity(Base):
+    """Organization-scoped roster of trusted personnel (SCENARIO-2).
+
+    The identity-fraud analyzer compares claimed sender attributes against
+    these rows. Rows are always scoped to the authenticated tenant's
+    organization — the API never accepts an organization_id from the client.
+    """
+
+    __tablename__ = "verified_identities"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("org_organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("org_projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    owner_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    role_title: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+
+
 # Compatibility aliases
 Organization = OrgOrganization
 OrganizationMember = OrgMember
