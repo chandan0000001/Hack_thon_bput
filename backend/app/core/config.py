@@ -224,6 +224,9 @@ class Settings(BaseSettings):
     ML_ENABLED: bool = True
     ML_MODELS_DIR: str = "ml/models"
 
+    # Strict loopback/localhost allowlist toggle (URL-LOOPBACK-ALLOWLIST)
+    ALLOW_LOOPBACK_URLS: bool = False
+
     # --- Deepfake secondary detector (Model B: Lynote Sentry ConvNeXt Small) ---
     # Model B is an OPTIONAL independent verification signal behind a
     # confidence gate — never a default second pass, never a probability

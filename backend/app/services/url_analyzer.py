@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
+from app.core.config import get_settings
 from app.services.domain_intelligence import lookalike_candidate
 from app.services.ml_inference import score_with_ml, url_model_artifact
 from app.services.scoring_service import (
@@ -20,6 +21,7 @@ from app.services.scoring_service import (
 )
 from app.services.url_detector import analyze_url_heuristics
 from app.services.url_token_classifier import COMMON_TLDS, analyze_url_structure
+from app.utils.url_helpers import is_strict_loopback
 
 
 def check_domain_threats(url: str) -> list[dict[str, Any]]:
@@ -118,6 +120,33 @@ def adjust_indicators_for_tokens(
 
 def analyze_url(url: str) -> dict[str, Any]:
     """Perform full contextual analysis of a single URL."""
+    try:
+        parsed_url = urlparse(url if "://" in url else f"http://{url}")
+    except Exception:
+        parsed_url = None
+
+    settings = get_settings()
+    if settings.ALLOW_LOOPBACK_URLS and parsed_url and is_strict_loopback(parsed_url.hostname or ""):
+        decision = {"verdict": "benign", "action": "allow"}
+        return {
+            "url": url,
+            "risk_score": 0,
+            "heuristic_score": 0,
+            "hybrid_score": 0,
+            "severity": "low",
+            "action": "allow",
+            "reason": "loopback_localhost",
+            "decision": decision,
+            "indicators": [],
+            "structure": {
+                "has_structured_token": False,
+                "token_locations": [],
+                "domain_is_clean": True,
+            },
+            "ml_probability": 0.0,
+            "model_version": url_model_artifact(),
+        }
+
     structure = analyze_url_structure(url)
     raw_indicators = analyze_url_heuristics(url)
 
@@ -160,10 +189,13 @@ def analyze_url(url: str) -> dict[str, Any]:
     return {
         "url": url,
         "structure": structure,
+        "risk_score": hybrid_score,
         "heuristic_score": heuristic_score,
         "hybrid_score": hybrid_score,
         "ml_probability": ml_probability,
         "severity": severity,
+        "action": decision["action"],
+        "reason": None,
         "decision": decision,
         "indicators": adjusted_indicators,
         "model_version": url_model_artifact(),
