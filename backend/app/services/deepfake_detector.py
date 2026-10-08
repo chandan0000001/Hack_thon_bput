@@ -328,7 +328,7 @@ def analyze_media(file_bytes: bytes, file_name: str, content_type: str) -> dict[
                 ela_probability = probability
                 probability = round(0.5 * ela_probability + 0.5 * cnn_probability, 4)
                 probability = max(ela_probability, probability)
-        elif deepfake_degraded():
+        else:
             logger.warning(
                 "deepfake neural model unavailable — heuristics-only fallback "
                 "for %s (ELA/metadata only)",

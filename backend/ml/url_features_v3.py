@@ -415,15 +415,39 @@ def extract_url_features_v3(url: str, top_1m_domains: set) -> dict:
     labels = [p for p in domain.split(".") if p]
     num_subdomains = max(0, len(labels) - 2)
 
+    try:
+        from app.services.url_token_classifier import analyze_url_structure
+        structure = analyze_url_structure(url)
+        has_token = structure.get("has_structured_token", False)
+        clean_domain = structure.get("domain_is_clean", False)
+    except Exception:
+        has_token = False
+        clean_domain = False
+
+    q_entropy = shannon_entropy_v3(query)
+    p_entropy = shannon_entropy_v3(path)
+    p_length = float(len(path))
+    q_length = float(len(query))
+    tot_length = float(len(url))
+
+    if has_token and clean_domain:
+        # CRITICAL RULE (T2): If structured token and domain is clean,
+        # query_entropy and path_length must be heavily down-weighted.
+        q_entropy *= 0.1
+        p_length *= 0.1
+        q_length *= 0.1
+        p_entropy *= 0.1
+        tot_length = float(min(tot_length, float(len(domain) + len(parsed.scheme or "http") + 25)))
+
     return {
         "is_top_1m": float(is_top_1m),
         "domain_entropy": shannon_entropy_v3(domain),
-        "path_entropy": shannon_entropy_v3(path),
-        "query_entropy": shannon_entropy_v3(query),
+        "path_entropy": p_entropy,
+        "query_entropy": q_entropy,
         "domain_length": float(len(domain)),
-        "path_length": float(len(path)),
-        "query_length": float(len(query)),
-        "total_length": float(len(url)),
+        "path_length": p_length,
+        "query_length": q_length,
+        "total_length": tot_length,
         "has_tracking_params": 1.0 if TRACKING_PARAM_PATTERN.search(query) else 0.0,
         "num_query_params": float(query.count("&") + 1) if query else 0.0,
         "has_ip": 1.0 if IP_HOST_PATTERN.match(domain) else 0.0,
@@ -437,12 +461,15 @@ def extract_url_features_v3(url: str, top_1m_domains: set) -> dict:
         "domain_digit_ratio": domain_digits / domain_alnum if domain_alnum else 0.0,
         "domain_hyphens": float(domain.count("-")),
         "has_suspicious_path_keyword": 1.0 if CREDENTIAL_PATH_PATTERN.search(path) else 0.0,
+        "has_structured_token": 1.0 if has_token else 0.0,
+        "domain_is_clean": 1.0 if clean_domain else 0.0,
     }
 
 
 def vectorize_v3(features: dict) -> list[float]:
     """Flat dict -> fixed-order float vector (FEATURE_COLUMNS_V3 order)."""
     return [float(features[col]) for col in FEATURE_COLUMNS_V3]
+
 
 
 def extract_url_features_v4(

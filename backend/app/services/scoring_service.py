@@ -82,6 +82,23 @@ URL_ACTION_BLOCK = "block"
 # confidence+evidence combination does.
 URL_BLOCK_CONFIDENCE = 0.90
 
+STRONG_MALICIOUS_INDICATOR_TYPES = {
+    "ip_host",
+    "ip_address",
+    "brand_in_subdomain",
+    "brand_typosquatting",
+    "lookalike_domain_confirmed",
+    "visual_impersonation",
+    "subdomain_spoofing",
+    "suspicious_tld",
+    "homoglyph_confusable",
+    "mixed_script_domain",
+    "is_idn",
+    "executable_extension",
+    "urlhaus_pattern",
+    "live_credential_form",
+}
+
 _URL_POLICY = {
     "safe": (URL_VERDICT_SAFE, URL_ACTION_ALLOW),
     "low": (URL_VERDICT_SAFE, URL_ACTION_ALLOW),
@@ -91,18 +108,73 @@ _URL_POLICY = {
 }
 
 
-def get_url_decision(severity: str, ml_confidence: float | None = None) -> dict:
+def get_url_decision(
+    severity: str,
+    ml_confidence: float | None = None,
+    has_structured_token: bool = False,
+    indicators: list[dict] | None = None,
+) -> dict:
     """Map URL severity (+ optional ML confidence) to {verdict, action}.
 
     LOW/MEDIUM follow the blueprint defaults; HIGH escalates to BLOCK only
     with high model confidence; CRITICAL always blocks. Unknown severities
     fail safe to WARN (visible) rather than silently ALLOW.
+
+    GUARDRAIL (URL-FP-FIX-V2 / T4):
+    If has_structured_token is True and the only elevated indicators are entropy/length,
+    without independent strong malicious evidence, cap maximum severity at MEDIUM (or LOW)
+    and prevent an automatic BLOCK. A BLOCK strictly requires independent strong evidence.
     """
+    sev = str(severity or "").lower()
+
+    if has_structured_token and indicators is not None:
+        has_strong_evidence = any(
+            i.get("type") in STRONG_MALICIOUS_INDICATOR_TYPES for i in indicators
+        )
+        if not has_strong_evidence:
+            elevated = [
+                i for i in indicators
+                if i.get("type") != "ml_model" and i.get("severity") in ("medium", "high", "critical")
+            ]
+            entropy_length_types = {
+                "url_entropy",
+                "query_entropy",
+                "url_length",
+                "path_length",
+                "random_path_segment",
+                "excessive_digits",
+            }
+            if all(i.get("type") in entropy_length_types for i in elevated):
+                if sev in ("high", "critical"):
+                    sev = "medium"
+
     verdict, action = _URL_POLICY.get(
-        str(severity or "").lower(),
+        sev,
         (URL_VERDICT_SUSPICIOUS, URL_ACTION_WARN),
     )
-    if verdict == URL_VERDICT_SUSPICIOUS and severity == "high" \
+    if verdict == URL_VERDICT_SUSPICIOUS and sev == "high" \
             and ml_confidence is not None and ml_confidence >= URL_BLOCK_CONFIDENCE:
-        verdict, action = URL_VERDICT_MALICIOUS, URL_ACTION_BLOCK
+        if has_structured_token and indicators is not None:
+            has_strong_evidence = any(
+                i.get("type") in STRONG_MALICIOUS_INDICATOR_TYPES for i in indicators
+            )
+            if not has_strong_evidence:
+                verdict, action = URL_VERDICT_SUSPICIOUS, URL_ACTION_WARN
+            else:
+                verdict, action = URL_VERDICT_MALICIOUS, URL_ACTION_BLOCK
+        else:
+            verdict, action = URL_VERDICT_MALICIOUS, URL_ACTION_BLOCK
+
+    # Final blocking safeguard (T4):
+    # If structured token is present, a "BLOCK" strictly requires independent strong malicious evidence.
+    if action == URL_ACTION_BLOCK and has_structured_token and indicators is not None:
+        has_strong = any(
+            i.get("type") in STRONG_MALICIOUS_INDICATOR_TYPES for i in indicators
+        )
+        if not has_strong:
+            verdict, action = URL_VERDICT_SUSPICIOUS, URL_ACTION_WARN
+            if sev in ("high", "critical"):
+                sev = "medium"
+
     return {"verdict": verdict, "action": action}
+

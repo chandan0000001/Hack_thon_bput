@@ -616,7 +616,20 @@ def predict_url(url: str) -> float | None:
         else:
             ver = "v2" if "v2" in artifact else "v1"
         features = extract_url_features(url, version=ver).reshape(1, -1)
-        return float(model.predict_proba(features)[0][1])
+        raw_prob = float(model.predict_proba(features)[0][1])
+
+        # Interaction: "Long Base64 string + Clean Domain = Safe" (URL-FP-FIX-V2 / T3)
+        # Prevents model from blindly mapping "High Entropy = Malicious"
+        # when a structured cryptographic token is hosted on a clean domain.
+        try:
+            from app.services.url_token_classifier import analyze_url_structure
+            structure = analyze_url_structure(url)
+            if structure.get("has_structured_token") and structure.get("domain_is_clean"):
+                return min(raw_prob * 0.1, 0.15)
+        except Exception:
+            pass
+
+        return raw_prob
     except Exception as exc:
         logger.warning("url ML inference failed: %s", exc)
         return None
