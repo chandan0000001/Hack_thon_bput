@@ -167,13 +167,13 @@ async def _bg_generate_explanation(
     risk_score: int,
     auth_warnings: Optional[list[str]] = None,
     extra_notes: Optional[list[str]] = None,
-    timeout: float = 15.0,
+    timeout: float = 6.0,
     *,
     user_id: Optional[str] = None,
 ) -> None:
     """Asynchronously generate LLM explanation and attach it to the persisted Alert.
 
-    Wraps OpenRouter/LLM in asyncio.wait_for(timeout=15.0). On timeout or failure, invokes
+    Wraps OpenRouter/LLM in asyncio.wait_for(timeout=6.0). On timeout or failure, invokes
     generate_heuristic_fallback_explanation and persists the fallback explanation to DB.
     """
     print(f"[bg_explanation] Task started for alert_id={alert_id}, module={module}")

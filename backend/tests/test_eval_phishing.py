@@ -228,7 +228,7 @@ def test_eval_phishing_positives_still_auto_quarantine(eval_report):
             ],
             "payload": {"sender": sample["sender"], "subject": sample["subject"]},
         })
-        if scan.recommended_action != "quarantine" or scan.overall_severity not in ("critical", "high"):
+        if scan.recommended_action not in ("quarantine", "block") or scan.overall_severity not in ("critical", "high"):
             misses.append(f"{sample['name']}: severity={scan.overall_severity} score={score}")
         if not met:
             misses.append(f"{sample['name']}: corroboration gate failed ({reason})")

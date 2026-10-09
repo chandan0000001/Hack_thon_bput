@@ -15,6 +15,8 @@ Features:
 
 import json
 import logging
+import re
+import time
 from typing import Any, Optional
 
 import httpx
@@ -28,7 +30,7 @@ OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-REQUEST_TIMEOUT_SECONDS = 10
+REQUEST_TIMEOUT_SECONDS = 4.0
 HTTP_REFERER = "https://cyberguard.local"
 APP_TITLE = "CYBERGUARD"
 
@@ -46,29 +48,51 @@ def _normalize_severity(score: int) -> str:
 
 
 def _parse_llm_content(content: str) -> Optional[dict[str, Any]]:
-    """Parse JSON defensively from LLM output by extracting outermost braces."""
+    """Parse JSON defensively from LLM output by extracting outermost braces or code fences."""
     if not content:
         return None
 
     content = content.strip()
+
+    # Strip thinking blocks if present (e.g. <think>...</think>)
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", content, flags=re.IGNORECASE).strip()
+    if not cleaned:
+        cleaned = content
+
     try:
-        parsed = json.loads(content)
+        parsed = json.loads(cleaned)
         if isinstance(parsed, dict):
             return parsed
     except Exception:
         pass
 
+    # Check for markdown code fences (```json ... ``` or ``` ...)
+    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, flags=re.IGNORECASE)
+    if fence_match:
+        try:
+            parsed = json.loads(fence_match.group(1).strip())
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
     # Find outermost braces
-    start = content.find("{")
-    end = content.rfind("}")
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
     if start != -1 and end != -1 and end > start:
-        candidate = content[start : end + 1]
+        candidate = cleaned[start : end + 1]
         try:
             parsed = json.loads(candidate)
             if isinstance(parsed, dict):
                 return parsed
         except Exception:
             pass
+
+    # Fallback: if model provided non-JSON plaintext explanation describing threat/benign status
+    if len(cleaned) > 20 and not cleaned.startswith("{"):
+        lowered = cleaned.lower()
+        if "risk" in lowered or "safe" in lowered or "threat" in lowered or "phishing" in lowered or "benign" in lowered:
+            return {"explanation": cleaned}
 
     return None
 
@@ -347,10 +371,15 @@ async def _call_groq_api(
         "temperature": 0.1,
     }
     response = await client.post(GROQ_CHAT_URL, headers=headers, json=payload)
+    if response.status_code == 400 and "response_format" in response.text:
+        del payload["response_format"]
+        response = await client.post(GROQ_CHAT_URL, headers=headers, json=payload)
     if response.status_code == 200:
         body = response.json()
-        content = body["choices"][0]["message"]["content"]
-        return 200, _parse_llm_content(content)
+        choices = body.get("choices", [])
+        if choices:
+            content = choices[0]["message"]["content"]
+            return 200, _parse_llm_content(content)
     return response.status_code, None
 
 
@@ -406,6 +435,9 @@ async def call_llm(
     settings = get_settings()
     indicators = indicators or []
     rotator = get_key_rotator()
+    start_time = time.time()
+    max_total_budget = getattr(settings, "LLM_TIMEOUT_SECONDS", 6.0)
+    per_request_timeout = getattr(settings, "LLM_REQUEST_TIMEOUT_SECONDS", REQUEST_TIMEOUT_SECONDS)
 
     # Pre-compute heuristic fallback
     heuristic_fallback = generate_heuristic_explanation(
@@ -424,7 +456,7 @@ async def call_llm(
         )
         return _enforce_severity_consistency(heuristic_fallback, risk_score)
 
-    # Distributed provider ordering: round-robin start provider to distribute load across providers
+    # Distributed provider ordering: prioritize primary configured provider with healthy keys
     start_provider = await rotator.get_next_provider(configured_providers)
     if start_provider and start_provider in configured_providers:
         start_idx = configured_providers.index(start_provider)
@@ -432,8 +464,17 @@ async def call_llm(
     else:
         providers_to_try = list(configured_providers)
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(REQUEST_TIMEOUT_SECONDS)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(per_request_timeout)) as client:
         for provider in providers_to_try:
+            if time.time() - start_time >= max_total_budget:
+                logger.warning("Overall LLM time budget (%.1fs) reached; immediately using heuristic fallback", max_total_budget)
+                return _enforce_severity_consistency(heuristic_fallback, risk_score)
+
+            pool = rotator._pools.get(provider)
+            if pool and pool.key_count > 0 and pool.healthy_count == 0:
+                logger.info("[%s] All keys in pool are down; jumping to next provider", provider)
+                continue
+
             # Determine models for this provider
             if provider == "groq":
                 models = [settings.GROQ_MODEL] + [m for m in settings.groq_fallback_models_list if m != settings.GROQ_MODEL]
@@ -442,17 +483,19 @@ async def call_llm(
             else:
                 models = [settings.OPENROUTER_MODEL] + [m for m in settings.fallback_models_list if m != settings.OPENROUTER_MODEL]
 
-            pool = rotator._pools.get(provider)
             key_count = pool.key_count if pool else 1
-            max_key_attempts = max(2, key_count)
+            max_key_attempts = max(1, key_count)
 
             provider_succeeded = False
             for model in models:
-                if provider_succeeded:
+                if provider_succeeded or (time.time() - start_time >= max_total_budget):
                     break
 
                 for _ in range(max_key_attempts):
-                    api_key, masked_key = await rotator.get_next_key(provider=provider)
+                    if time.time() - start_time >= max_total_budget:
+                        break
+
+                    api_key, masked_key = await rotator.get_next_key(provider=provider, allow_downed=False)
                     if not api_key:
                         break
 
@@ -472,7 +515,7 @@ async def call_llm(
 
                         if status_code == 429:
                             rotator.mark_key_down(api_key, reason="Rate limited (429)", status_code=429, provider=provider)
-                            logger.warning("[%s] Key %s rate limited on model %s, rotating to next key...", provider, masked_key, model)
+                            logger.warning("[%s] Key %s rate limited on model %s, rotating key...", provider, masked_key, model)
                             continue
 
                         if status_code in (401, 402, 403):
@@ -494,7 +537,7 @@ async def call_llm(
 
             logger.warning("Provider '%s' exhausted or unavailable. Jumping to next provider in failover pool...", provider)
 
-    # All providers exhausted: return deterministic heuristic explanation
+    # All providers exhausted or budget exceeded: return deterministic heuristic explanation
     logger.info("All LLM providers exhausted; using synthesized heuristic explanation for %s alert", module)
     return _enforce_severity_consistency(heuristic_fallback, risk_score)
 

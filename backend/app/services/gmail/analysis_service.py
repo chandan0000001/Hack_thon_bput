@@ -396,9 +396,15 @@ async def process_email_analysis(
             })
 
     # 6. Risk Score Aggregation & Classification
+    # Only include indicators from URLs that are actually suspicious (url_heur_score > 0.20)
+    # to avoid accumulating benign parameters across multiple URLs.
+    suspicious_url_indicators = [
+        i for i in url_indicators
+        if i.get("type") != "ml_model" and url_heur_score > 0.20
+    ]
     all_heuristics = (
         heuristic_text_inds
-        + [i for i in url_indicators if i.get("type") != "ml_model"]
+        + suspicious_url_indicators
         + impers_indicators
         + auth_indicators
     )

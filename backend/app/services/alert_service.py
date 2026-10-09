@@ -158,11 +158,14 @@ async def create_alert(
 
 
 async def get_alert(db: AsyncSession, alert_id: str, tenant: TenantContext) -> Alert:
-    """Fetch an alert by ID scoped to the active tenant."""
+    """Fetch an alert by ID or event_id scoped to the active tenant."""
     query = (
         select(Alert)
         .options(selectinload(Alert.recommended_actions))
-        .where(Alert.id == alert_id, tenant_criteria(Alert, tenant))
+        .where(
+            or_(Alert.id == alert_id, Alert.event_id == alert_id),
+            tenant_criteria(Alert, tenant),
+        )
     )
     result = await db.execute(query)
     alert = result.scalar_one_or_none()

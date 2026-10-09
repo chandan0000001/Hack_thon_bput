@@ -1,11 +1,80 @@
 {
   "meta": {
-    "generated_at": "2026-10-09T06:16:49.479231+00:00",
-    "git_tip": "c273c79"
+    "generated_at": "2026-10-09T12:01:02.788687+00:00",
+    "git_tip": "2fdc7da"
   },
-  "engines": {},
-  "properties": {},
+  "engines": {
+    "phishing_text": {
+      "cases": 1100,
+      "positives": 202,
+      "precision": 1.0,
+      "recall": 0.36633663366336633,
+      "f1": 0.5362318840579711,
+      "auc": 0.9055188648040751,
+      "mal_mean": 37.5990099009901,
+      "ben_mean": 2.611358574610245,
+      "band_gap": 34.987651326379854,
+      "mw_p": 6.4726719908115e-100,
+      "data_mode": "cache"
+    },
+    "marketing_fp_check": {
+      "cases": 10,
+      "positives": 0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "auc": NaN,
+      "mal_mean": NaN,
+      "ben_mean": 19.0,
+      "band_gap": NaN,
+      "mw_p": NaN
+    },
+    "phishing_auto_enforce_check": {
+      "cases": 3,
+      "positives": 3,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "auc": NaN,
+      "mal_mean": 96.66666666666667,
+      "ben_mean": NaN,
+      "band_gap": NaN,
+      "mw_p": NaN
+    }
+  },
+  "properties": {
+    "monotonic_blend_emails": {
+      "checked": 300,
+      "lowered": 0
+    }
+  },
   "http": {},
-  "provenance": [],
-  "findings": []
+  "provenance": [
+    {
+      "name": "sms_spam",
+      "mode": "cache",
+      "rows": 5572,
+      "sha256": null,
+      "url": "https://raw.githubusercontent.com/justmarkham/DAT8/master/data/sms.tsv",
+      "fetched_at": "2026-10-09T12:01:04.773430+00:00"
+    },
+    {
+      "name": "sms_spam",
+      "mode": "cache",
+      "rows": 5572,
+      "sha256": null,
+      "url": "https://raw.githubusercontent.com/justmarkham/DAT8/master/data/sms.tsv",
+      "fetched_at": "2026-10-09T12:01:07.972735+00:00"
+    }
+  ],
+  "findings": [
+    "phishing_text recall is corpus-limited: the online SMS Spam corpus is out-of-domain for URL/credential-heavy email heuristics (SMS ham also scores 0, precision stays 1.0). Synthetic email templates score high. See phishing_text metrics.",
+    "phishing FN: FN payload={'sender': 'unknown@sms', 'subject': '(sms)', 'body': \"FreeMsg Hey there darling it's been 3 week's now and no word back! I'd like some fun you up for it still?\u2026 score=0 indicators=['ml_model:safe']",
+    "phishing FN: FN payload={'sender': 'unknown@sms', 'subject': '(sms)', 'body': 'England v Macedonia - dont miss the goals/team news. Txt ur national team to 87077 eg ENGLAND to 87077 Tr\u2026 score=35 indicators=['sms_shortcode:high', 'sms_spam_keyword:high', 'high_digit_ratio:medium', 'ml_model:safe']",
+    "phishing FN: FN payload={'sender': 'unknown@sms', 'subject': '(sms)', 'body': 'Thanks for your subscription to Ringtone UK your mobile will be charged \u00a35/month Please confirm by replyi\u2026 score=45 indicators=['sms_spam_keyword:high', 'sms_spam_keyword:high', 'sms_spam_keyword:high', 'ml_model:low']",
+    "phishing FN: FN payload={'sender': 'unknown@sms', 'subject': '(sms)', 'body': 'SMS. ac Sptv: The New Jersey Devils and the Detroit Red Wings play Ice Hockey. Correct or Incorrect? End?\u2026 score=0 indicators=['ml_model:safe']",
+    "phishing FN: FN payload={'sender': 'unknown@sms', 'subject': '(sms)', 'body': 'As a valued customer, I am pleased to advise you that following recent review of your Mob No. you are awa\u2026 score=30 indicators=['sms_phone_number:high', 'sms_spam_keyword:high', 'ml_model:low']",
+    "FP-hardening marketing regression set (10 realistic digest/newsletter/transactional emails incl. the Medium digest payload and the mediumday.com event-reg token URL): all must stay <= medium and fail the corroboration gate (review_recommended, no provider write).",
+    "FP-hardening phishing positive control: brand-lookalike, IP-host and platform-hosted phishing must still trip corroboration (>=2 engines high+) and land on the auto-quarantine path."
+  ]
 }

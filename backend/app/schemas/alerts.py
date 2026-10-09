@@ -41,6 +41,7 @@ class AlertResponse(BaseModel):
     """Alert record with its recommended actions joined."""
 
     id: str
+    event_id: Optional[str] = None
     title: str
     module: str
     threat_type: Optional[str] = None

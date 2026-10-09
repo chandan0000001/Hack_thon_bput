@@ -322,6 +322,13 @@ async def _live_enrich_url_inner(url: str, indicators: list[dict]) -> list[dict]
             )
         return indicators
 
+    from app.core.url_reputation import is_domain_in_top1m
+    from app.services.url_token_classifier import is_domain_clean
+
+    if is_domain_in_top1m(host) and is_domain_clean(host):
+        # Authentic top-1M platform: crawling is unnecessary and triggers 403 blocks
+        return indicators
+
     scrape = await firecrawl_client.scrape_url(url)
     if scrape is None:
         return indicators  # disabled / timeout / failure: unchanged degradation

@@ -144,24 +144,65 @@ async def _url_analysis(message: NormalizedMessage) -> tuple[FeatureAnalysis, li
             [],
         )
 
-    all_indicators: list[dict] = []
+    per_url_results: list[tuple[str, int, list[dict]]] = []
     per_url_notes: list[str] = []
     for url in urls:
         indicators = analyze_url_heuristics(url)
         # Firecrawl live enrichment (optional; additive heuristics-side indicators).
         indicators = await live_enrich_url(url, indicators)
-        all_indicators.extend(indicators)
-        if indicators:
-            per_url_notes.append(f"URL '{url}' raised {len(indicators)} indicator(s):\n" + _verbose_indicator_summary(indicators, limit=4))
+        u_score = _engine_score(indicators)
+        per_url_results.append((url, u_score, indicators))
+        if indicators and u_score > 20:
+            per_url_notes.append(
+                f"URL '{url}' (score: {u_score}/100) raised {len(indicators)} indicator(s):\n"
+                + _verbose_indicator_summary(indicators, limit=4)
+            )
+        elif indicators:
+            per_url_notes.append(
+                f"URL '{url}' (score: {u_score}/100) had minor/safe signals:\n"
+                + _verbose_indicator_summary(indicators, limit=2)
+            )
         else:
             per_url_notes.append(f"URL '{url}' looked structurally normal to the URL forensics engine.")
 
-    score = calculate_score(all_indicators)
+    # Message-level URL threat scoring:
+    # Driven by the highest-risk URL in the message. Benign parameters across
+    # multiple safe URLs must NEVER accumulate into a false critical verdict.
+    max_url_score = max((r[1] for r in per_url_results), default=0)
+
+    # Sort URLs by threat score descending
+    per_url_results.sort(key=lambda r: r[1], reverse=True)
+
+    # Forward threat indicators for message-level verdict:
+    # If all URLs are safe (max_url_score <= 20), do not emit threat indicators to raw_indicators.
+    # If one or more URLs are suspicious, forward the deduplicated threat indicators from suspicious URLs.
+    selected_indicators: list[dict] = []
+    seen_ind_keys: set[tuple[str, str]] = set()
+
+    if max_url_score > 20:
+        for url, u_score, inds in per_url_results:
+            if u_score <= 20:
+                continue
+            for ind in inds:
+                key = (str(ind.get("type")), str(ind.get("value", "")))
+                if key not in seen_ind_keys:
+                    seen_ind_keys.add(key)
+                    selected_indicators.append(ind)
+
     explanation = (
-        f"{len(urls)} URL(s) were extracted from the message and analyzed.\n"
+        f"{len(urls)} URL(s) were extracted from the message and analyzed (highest URL risk: {max_url_score}/100).\n"
         + "\n".join(per_url_notes)
     )
-    return _feature_analysis("url_detector", all_indicators, explanation)
+
+    feature_analysis = FeatureAnalysis(
+        engine="url_detector",
+        severity=get_severity(max_url_score),
+        score=round(max_url_score / 100, 2),
+        explanation=explanation,
+        indicators=_map_indicators(selected_indicators),
+    )
+
+    return feature_analysis, selected_indicators
 
 
 def _impersonation_analysis(message: NormalizedMessage) -> tuple[FeatureAnalysis, list[dict]]:
@@ -241,6 +282,10 @@ async def scan_message(message: NormalizedMessage) -> ScanResult:
         analyses.append(attachment_analysis)
 
     overall_score = calculate_score(raw_indicators)
+    # Safety consistency: if all engines evaluate to 'safe' (<= 20),
+    # the combined verdict must never escalate to medium, high, or critical.
+    if all(a.severity == "safe" for a in analyses):
+        overall_score = min(overall_score, 20)
     overall_severity = get_severity(overall_score)
     recommended_action = _recommendation(overall_score)
 

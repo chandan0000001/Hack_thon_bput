@@ -182,6 +182,8 @@ class Settings(BaseSettings):
     LLM_PROVIDERS: str = "groq,gemini,openrouter"
     LLM_COOLDOWN_SECONDS: int = 60
     LLM_HEALTH_CHECK_INTERVAL_SECONDS: int = 30
+    LLM_TIMEOUT_SECONDS: float = 6.0
+    LLM_REQUEST_TIMEOUT_SECONDS: float = 4.0
 
     # OpenRouter
     OPENROUTER_API_KEY: str = ""
@@ -192,14 +194,14 @@ class Settings(BaseSettings):
     OPENROUTER_MODEL: str = "liquid/lfm-2.5-2.6b:free"
     OPENROUTER_FALLBACK_MODELS: str = "liquid/lfm-2.5-2.6b:free,google/gemma-4-26b-a4b-it:free,nvidia/nemotron-3.5-lightning:free,nex-agi/nex-n2.5-mini:free"
 
-    # Groq (Ultra-low latency inference: Llama 3.3 70B, Llama 3.1 8B, Mixtral)
+    # Groq (Ultra-low latency inference: OpenAI GPT-OSS, Qwen, Llama)
     GROQ_API_KEY: str = ""
     GROQ_API_KEYS: str = ""
     GROQ_MAX_KEYS: int = 10
     GROQ_KEY_COOLDOWN_SECONDS: int = 60
     GROQ_HEALTH_CHECK_INTERVAL_SECONDS: int = 30
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    GROQ_FALLBACK_MODELS: str = "llama-3.3-70b-versatile,llama-3.1-8b-instant"
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    GROQ_FALLBACK_MODELS: str = "openai/gpt-oss-120b,openai/gpt-oss-20b,qwen/qwen3.8-27b,llama-3.3-70b-versatile,llama-3.1-8b-instant"
 
     # Gemini (Google GenAI: Gemini 2.0 Flash, Gemini 1.5 Flash)
     GEMINI_API_KEY: str = ""

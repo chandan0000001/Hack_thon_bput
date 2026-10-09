@@ -96,7 +96,7 @@ class ProviderKeyPool:
     def healthy_count(self) -> int:
         return sum(1 for s in self._keys.values() if s.is_healthy)
 
-    async def get_next_key(self) -> tuple[Optional[str], str]:
+    async def get_next_key(self, allow_downed: bool = False) -> tuple[Optional[str], str]:
         """Select next available API key using round-robin across healthy keys."""
         if not self._key_list:
             return None, "none"
@@ -118,7 +118,10 @@ class ProviderKeyPool:
                 selected.total_requests += 1
                 return selected.key, selected.masked
 
-            # If all keys are down, fall back to least-recently failed
+            if not allow_downed:
+                return None, "none"
+
+            # If all keys are down and caller explicitly permits downed keys, fall back to least-recently failed
             logger.warning(
                 "[%s] All %d API keys are currently marked down! Selecting oldest key for retry.",
                 self.provider,
@@ -291,30 +294,39 @@ class ApiKeyRotator:
             self.initialize_all_providers()
 
     def get_configured_providers(self) -> list[str]:
-        """Return list of providers that have at least one key configured."""
+        """Return list of providers that have at least one key configured, prioritizing settings order."""
         self._ensure_initialized()
-        return [prov for prov, pool in self._pools.items() if pool.key_count > 0]
+        settings = get_settings()
+        order = settings.llm_providers_list
+        configured = [p for p in order if p in self._pools and self._pools[p].key_count > 0]
+        for p, pool in self._pools.items():
+            if pool.key_count > 0 and p not in configured:
+                configured.append(p)
+        return configured
 
     async def get_next_provider(self, candidates: Optional[list[str]] = None) -> Optional[str]:
-        """Distributed round-robin selection across configured candidate providers."""
+        """Select preferred provider prioritizing healthy pools over downed pools."""
         self._ensure_initialized()
         pool_candidates = candidates or self.get_configured_providers()
         if not pool_candidates:
             return None
 
-        async with self._provider_lock:
-            selected = pool_candidates[self._provider_rr_index % len(pool_candidates)]
-            self._provider_rr_index = (self._provider_rr_index + 1) % len(pool_candidates)
-            return selected
+        # Prioritize the first provider in configured priority that has healthy keys
+        for prov in pool_candidates:
+            pool = self._pools.get(prov)
+            if pool and pool.healthy_count > 0:
+                return prov
 
-    async def get_next_key(self, provider: Optional[str] = None) -> tuple[Optional[str], str]:
-        """Select next available API key for the requested provider (defaults to openrouter)."""
+        return pool_candidates[0]
+
+    async def get_next_key(self, provider: Optional[str] = None, allow_downed: bool = False) -> tuple[Optional[str], str]:
+        """Select next available API key for the requested provider."""
         self._ensure_initialized()
         prov = (provider or self._default_provider).lower()
         pool = self._pools.get(prov)
         if not pool:
             return None, "none"
-        return await pool.get_next_key()
+        return await pool.get_next_key(allow_downed=allow_downed)
 
     def mark_key_down(self, key: str, reason: str, status_code: Optional[int] = None, provider: Optional[str] = None) -> None:
         """Mark an API key down in its provider pool."""
