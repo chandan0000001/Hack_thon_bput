@@ -1,7 +1,7 @@
 # CYBERGUARD Evaluation Harness Report
 
-- Generated: 2026-10-05T14:04:05.203001+00:00
-- Git tip: 4759f67
+- Generated: 2026-10-09T06:16:49.479231+00:00
+- Git tip: c273c79
 - Scale option: default
 - Data mode: auto
 

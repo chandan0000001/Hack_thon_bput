@@ -125,7 +125,7 @@ describe('ORG-SETTINGS-P5 Test Suite (5 Checks)', () => {
     assert.match(src, /data-testid="gateway-url"/);
     assert.match(
       src,
-      /https:\/\/\$\{window\.location\.host\}\/api\/v1\/p\/\$\{projectSlug\}\/gateway/
+      /\$\{gatewayBase\}\/p\/\$\{projectSlug\}\/gateway/
     );
     assert.match(src, /testid="gateway-copy"/);
     assert.match(src, /data-testid="curl-toggle"/);

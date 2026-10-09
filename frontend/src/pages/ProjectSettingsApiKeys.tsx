@@ -43,7 +43,11 @@ export default function ProjectSettingsApiKeys({
   const [busyRole, setBusyRole] = useState<ApiKeyRole | null>(null);
   const { copiedKey, copy } = useCopyFlash();
 
-  const gatewayUrl = `https://${window.location.host}/api/v1/p/${projectSlug}/gateway`;
+  const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1').replace(/\/+$/, '');
+  const gatewayBase = apiBase.startsWith('http')
+    ? apiBase
+    : `${window.location.origin}${apiBase}`;
+  const gatewayUrl = `${gatewayBase}/p/${projectSlug}/gateway`;
   const curlExample = [
     `curl -X POST "${gatewayUrl}" \\`,
     `  -H "Authorization: Bearer <your-master-key>" \\`,

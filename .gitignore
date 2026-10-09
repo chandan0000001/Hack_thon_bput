@@ -92,4 +92,7 @@ volumes/
 evidence/*.cjs
 evidence/sim1*.png
 
+# Dataset artifacts
+data/
+
 

@@ -27,3 +27,4 @@ requests
 greenlet
 timm
 huggingface_hub
+mmengine
