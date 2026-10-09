@@ -182,8 +182,8 @@ class Settings(BaseSettings):
     LLM_PROVIDERS: str = "groq,gemini,openrouter"
     LLM_COOLDOWN_SECONDS: int = 60
     LLM_HEALTH_CHECK_INTERVAL_SECONDS: int = 30
-    LLM_TIMEOUT_SECONDS: float = 6.0
-    LLM_REQUEST_TIMEOUT_SECONDS: float = 4.0
+    LLM_TIMEOUT_SECONDS: float = 20.0
+    LLM_REQUEST_TIMEOUT_SECONDS: float = 10.0
 
     # OpenRouter
     OPENROUTER_API_KEY: str = ""

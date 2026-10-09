@@ -167,7 +167,7 @@ async def _bg_generate_explanation(
     risk_score: int,
     auth_warnings: Optional[list[str]] = None,
     extra_notes: Optional[list[str]] = None,
-    timeout: float = 6.0,
+    timeout: float = 20.0,
     *,
     user_id: Optional[str] = None,
 ) -> None:
